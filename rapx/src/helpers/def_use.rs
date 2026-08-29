@@ -253,7 +253,7 @@ pub fn operand_uses<'tcx>(operand: &Operand<'tcx>) -> RelevantPlaces {
             uses.extend(place_uses(place));
         }
         Operand::Constant(_) => {}
-        #[cfg(rapx_ge_99)]
+        #[cfg(rapx_has_operand_runtime_checks)]
         Operand::RuntimeChecks(_) => {}
     }
     uses

@@ -71,7 +71,7 @@ impl<'tcx> AliasGraph<'tcx> {
                     }
                 }
                 Operand::Constant(_) => {}
-                #[cfg(rapx_ge_99)]
+                #[cfg(rapx_has_operand_runtime_checks)]
                 Operand::RuntimeChecks(_) => {}
             },
             Rvalue::Ref(_, _, rv_place)
@@ -312,7 +312,7 @@ impl<'tcx> AliasGraph<'tcx> {
                     result.push((arg_val, arg_pts));
                 }
                 Operand::Constant(_) => { result.push((0, 0)); }
-                #[cfg(rapx_ge_99)]
+                #[cfg(rapx_has_operand_runtime_checks)]
                 Operand::RuntimeChecks(_) => {}
             }
         }

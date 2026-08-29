@@ -844,7 +844,7 @@ impl<'tcx> PathGraph<'tcx> {
                     .try_eval_bool(self.cfg.tcx, typing_env)
                     .unwrap_or(true);
             }
-            #[cfg(rapx_ge_99)]
+            #[cfg(rapx_has_operand_runtime_checks)]
             Operand::RuntimeChecks(_) => return true,
         };
         self.resolve_bool_local(cond_local, constraints)

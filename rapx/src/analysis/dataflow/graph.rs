@@ -54,7 +54,7 @@ impl DataflowGraph {
                 };
                 self.add_const_edge(src_desc, src_ty, dst, EdgeOp::Const, block, stmt_idx);
             }
-            #[cfg(rapx_ge_99)]
+            #[cfg(rapx_has_operand_runtime_checks)]
             Operand::RuntimeChecks(_) => {}
         }
     }
@@ -173,10 +173,6 @@ impl DataflowGraph {
                 Rvalue::UnaryOp(_, operand) => {
                     self.add_operand(operand, dst, block, stmt_idx);
                     self.nodes[dst].ops[seq] = NodeOp::UnaryOp;
-                }
-                #[cfg(not(rapx_ge_99))]
-                Rvalue::NullaryOp(_) => {
-                    self.nodes[dst].ops[seq] = NodeOp::NullaryOp;
                 }
                 Rvalue::ThreadLocalRef(_) => {}
                 Rvalue::Discriminant(place) => {

@@ -12,6 +12,9 @@ fn main() {
     emit_check_cfg("rapx_rvalue_has_reborrow");
     emit_check_cfg("rapx_scalar_to_pointer_interp_result");
     emit_check_cfg("rapx_has_fnptr_asptr");
+    emit_check_cfg("rapx_has_operand_runtime_checks");
+    emit_check_cfg("rapx_has_eii_impls");
+    emit_check_cfg("rapx_crate_source_rlib_pathbuf");
 
     emit_cfg("rapx_ge_99", minor >= 99);
     emit_cfg("rapx_ge_100", minor >= 100);
@@ -48,6 +51,21 @@ fn main() {
             "compiler/rustc_middle/src/ty/instance.rs",
             "FnPtrAsPtr",
         ),
+    );
+    emit_cfg(
+        "rapx_has_operand_runtime_checks",
+        rustc_src_contains_path(
+            "compiler/rustc_middle/src/mir/syntax.rs",
+            "RuntimeChecks(RuntimeChecks)",
+        ),
+    );
+    emit_cfg(
+        "rapx_has_eii_impls",
+        rustc_src_contains_path("compiler/rustc_ast/src/ast.rs", "pub eii_impls:"),
+    );
+    emit_cfg(
+        "rapx_crate_source_rlib_pathbuf",
+        rustc_src_contains_path("compiler/rustc_session/src/cstore.rs", "pub rlib: Option<PathBuf>"),
     );
 }
 

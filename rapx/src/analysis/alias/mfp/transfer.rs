@@ -31,7 +31,7 @@ pub fn operand_to_place_id<'tcx>(operand: &Operand<'tcx>) -> Option<PlaceId> {
     match operand {
         Operand::Copy(place) | Operand::Move(place) => Some(mir_place_to_place_id(*place)),
         Operand::Constant(_) => None,
-        #[cfg(rapx_ge_99)]
+        #[cfg(rapx_has_operand_runtime_checks)]
         Operand::RuntimeChecks(_) => None,
     }
 }

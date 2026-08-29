@@ -105,8 +105,6 @@ impl<'tcx> MirDisplay for Rvalue<'tcx> {
             Rvalue::ThreadLocalRef(..) => s += "ThreadLocalRef",
             Rvalue::Cast(..) => s += "Cast",
             Rvalue::BinaryOp(..) => s += "BinaryOp",
-            #[cfg(not(rapx_ge_99))]
-            Rvalue::NullaryOp(..) => s += "NullaryOp",
             Rvalue::UnaryOp(..) => s += "UnaryOp",
             Rvalue::Discriminant(..) => s += "Discriminant",
             Rvalue::Aggregate(..) => s += "Aggregate",

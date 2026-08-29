@@ -74,7 +74,7 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
                     }
                     Some(Operand::Constant(c)) => {}
                     None => {}
-                    #[cfg(rapx_ge_99)]
+                    #[cfg(rapx_has_operand_runtime_checks)]
                     _ => {}
                 }
                 rap_trace!(
@@ -93,7 +93,7 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
                     }
                     Some(Operand::Constant(c)) => {}
                     None => {}
-                    #[cfg(rapx_ge_99)]
+                    #[cfg(rapx_has_operand_runtime_checks)]
                     _ => {}
                 }
 
@@ -113,7 +113,7 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
                     }
                     Some(Operand::Constant(c)) => {}
                     None => {}
-                    #[cfg(rapx_ge_99)]
+                    #[cfg(rapx_has_operand_runtime_checks)]
                     _ => {}
                 }
 
@@ -207,7 +207,7 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
                             }
                             // Find the corresponding Place and VarNode in the callee.
                         }
-                        #[cfg(rapx_ge_99)]
+                        #[cfg(rapx_has_operand_runtime_checks)]
                         Operand::RuntimeChecks(_) => {}
                     }
                 }

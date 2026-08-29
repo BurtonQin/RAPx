@@ -1826,23 +1826,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     invariants: ValueInvariants::default(),
                 }
             }
-            #[cfg(not(rapx_ge_99))]
-            Rvalue::NullaryOp(_op) => {
-                let term = self.fresh_int("nullary");
-                let op_debug = format!("{:?}", _op);
-                let is_align_of = op_debug.contains("AlignOf") || op_debug.contains("min_align_of");
-                let is_size_of = op_debug.contains("SizeOf");
-                if is_align_of || is_size_of {
-                    let one = Int::from_u64(self.ctx, 1);
-                    self.path_conditions.push(term.ge(&one));
-                }
-                VmValue {
-                    term,
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                }
-            }
             Rvalue::WrapUnsafeBinder(_operand, _ty) => {
                 let term = self.fresh_int("wrap_unsafe_binder");
                 VmValue {

@@ -1345,8 +1345,6 @@ fn collect_rvalue_sources(rvalue: &Rvalue<'_>, out: &mut FxHashSet<Local>) {
         #[cfg(not(rapx_ge_99))]
         Rvalue::ShallowInitBox(operand, _) => collect_operand_sources(operand, out),
         Rvalue::ThreadLocalRef(_) => {}
-        #[cfg(not(rapx_ge_99))]
-        Rvalue::NullaryOp(..) => {}
         _ => {}
     }
 }
@@ -1358,7 +1356,7 @@ fn collect_operand_sources(operand: &Operand<'_>, out: &mut FxHashSet<Local>) {
             out.insert(place.local);
         }
         Operand::Constant(_) => {}
-        #[cfg(rapx_ge_99)]
+        #[cfg(rapx_has_operand_runtime_checks)]
         Operand::RuntimeChecks(_) => {}
     }
 }

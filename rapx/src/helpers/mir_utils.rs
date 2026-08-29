@@ -217,7 +217,7 @@ pub fn operand_place(operand: &Operand<'_>) -> Option<PlaceKey> {
     match operand {
         Operand::Copy(place) | Operand::Move(place) => Some(PlaceKey::from_mir_place(place)),
         Operand::Constant(_) => None,
-        #[cfg(rapx_ge_99)]
+        #[cfg(rapx_has_operand_runtime_checks)]
         Operand::RuntimeChecks(_) => None,
     }
 }
@@ -402,7 +402,7 @@ pub fn rvalue_any_place_matching<'tcx>(
         Rvalue::Aggregate(_, operands) => operands.iter().any(|operand| match operand {
             Operand::Copy(place) | Operand::Move(place) => pred(place),
             Operand::Constant(_) => false,
-            #[cfg(rapx_ge_99)]
+            #[cfg(rapx_has_operand_runtime_checks)]
             Operand::RuntimeChecks(_) => false,
         }),
         _ => rvalue_source_place(rvalue)

@@ -628,7 +628,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     },
                 }
             }
-            #[cfg(rapx_ge_99)]
+            #[cfg(rapx_has_operand_runtime_checks)]
             Operand::RuntimeChecks(_) => {
                 VmValue::new(self.fresh_int("runtime_checks"), self.body.local_decls[Local::from_usize(0)].ty)
             }

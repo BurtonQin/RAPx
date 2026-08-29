@@ -949,14 +949,14 @@ fn terminator_uses_any_local(
         TerminatorKind::Call { args, .. } => args.iter().any(|arg| match &arg.node {
             Operand::Copy(place) | Operand::Move(place) => locals.contains(&place.local),
             Operand::Constant(_) => false,
-            #[cfg(rapx_ge_99)]
+            #[cfg(rapx_has_operand_runtime_checks)]
             Operand::RuntimeChecks(_) => false,
         }),
         TerminatorKind::SwitchInt { discr, .. } | TerminatorKind::Assert { cond: discr, .. } => {
             match discr {
                 Operand::Copy(place) | Operand::Move(place) => locals.contains(&place.local),
                 Operand::Constant(_) => false,
-                #[cfg(rapx_ge_99)]
+                #[cfg(rapx_has_operand_runtime_checks)]
                 Operand::RuntimeChecks(_) => false,
             }
         }
@@ -1599,7 +1599,7 @@ fn terminator_uses_live_origin(kind: &TerminatorKind<'_>, live: &[PlaceKey]) -> 
         let Some(place) = (match &arg.node {
             Operand::Copy(place) | Operand::Move(place) => Some(place),
             Operand::Constant(_) => None,
-            #[cfg(rapx_ge_99)]
+            #[cfg(rapx_has_operand_runtime_checks)]
             Operand::RuntimeChecks(_) => None,
         }) else {
             return false;
