@@ -25,7 +25,8 @@ use crate::{
 };
 
 use super::state::{
-    AllocId, ContentTy, InlineFrame, Liveness, Provenance, ValueInvariants, VmState, VmValue,
+    AllocId, ContentTy, InlineFrame, Liveness, OpSource, Provenance, ValueInvariants, VmState,
+    VmValue,
 };
 
 use crate::verify::api_classify;
@@ -48,7 +49,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let statement = &body.basic_blocks[*block].statements[*statement_index];
                     let saved = self.body;
                     self.body = body;
-                    self.exec_statement(*block, *statement_index, statement);
+                    self.exec_statement(statement);
                     self.body = saved;
                 }
                 RelevantItem::Terminator { def_id, block } => {
@@ -74,9 +75,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 RelevantItem::ContractFact { property } => {
                     self.assert_contract_fact(property);
                 }
-                RelevantItem::Forget => {
-                    self.notes.push("forget: unsupported call".to_string());
-                }
+                RelevantItem::Forget => {}
             }
         }
     }
@@ -1709,12 +1708,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     // ── Statement executors ──────────────────────────────────────
 
-    pub(crate) fn exec_statement(
-        &mut self,
-        block: BasicBlock,
-        statement_index: usize,
-        statement: &Statement<'tcx>,
-    ) {
+    pub(crate) fn exec_statement(&mut self, statement: &Statement<'tcx>) {
         match &statement.kind {
             StatementKind::Assign(assign) => {
                 let (place, rvalue) = &**assign;
@@ -1736,13 +1730,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             | StatementKind::Nop => {}
             #[cfg(not(rapx_ge_99))]
             StatementKind::Retag(..) => {}
-            _ => {
-                self.notes.push(format!(
-                    "unsupported statement at bb{}#{}",
-                    block.as_usize(),
-                    statement_index
-                ));
-            }
+            _ => {}
         }
     }
 
@@ -2299,8 +2287,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let dest_pk = PlaceKey::from_mir_place(dest_place);
                 let lhs_pk = crate::helpers::mir_utils::operand_place(lhs_op);
                 let rhs_pk = crate::helpers::mir_utils::operand_place(rhs_op);
-                self.binary_op_sources
-                    .insert(dest_pk.clone(), (lhs_pk, rhs_pk, *op));
+                self.op_sources.insert(
+                    dest_pk.clone(),
+                    OpSource::Binary {
+                        lhs: lhs_pk,
+                        rhs: rhs_pk,
+                        op: *op,
+                    },
+                );
                 // Carry the direct boolean condition alongside the ite-encoded
                 // result so `switchInt`/`Assert` can record a precise path
                 // condition (e.g. `offset <= len - 16`) instead of
@@ -3241,7 +3235,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
         }
-        self.notes.push(format!("drop: {:?}", place));
     }
 
     // ── Terminator executors ─────────────────────────────────────
@@ -3257,17 +3250,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 func,
                 args,
                 destination,
-                target,
                 ..
             } => {
                 let caller_id = self.caller_def_id;
-                self.exec_call(func, args, destination.local, *target, None, caller_id);
+                self.exec_call(func, args, destination.local, caller_id);
             }
             TerminatorKind::SwitchInt { discr, targets } => {
                 self.exec_switchint(block, discr, targets, occurrence);
             }
             TerminatorKind::Assert { cond, expected, .. } => {
-                self.exec_assert(cond, *expected, block, occurrence);
+                self.exec_assert(cond, *expected);
             }
             TerminatorKind::Goto { .. }
             | TerminatorKind::Return
@@ -3343,23 +3335,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
         }
-
-        // Conservative fallback: note it but don't add path condition
-        self.notes.push(format!(
-            "SwitchInt at bb{} occ{}: discr is symbolic, branch unknown",
-            block.as_usize(),
-            occurrence
-        ));
     }
 
     /// Execute an Assert terminator.
-    fn exec_assert(
-        &mut self,
-        cond: &Operand<'tcx>,
-        expected: bool,
-        _block: BasicBlock,
-        _occurrence: usize,
-    ) {
+    fn exec_assert(&mut self, cond: &Operand<'tcx>, expected: bool) {
         let cond_val = self.value_of_operand(cond);
         // If the asserted operand is a comparison result, record the direct
         // boolean condition (`idx < len`) alongside the ite-encoded fact, so
@@ -3397,15 +3376,20 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let cond_pk = PlaceKey::from_mir_place(place);
 
         // Check if cond is a Ne/Eq comparison of (x % n) or (x & (align-1)) against 0
-        if let Some((lhs_pk, rhs_pk, _op)) = self.binary_op_sources.get(&cond_pk).cloned() {
+        if let Some(OpSource::Binary { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
+            self.op_sources.get(&cond_pk).cloned()
+        {
             // The lhs is (x % n) / (x & (align-1)), rhs is constant 0
             let inner_pk = match (&lhs_pk, &rhs_pk) {
                 (Some(pk), None) => pk.clone(),
                 (None, Some(pk)) => pk.clone(),
                 _ => return,
             };
-            if let Some((div_lhs, div_rhs, inner_op)) =
-                self.binary_op_sources.get(&inner_pk).cloned()
+            if let Some(OpSource::Binary {
+                lhs: div_lhs,
+                rhs: div_rhs,
+                op: inner_op,
+            }) = self.op_sources.get(&inner_pk).cloned()
             {
                 match inner_op {
                     // `x % n == 0`: div_rhs is the concrete divisor constant.
@@ -3459,7 +3443,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // mark the non-constant side as non-null.  Only `Ne` guards imply
         // non-nullness; an `Eq` guard (`assert (addr & mask) == 0`, the
         // alignment check) means the value *is* zero, not non-null.
-        if let Some((lhs_pk, rhs_pk, op)) = self.binary_op_sources.get(&cond_pk).cloned() {
+        if let Some(OpSource::Binary { lhs: lhs_pk, rhs: rhs_pk, op }) =
+            self.op_sources.get(&cond_pk).cloned()
+        {
             if op != rustc_middle::mir::BinOp::Ne {
                 return;
             }
@@ -3479,7 +3465,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             _ => return,
         };
         let pk = PlaceKey::from_mir_place(place);
-        if let Some((lhs_pk, rhs_pk, _op)) = self.binary_op_sources.get(&pk).cloned() {
+        if let Some(OpSource::Binary { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
+            self.op_sources.get(&pk).cloned()
+        {
             self.mark_guard_pointer(&lhs_pk, &rhs_pk);
         }
     }
@@ -3696,10 +3684,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }
                 }
             }
-            _ => {
-                self.notes
-                    .push(format!("contract fact {:?} not directly asserted", kind));
-            }
+            _ => {}
         }
     }
 

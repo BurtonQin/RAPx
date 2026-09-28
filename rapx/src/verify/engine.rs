@@ -146,7 +146,6 @@ impl<'tcx> VerifyEngine<'tcx> {
         &self,
         tree: &PathTree,
         checkpoint: &Checkpoint<'tcx>,
-        _property: &Property<'tcx>,
     ) -> Vec<(CheckResult, String)> {
         let Some(slot) = self.drop_referent_local(checkpoint) else {
             return vec![(CheckResult::Unknown, String::new())];

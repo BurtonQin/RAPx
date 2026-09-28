@@ -134,7 +134,7 @@ pub(crate) struct CallGroup<'tcx> {
 
 fn group_by_callee<'tcx>(
     checkpoints: Vec<Checkpoint<'tcx>>,
-    _tree: &PathTree,
+    tree: &PathTree,
 ) -> Vec<CallGroup<'tcx>> {
     let mut groups: FxHashMap<Option<DefId>, Vec<Checkpoint<'tcx>>> = FxHashMap::default();
     for cs in checkpoints {
@@ -143,7 +143,7 @@ fn group_by_callee<'tcx>(
     groups
         .into_iter()
         .map(|(_callee, checkpoints)| CallGroup {
-            tree: _tree.clone(),
+            tree: tree.clone(),
             checkpoints,
         })
         .collect()

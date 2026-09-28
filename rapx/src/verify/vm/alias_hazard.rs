@@ -531,7 +531,7 @@ fn method_writes_self_field(
         let Some(terminator) = &block.terminator else {
             continue;
         };
-        if terminator_writes_origin(tcx, &terminator.kind, &origin, &tree) {
+        if terminator_writes_origin(&terminator.kind, &origin, &tree) {
             return true;
         }
     }
@@ -840,7 +840,7 @@ fn local_hazard_violation_with(
             };
             if origins
                 .iter()
-                .any(|origin| terminator_writes_origin(tcx, &terminator.kind, origin, &tree))
+                .any(|origin| terminator_writes_origin(&terminator.kind, origin, &tree))
                 && hazard_used_after_block(tcx, caller, block_index, &hazard_locals)
             {
                 return Some(format!(
@@ -850,7 +850,7 @@ fn local_hazard_violation_with(
             }
             if kind == HazardKind::UniqueView
                 && !vec_owners.is_empty()
-                && terminator_invalidates_vec_owner(tcx, &terminator.kind, &vec_owners, &tree)
+                && terminator_invalidates_vec_owner(&terminator.kind, &vec_owners, &tree)
                 && hazard_used_after_block(tcx, caller, block_index, &hazard_locals)
             {
                 return Some(
@@ -859,7 +859,7 @@ fn local_hazard_violation_with(
             }
             if strict_call_escape
                 && block_index != call_block
-                && !terminator_is_benign_origin_use(tcx, &terminator.kind)
+                && !terminator_is_benign_origin_use(&terminator.kind)
                 && origins
                     .iter()
                     .any(|origin| terminator_uses_origin(&terminator.kind, origin, &tree))
@@ -1210,7 +1210,6 @@ fn rvalue_reads_any_origin(
 }
 
 fn terminator_writes_origin<'tcx>(
-    _tcx: TyCtxt<'tcx>,
     terminator: &TerminatorKind<'tcx>,
     origin: &PlaceKey,
     tree: &crate::verify::vm::alias_tree::AliasTree,
@@ -1248,7 +1247,6 @@ fn terminator_uses_origin<'tcx>(
 }
 
 fn terminator_is_benign_origin_use<'tcx>(
-    _tcx: TyCtxt<'tcx>,
     terminator: &TerminatorKind<'tcx>,
 ) -> bool {
     let TerminatorKind::Call { func, .. } = terminator else {
@@ -1260,7 +1258,6 @@ fn terminator_is_benign_origin_use<'tcx>(
 }
 
 fn terminator_invalidates_vec_owner<'tcx>(
-    _tcx: TyCtxt<'tcx>,
     terminator: &TerminatorKind<'tcx>,
     owners: &[PlaceKey],
     tree: &crate::verify::vm::alias_tree::AliasTree,

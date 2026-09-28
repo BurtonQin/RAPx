@@ -168,7 +168,7 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
                     ) =>
             {
                 self.engine
-                    .check_drop_from_tree(view.tree, view.checkpoint, property)
+                    .check_drop_from_tree(view.tree, view.checkpoint)
             }
             Property::Atom(_) => self.engine.check_callsite_from_tree(
                 view.tree,

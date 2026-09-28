@@ -11,7 +11,7 @@ use crate::verify::contract::{
 };
 use crate::verify::def_use::PlaceKey;
 use crate::verify::report::CheckResult;
-use crate::verify::vm::state::VmState;
+use crate::verify::vm::state::{OpSource, VmState};
 use rustc_hash::FxHashSet;
 use rustc_middle::mir::Operand;
 use rustc_middle::ty::TyKind;
@@ -288,22 +288,12 @@ impl PropertyChecker {
             return;
         }
 
-        // Walk both binary_op_sources (Add, Sub, Div, etc.) and
-        // other_op_sources (select_unpredictable) for destinations
+        // Walk op_sources (binary and non-binary producers) for destinations
         // whose term matches target.
         let op_sources: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = {
             let mut src: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = Vec::new();
-            for (pk, (lhs, rhs, _)) in vm_state.binary_op_sources.iter() {
-                if pk
-                    .local()
-                    .and_then(|l| vm_state.local_value(l))
-                    .map(|v| v.term == *target)
-                    .unwrap_or(false)
-                {
-                    src.push((lhs.clone(), rhs.clone()));
-                }
-            }
-            for (pk, (lhs, rhs)) in vm_state.other_op_sources.iter() {
+            for (pk, src_ops) in vm_state.op_sources.iter() {
+                let (lhs, rhs) = src_ops.operands();
                 if pk
                     .local()
                     .and_then(|l| vm_state.local_value(l))
@@ -330,17 +320,8 @@ impl PropertyChecker {
                 continue;
             }
 
-            for (pk, lhs, rhs) in vm_state
-                .binary_op_sources
-                .iter()
-                .map(|(pk, (l, r, _))| (pk, l, r))
-                .chain(
-                    vm_state
-                        .other_op_sources
-                        .iter()
-                        .map(|(pk, (l, r))| (pk, l, r)),
-                )
-            {
+            for (pk, src_ops) in vm_state.op_sources.iter() {
+                let (lhs, rhs) = src_ops.operands();
                 if let Some(dest_local) = pk.local() {
                     if let Some(dest_val) = vm_state.local_value(dest_local) {
                         let lhs_local = lhs.as_ref().and_then(|pk| pk.local());
@@ -377,8 +358,11 @@ impl PropertyChecker {
             };
 
             // Check if lhs is itself a Div / Rem result
-            if let Some((div_lhs_pk, div_rhs_pk, _)) =
-                vm_state.binary_op_sources.get(lhs_pk).cloned()
+            if let Some(OpSource::Binary {
+                lhs: div_lhs_pk,
+                rhs: div_rhs_pk,
+                op: _,
+            }) = vm_state.op_sources.get(lhs_pk).cloned()
             {
                 let Some(div_lhs_local) = div_lhs_pk.and_then(|pk| pk.local()) else {
                     continue;

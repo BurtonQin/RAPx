@@ -66,8 +66,6 @@ impl CallDependencySummary {
 /// Effect summary consumed by the forward visitor.
 #[derive(Clone, Debug)]
 pub(crate) struct CallEffectSummary {
-    /// Human-readable callee name.
-    pub name: String,
     /// Effects that can be applied to the path-local abstract state.
     pub effects: Vec<CallEffect>,
     /// True when this summary is conservative rather than precise.
@@ -76,9 +74,8 @@ pub(crate) struct CallEffectSummary {
 
 impl CallEffectSummary {
     /// Build a conservative summary for an unsupported call.
-    fn unknown(name: String) -> Self {
+    fn unknown() -> Self {
         Self {
-            name,
             effects: Vec::new(),
             unsupported: true,
         }
@@ -374,7 +371,7 @@ pub(crate) fn effect_summary<'tcx>(
     let name = mir_utils::call_name(tcx, func);
 
     if let Some(summary) =
-        builtin_models::lookup_effect(tcx, caller, callee, &name, func, destination)
+        builtin_models::lookup_effect(tcx, caller, callee, func, destination)
     {
         return summary;
     }
@@ -385,7 +382,6 @@ pub(crate) fn effect_summary<'tcx>(
     // unavailable cross-crate, so model them with field-value peeling.
     if let Some(peel) = transparent_deref_peel(tcx, func) {
         return CallEffectSummary {
-            name,
             effects: vec![CallEffect::ReturnTransparentDeref { arg: 0, peel }],
             unsupported: false,
         };
@@ -394,7 +390,7 @@ pub(crate) fn effect_summary<'tcx>(
     // Interprocedural fallback for local callees.
     if let Some(callee) = callee {
         if tcx.intrinsic(callee).is_some() || mir_utils::is_drop_in_place(callee) {
-            return CallEffectSummary::unknown(name);
+            return CallEffectSummary::unknown();
         }
         if let Some(must_write_args) = interprocedural::local_must_write_args(tcx, callee, context) {
             let effects: Vec<_> = must_write_args
@@ -403,33 +399,29 @@ pub(crate) fn effect_summary<'tcx>(
                 .collect();
             if !effects.is_empty() {
                 return CallEffectSummary {
-                    name,
                     effects,
                     unsupported: false,
                 };
             }
         }
         if let Some(effect) =
-            interprocedural::try_pointer_arith_wrapper_effect(tcx, callee, Some(destination))
+            interprocedural::try_pointer_arith_wrapper_effect(tcx, callee)
         {
             return CallEffectSummary {
-                name,
                 effects: vec![effect],
                 unsupported: false,
             };
         }
         if let Some(effect) =
-            interprocedural::try_from_raw_parts_wrapper_effect(tcx, callee, Some(destination))
+            interprocedural::try_from_raw_parts_wrapper_effect(tcx, callee)
         {
             return CallEffectSummary {
-                name,
                 effects: vec![effect],
                 unsupported: false,
             };
         }
         if let Some(effect) = interprocedural::try_iter_constructor_effect(tcx, callee) {
             return CallEffectSummary {
-                name,
                 effects: vec![effect],
                 unsupported: false,
             };
@@ -439,7 +431,6 @@ pub(crate) fn effect_summary<'tcx>(
                 .or_else(|| interprocedural::named_index_disjoint_validator(&name))
         {
             return CallEffectSummary {
-                name,
                 effects: vec![CallEffect::ChecksIndexBoundsDisjoint {
                     indices_arg,
                     len_arg,
@@ -457,7 +448,6 @@ pub(crate) fn effect_summary<'tcx>(
                 // back to `exec_inline_call`, which inlines the full body.
                 let has_nested_calls = interprocedural::callee_calls_other_local(tcx, callee);
                 return CallEffectSummary {
-                    name,
                     effects: return_deps
                         .into_iter()
                         .map(|arg| CallEffect::ReturnAliasArg { arg })
@@ -468,7 +458,7 @@ pub(crate) fn effect_summary<'tcx>(
         }
     }
 
-    CallEffectSummary::unknown(name)
+    CallEffectSummary::unknown()
 }
 
 /// Detect a transparent-wrapper deref whose receiver is `ManuallyDrop<T>` or

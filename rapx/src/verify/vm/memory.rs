@@ -173,8 +173,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     view_ty = current_ty;
                 }
                 _ => {
-                    self.notes
-                        .push(format!("unsupported projection: {:?}", proj.kind()));
                     return None;
                 }
             }

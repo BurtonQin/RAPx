@@ -20,7 +20,7 @@ use crate::verify::api_classify;
 use crate::verify::call_summary::{self, CallEffect};
 use crate::verify::def_use::{PlaceBaseKey, PlaceKey};
 
-use super::state::{AllocId, ContentTy, OffsetKind, Provenance, ValueInvariants, VmState, VmValue};
+use super::state::{AllocId, ContentTy, OffsetKind, OpSource, Provenance, ValueInvariants, VmState, VmValue};
 
 /// Classification of a call site for dispatch prioritization.
 const MAX_INLINE_DEPTH: usize = 5;
@@ -38,8 +38,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         func: &Operand<'tcx>,
         args: &[Spanned<Operand<'tcx>>],
         destination: Local,
-        _target: Option<BasicBlock>,
-        _cleanup: Option<BasicBlock>,
         caller_def_id: DefId,
     ) {
         let arg_values: Vec<VmValue<'ctx, 'tcx>> = args
@@ -97,7 +95,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             if self.tcx.is_mir_available(c) {
                 if crate::helpers::mir_utils::is_iter_ptr_adj(self.tcx, c) && arg_values.len() >= 2
                 {
-                    self.apply_iter_ptr_update(c, &arg_values, &caller_arg_locals);
+                    self.apply_iter_ptr_update(c, &arg_values);
                     // Continue to normal handling (return value is () , ignored).
                 }
             }
@@ -161,7 +159,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     self.tcx,
                     caller_def_id,
                     callee,
-                    &name,
                     func,
                     destination,
                 )
@@ -209,8 +206,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 self.apply_call_effect(effect, &arg_values, &caller_arg_locals, destination);
             }
         } else {
-            self.notes
-                .push(format!("unsupported call: {}", summary.name));
             let dest_ty = self.body.local_decls[destination].ty;
             let term = self.fresh_int(&format!("callret_{}", destination.as_usize()));
             if let TyKind::Adt(adt_def, _) = dest_ty.kind() {
@@ -277,7 +272,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         };
         let lhs_pk = args.get(1).and_then(|a| operand_place(&a.node));
         let rhs_pk = args.get(2).and_then(|a| operand_place(&a.node));
-        self.other_op_sources.insert(dest_pk, (lhs_pk, rhs_pk));
+        self.op_sources
+            .insert(dest_pk, OpSource::Other { lhs: lhs_pk, rhs: rhs_pk });
         self.set_local(
             destination,
             VmValue {
@@ -883,8 +879,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let saved_locals = std::mem::take(&mut self.locals);
         let saved_field_values = std::mem::take(&mut self.field_values);
         let saved_local_alloc_ids = std::mem::take(&mut self.local_alloc_ids);
-        let saved_binary_op_sources = std::mem::take(&mut self.binary_op_sources);
-        let saved_other_op_sources = std::mem::take(&mut self.other_op_sources);
+        let saved_op_sources = std::mem::take(&mut self.op_sources);
         let saved_iter_ptr_offset = std::mem::take(&mut self.iter_ptr_offset);
         let saved_inline_arg_referents =
             std::mem::replace(&mut self.inline.arg_referents, inline_arg_referents);
@@ -958,8 +953,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.locals = saved_locals;
         self.field_values = saved_field_values;
         self.local_alloc_ids = saved_local_alloc_ids;
-        self.binary_op_sources = saved_binary_op_sources;
-        self.other_op_sources = saved_other_op_sources;
+        self.op_sources = saved_op_sources;
         self.iter_ptr_offset = saved_iter_ptr_offset;
 
         // Apply deferred field writes (`(*self).field = val` through a
@@ -1096,7 +1090,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             rustc_middle::mir::Rvalue::Use(
                                 rustc_middle::mir::Operand::Constant(_),
                             ) => true,
-                            _ => Self::rvalue_runtime_checks_value(tcx, rvalue).is_some(),
+                            _ => Self::rvalue_runtime_checks_value(rvalue).is_some(),
                         }
                     })
                 })
@@ -1118,7 +1112,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// `Rvalue::NullaryOp(NullOp::RuntimeChecks)`; newer rustc lowers them to
     /// `Operand::RuntimeChecks`.
     fn rvalue_runtime_checks_value(
-        _tcx: rustc_middle::ty::TyCtxt<'tcx>,
         rvalue: &rustc_middle::mir::Rvalue<'tcx>,
     ) -> Option<u64> {
         #[cfg(rapx_rvalue_has_nullary_op)]
@@ -1151,7 +1144,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Resolve a `SwitchInt` discriminant to a constant `u64`, following a
     /// single local-assignment chain (a `cfg!`-style runtime-check flag).
     fn switch_discr_const(
-        tcx: rustc_middle::ty::TyCtxt<'tcx>,
         body: &rustc_middle::mir::Body<'tcx>,
         discr: &Operand<'tcx>,
     ) -> Option<u64> {
@@ -1170,7 +1162,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if dest != p {
                     continue;
                 }
-                return Self::rvalue_runtime_checks_value(tcx, rvalue);
+                return Self::rvalue_runtime_checks_value(rvalue);
             }
         }
         None
@@ -1190,8 +1182,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let bb_data = &self.body.basic_blocks[block];
 
             // Execute statements
-            for (si, stmt) in bb_data.statements.iter().enumerate() {
-                self.exec_statement(block, si, stmt);
+            for stmt in bb_data.statements.iter() {
+                self.exec_statement(stmt);
             }
 
             // Process terminator
@@ -1225,7 +1217,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 TerminatorKind::SwitchInt { discr, targets } => {
                     // A constant discriminant folds to a single live edge.
-                    if let Some(v) = Self::switch_discr_const(self.tcx, &self.body, discr) {
+                    if let Some(v) = Self::switch_discr_const(&self.body, discr) {
                         let t = targets
                             .iter()
                             .find(|(val, _)| *val == v as u128)
@@ -1265,8 +1257,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         func,
                         args,
                         destination.local,
-                        *target,
-                        None,
                         self.caller_def_id,
                     );
                     if let Some(t) = target {
@@ -1906,7 +1896,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         offset_kind,
                     });
                     let align_n = match stride {
-                        Some(s) => self.compute_pointer_add_align(base, offset, s),
+                        Some(s) => self.compute_pointer_add_align(base, s),
                         None => base.invariants.align_n.clone(),
                     };
                     let val = VmValue {
@@ -1970,7 +1960,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         offset_kind,
                     });
                     let align_n = match stride {
-                        Some(s) => self.compute_pointer_add_align(base, offset, s),
+                        Some(s) => self.compute_pointer_add_align(base, s),
                         None => base.invariants.align_n.clone(),
                     };
                     let val = VmValue {
@@ -3069,7 +3059,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     fn compute_pointer_add_align(
         &self,
         base: &VmValue<'ctx, 'tcx>,
-        _offset: &VmValue<'ctx, 'tcx>,
         stride_bytes: u64,
     ) -> Option<Int<'ctx>> {
         let base_align = base.invariants.align_n.as_ref()?;
@@ -3205,7 +3194,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         &mut self,
         callee: DefId,
         arg_values: &[VmValue<'ctx, 'tcx>],
-        _caller_arg_locals: &[Option<Local>],
     ) {
         let is_inc = crate::helpers::mir_utils::is_post_inc_start(self.tcx, callee);
         if !is_inc {

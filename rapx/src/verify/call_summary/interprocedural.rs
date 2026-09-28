@@ -28,7 +28,6 @@ use super::{CallContext, CallEffect};
 /// approximation (taking a reference is not a pure copy) but is adequate for
 /// wrapper recognition.
 fn trace_to_callee_arg<'tcx>(
-    _tcx: TyCtxt<'tcx>,
     body: &rustc_middle::mir::Body<'tcx>,
     operand: &Operand<'_>,
 ) -> Option<usize> {
@@ -160,7 +159,6 @@ fn resolve_wrapper_effect<'tcx>(
 pub(super) fn try_pointer_arith_wrapper_effect<'tcx>(
     tcx: TyCtxt<'tcx>,
     callee: DefId,
-    _destination: Option<Local>,
 ) -> Option<CallEffect> {
     let mut memo: HashMap<DefId, WrapperEffectMemo> = HashMap::new();
     resolve_wrapper_effect(tcx, callee, &mut memo, &pointer_arith_wrapper_probe)
@@ -237,8 +235,8 @@ fn pointer_arith_wrapper_probe<'tcx>(
                     continue;
                 }
             };
-            let base_arg = trace_to_callee_arg(tcx, body, &args.get(inner_base)?.node)?;
-            let offset_arg = trace_to_callee_arg(tcx, body, &args.get(inner_offset)?.node)?;
+            let base_arg = trace_to_callee_arg(body, &args.get(inner_base)?.node)?;
+            let offset_arg = trace_to_callee_arg(body, &args.get(inner_offset)?.node)?;
             let is_sub = matches!(effect, CallEffect::ReturnPointerSub { .. });
             return Some(if is_sub {
                 CallEffect::ReturnPointerSub {
@@ -256,8 +254,8 @@ fn pointer_arith_wrapper_probe<'tcx>(
             });
         }
 
-        let base_arg = trace_to_callee_arg(tcx, body, &args.get(0)?.node)?;
-        let offset_arg = trace_to_callee_arg(tcx, body, &args.get(1)?.node)?;
+        let base_arg = trace_to_callee_arg(body, &args.get(0)?.node)?;
+        let offset_arg = trace_to_callee_arg(body, &args.get(1)?.node)?;
         let stride = if crate::verify::api_classify::is_byte_ptr_arith(callee_id) {
             Some(1)
         } else {
@@ -336,7 +334,6 @@ pub(super) fn local_return_dependencies(tcx: TyCtxt<'_>, callee: DefId) -> Optio
 pub(super) fn try_from_raw_parts_wrapper_effect<'tcx>(
     tcx: TyCtxt<'tcx>,
     callee: DefId,
-    _destination: Option<Local>,
 ) -> Option<CallEffect> {
     if !tcx.is_mir_available(callee) {
         return None;
@@ -372,8 +369,8 @@ pub(super) fn try_from_raw_parts_wrapper_effect<'tcx>(
         }
 
         // Trace from_raw_parts args to callee args
-        let pointer_arg = trace_to_callee_arg(tcx, body, &args.get(0)?.node)?;
-        let size_arg = trace_to_callee_arg(tcx, body, &args.get(1)?.node)?;
+        let pointer_arg = trace_to_callee_arg(body, &args.get(0)?.node)?;
+        let size_arg = trace_to_callee_arg(body, &args.get(1)?.node)?;
 
         // Determine element size from return type (slice or Vec).
         let elem_size =
@@ -1132,7 +1129,7 @@ fn iter_ctor_reads_slice_len<'tcx>(tcx: TyCtxt<'tcx>, callee: DefId, depth: usiz
         return false;
     }
     let body = tcx.optimized_mir(callee);
-    if body_reads_slice_len(tcx, body) {
+    if body_reads_slice_len(body) {
         return true;
     }
     if depth > 0 {
@@ -1144,7 +1141,7 @@ fn iter_ctor_reads_slice_len<'tcx>(tcx: TyCtxt<'tcx>, callee: DefId, depth: usiz
 }
 
 /// Whether `body` contains a `len` call whose receiver traces back to argument 0.
-fn body_reads_slice_len<'tcx>(tcx: TyCtxt<'tcx>, body: &rustc_middle::mir::Body<'tcx>) -> bool {
+fn body_reads_slice_len<'tcx>(body: &rustc_middle::mir::Body<'tcx>) -> bool {
     for bb in body.basic_blocks.iter() {
         let Some(term) = &bb.terminator else { continue };
         let TerminatorKind::Call { func, args, .. } = &term.kind else {
@@ -1154,7 +1151,7 @@ fn body_reads_slice_len<'tcx>(tcx: TyCtxt<'tcx>, body: &rustc_middle::mir::Body<
             continue;
         }
         if let Some(arg0) = args.first()
-            && trace_to_callee_arg(tcx, body, &arg0.node) == Some(0)
+            && trace_to_callee_arg(body, &arg0.node) == Some(0)
         {
             return true;
         }
@@ -1528,7 +1525,7 @@ fn write_args_on_path<'tcx>(
         if crate::verify::api_classify::is_ptr_write(helpers::dep_callee_def_id(func)) {
             if let Some(pointer_arg) = args
                 .first()
-                .and_then(|arg| trace_to_callee_arg(tcx, body, &arg.node))
+                .and_then(|arg| trace_to_callee_arg(body, &arg.node))
             {
                 writes.insert(pointer_arg);
             }
@@ -1540,13 +1537,13 @@ fn write_args_on_path<'tcx>(
         // argument positions, so rebuild its context from this call's arguments
         // (its own literals plus the outer concrete values passed through).
         if let Some(nested) = helpers::dep_callee_def_id(func) {
-            let nested_context = nested_call_context(tcx, body, args, context);
+            let nested_context = nested_call_context(body, args, context);
             if let Some(nested_writes) =
                 must_write_args_rec(tcx, nested, depth + 1, &nested_context, memo)
             {
                 for (i, arg) in args.iter().enumerate() {
                     if nested_writes.contains(&i) {
-                        if let Some(outer) = trace_to_callee_arg(tcx, body, &arg.node) {
+                        if let Some(outer) = trace_to_callee_arg(body, &arg.node) {
                             writes.insert(outer);
                         }
                     }
@@ -1564,7 +1561,6 @@ fn write_args_on_path<'tcx>(
 /// literal at position `i` from being read as the nested callee's position-`i`
 /// argument.
 fn nested_call_context<'tcx>(
-    tcx: TyCtxt<'tcx>,
     body: &rustc_middle::mir::Body<'tcx>,
     args: &[Spanned<Operand<'tcx>>],
     context: &CallContext,
@@ -1573,7 +1569,7 @@ fn nested_call_context<'tcx>(
     for (i, arg) in args.iter().enumerate() {
         if let Some(v) = helpers::operand_const_u64(&arg.node) {
             nested_context.concrete.insert(i, v as i128);
-        } else if let Some(outer) = trace_to_callee_arg(tcx, body, &arg.node) {
+        } else if let Some(outer) = trace_to_callee_arg(body, &arg.node) {
             if let Some(v) = context.concrete.get(&outer) {
                 nested_context.concrete.insert(i, *v);
             }

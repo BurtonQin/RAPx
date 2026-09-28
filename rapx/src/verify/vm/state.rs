@@ -402,12 +402,42 @@ pub(crate) struct InlineCtx<'ctx, 'tcx> {
     pub deferred_field_writes: Vec<(Local, Vec<usize>, VmValue<'ctx, 'tcx>)>,
 }
 
+/// The operands a place was produced from, for guard inference (tracing a
+/// switch/assert guard back to the pointer it null-checks or alignment-checks).
+#[derive(Clone, Debug)]
+pub(crate) enum OpSource {
+    /// A binary operation (comparison, arithmetic), with its operator kind so
+    /// null-check guards (`Ne`) can be told apart from alignment/equality guards
+    /// (`Eq`/`Rem`/`BitAnd`).
+    Binary {
+        lhs: Option<PlaceKey>,
+        rhs: Option<PlaceKey>,
+        op: rustc_middle::mir::BinOp,
+    },
+    /// A non-binary producer (`select_unpredictable`, etc.).  Guard inference
+    /// must not treat these as pointer comparisons.
+    Other {
+        lhs: Option<PlaceKey>,
+        rhs: Option<PlaceKey>,
+    },
+}
+
+impl OpSource {
+    /// The (lhs, rhs) operand place keys, ignoring the operator kind.
+    pub(crate) fn operands(&self) -> (&Option<PlaceKey>, &Option<PlaceKey>) {
+        match self {
+            OpSource::Binary { lhs, rhs, .. } | OpSource::Other { lhs, rhs } => (lhs, rhs),
+        }
+    }
+}
+
 /// The full symbolic execution state at a program point.
 ///
 /// Accumulates locals, allocations, path conditions, and definitions
 /// as the VM steps through retained MIR items. The Z3 context is
 /// borrowed so a single context can be reused across property checks.
 pub(crate) struct VmState<'ctx, 'tcx> {
+    // ── Context (read-only)
     /// Shared Z3 context.
     pub(crate) ctx: &'ctx Context,
 
@@ -420,43 +450,12 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// The MIR body being executed.
     pub(crate) body: &'ctx Body<'tcx>,
 
+    // ── Values
     /// Current value bound to each MIR local.
     pub(crate) locals: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
 
     /// Allocation ID for each stack-allocated local.
     pub(crate) local_alloc_ids: FxHashMap<Local, AllocId>,
-
-    /// All known allocations.
-    pub(crate) allocations: Vec<Allocation<'ctx, 'tcx>>,
-
-    /// Accumulated path conditions (SwitchInt branches, Assert).
-    pub(crate) path_conditions: Vec<Bool<'ctx>>,
-
-    /// The next allocation ID.
-    pub(crate) next_alloc_id: usize,
-
-    /// Track block occurrence counts for loop-carried value indexing.
-    pub(crate) block_occurrences: FxHashMap<BasicBlock, usize>,
-
-    /// Binary op sources for guard inference: destination → (lhs, rhs) place keys
-    /// and the operator kind, so null-check guards (`Ne`) can be told apart from
-    /// alignment/equality guards (`Eq`).
-    pub(crate) binary_op_sources:
-        FxHashMap<PlaceKey, (Option<PlaceKey>, Option<PlaceKey>, rustc_middle::mir::BinOp)>,
-
-    /// Non-binary-op sources (select_unpredictable, etc.): destination → (lhs, rhs)
-    /// place keys.  Kept separately from `binary_op_sources` so guard inference
-    /// (infer_guard_non_null) does not treat these as pointer comparisons.
-    pub(crate) other_op_sources: FxHashMap<PlaceKey, (Option<PlaceKey>, Option<PlaceKey>)>,
-
-    /// Move-alias chain: `local → source` for a whole-place move (`_3 = move _4`).
-    /// Lets `Owning` tell the call's own rebuilt owner (`boxed = move dest`) from
-    /// a *previous* call's owner (also a shallow field, but tracing to a
-    /// different destination).
-    pub(crate) move_sources: FxHashMap<Local, Local>,
-
-    /// One-shot execution/contract flags accumulated while stepping a path.
-    pub(crate) contract_flags: ContractFlags,
 
     /// Field-level value tracking for aggregates: (local, field_indices) → value.
     /// Example: `(local_3, [0])` is `local_3.0`, `(local_3, [0, 1])` is `local_3.0.1`.
@@ -472,35 +471,52 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// `InternalNode` without colliding.
     pub(crate) alloc_field_values: FxHashMap<(AllocId, Ty<'tcx>, Vec<usize>), VmValue<'ctx, 'tcx>>,
 
-    /// Cumulative ptr offset for Iter/IterMut field [0] (ptr).
-    /// Key: (struct_local). When post_inc_start advances the ptr by
-    /// `n` elements, we increment this offset instead of nesting
-    /// symbolic additions. This keeps Z3 expressions compact.
-    pub(crate) iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
+    // ── Memory
+    /// All known allocations.
+    pub(crate) allocations: Vec<Allocation<'ctx, 'tcx>>,
+
+    /// The next allocation ID.
+    pub(crate) next_alloc_id: usize,
 
     /// Per-byte symbolic state: (alloc_id, concrete_byte_offset) → ByteInfo.
     /// Populated by aggregate initialisation, pointer stores, and write call
     /// effects. Enables byte-level reasoning for properties like ValidCStr.
     pub(crate) bytes: FxHashMap<(AllocId, usize), ByteInfo<'ctx>>,
 
-    /// Notes from unsupported operations.
-    pub(crate) notes: Vec<String>,
-
+    // ── Path constraints
     /// The path being executed (for branch target resolution).
     pub(crate) path: Option<Path>,
 
-    /// `DefId` of the most recent call (for `DefId`-based API classification).
-    pub(crate) last_call_callee: Option<DefId>,
+    /// Accumulated path conditions (SwitchInt branches, Assert).
+    pub(crate) path_conditions: Vec<Bool<'ctx>>,
 
-    /// Inlined-callee execution state (depth, frame stack, and per-call
-    /// temporary bindings swapped on entry / restored on exit).
-    pub(crate) inline: InlineCtx<'ctx, 'tcx>,
+    /// Track block occurrence counts for loop-carried value indexing.
+    pub(crate) block_occurrences: FxHashMap<BasicBlock, usize>,
+
+    // ── Analysis metadata
+    /// Operand sources for guard inference: destination → (lhs, rhs) place keys,
+    /// with the operator kind for binary ops.  `Other` producers (e.g.
+    /// `select_unpredictable`) are not treated as pointer comparisons.
+    pub(crate) op_sources: FxHashMap<PlaceKey, OpSource>,
+
+    /// Move-alias chain: `local → source` for a whole-place move (`_3 = move _4`).
+    /// Lets `Owning` tell the call's own rebuilt owner (`boxed = move dest`) from
+    /// a *previous* call's owner (also a shallow field, but tracing to a
+    /// different destination).
+    pub(crate) move_sources: FxHashMap<Local, Local>,
+
+    /// Cumulative ptr offset for Iter/IterMut field [0] (ptr).
+    /// Key: (struct_local). When post_inc_start advances the ptr by
+    /// `n` elements, we increment this offset instead of nesting
+    /// symbolic additions. This keeps Z3 expressions compact.
+    pub(crate) iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
 
     /// Terms that are the result of a bitwise `Not` (two's-complement mask).
     /// Used to recognize `x & !(align-1)` alignment patterns in BitAnd so we
     /// can derive `align = -mask` and emit linear bounds for the result.
     pub(crate) not_mask_terms: FxHashSet<Int<'ctx>>,
 
+    // ── Symbolic layout
     /// Symbolic element size for generic types whose concrete `size_of` is
     /// unknown at verification time (e.g. an unconstrained `T`).  A single
     /// symbolic constant per type keeps `ptr.add` strides, `access_bytes`
@@ -513,6 +529,18 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// per type, linked to `sym_sizes` by the layout constraint
     /// `sizeof_T % align_T == 0`.
     pub(crate) sym_aligns: FxHashMap<Ty<'tcx>, Int<'ctx>>,
+
+    // ── Inlining
+    /// Inlined-callee execution state (depth, frame stack, and per-call
+    /// temporary bindings swapped on entry / restored on exit).
+    pub(crate) inline: InlineCtx<'ctx, 'tcx>,
+
+    // ── Misc
+    /// One-shot execution/contract flags accumulated while stepping a path.
+    pub(crate) contract_flags: ContractFlags,
+
+    /// `DefId` of the most recent call (for `DefId`-based API classification).
+    pub(crate) last_call_callee: Option<DefId>,
 }
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
@@ -534,15 +562,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             path_conditions: Vec::new(),
             next_alloc_id: 0,
             block_occurrences: FxHashMap::default(),
-            binary_op_sources: FxHashMap::default(),
-            other_op_sources: FxHashMap::default(),
+            op_sources: FxHashMap::default(),
             move_sources: FxHashMap::default(),
             contract_flags: ContractFlags::default(),
             field_values: FxHashMap::default(),
             alloc_field_values: FxHashMap::default(),
             iter_ptr_offset: FxHashMap::default(),
             bytes: FxHashMap::default(),
-            notes: Vec::new(),
             path: None,
             last_call_callee: None,
             inline: InlineCtx {
@@ -873,7 +899,6 @@ impl std::fmt::Debug for VmState<'_, '_> {
             .field("locals_count", &self.locals.len())
             .field("allocations_count", &self.allocations.len())
             .field("path_conditions", &self.path_conditions.len())
-            .field("notes", &self.notes)
             .finish()
     }
 }

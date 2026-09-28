@@ -17,9 +17,9 @@ impl PropertyChecker {
         vm_state: &VmState<'ctx, 'tcx>,
         _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
-        property: &Property<'tcx>,
+        _property: &Property<'tcx>,
     ) -> CheckResult {
-        match crate::verify::vm::alias::check_alias_vm(vm_state, checkpoint, property) {
+        match crate::verify::vm::alias::check_alias_vm(vm_state, checkpoint) {
             crate::verify::vm::alias::VmAliasResult::Proved => CheckResult::ProvedByRule,
             crate::verify::vm::alias::VmAliasResult::Failed(_msg) => CheckResult::Failed,
             crate::verify::vm::alias::VmAliasResult::Unknown => CheckResult::Unknown,

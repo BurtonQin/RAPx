@@ -230,7 +230,6 @@ fn flow_xor_violation<'ctx, 'tcx>(
 pub(crate) fn check_alias_vm<'ctx, 'tcx>(
     vm_state: &VmState<'ctx, 'tcx>,
     checkpoint: &Checkpoint<'tcx>,
-    _property: &Property<'tcx>,
 ) -> VmAliasResult {
     let callee = match checkpoint.callee {
         Some(c) => c,
@@ -494,7 +493,6 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
             return VmAliasResult::Unknown;
         }
     };
-    let callee_name = vm_state.tcx.def_path_str(callee);
 
     // NonNull::as_ref / as_mut fast-path (formerly part of Ptr2Ref checking):
     // NonNull guarantees non-null + aligned + initialized by construction, so
@@ -515,7 +513,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
     };
 
     match producer {
-        AliasProducer::View(kind) => check_view_alias(vm_state, checkpoint, callee_name, kind),
+        AliasProducer::View(kind) => check_view_alias(vm_state, checkpoint, kind),
         AliasProducer::OwnershipTransfer => check_ownership_transfer_alias(vm_state, checkpoint),
         AliasProducer::ReadMemory => check_read_memory_alias(vm_state, checkpoint),
     }
@@ -524,7 +522,6 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
 fn check_view_alias<'ctx, 'tcx>(
     vm_state: &VmState<'ctx, 'tcx>,
     checkpoint: &Checkpoint<'tcx>,
-    _callee_name: String,
     kind: HazardKind,
 ) -> VmAliasResult {
     let Some(origin_arg) = checkpoint.args.first() else {

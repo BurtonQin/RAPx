@@ -128,7 +128,6 @@ pub(crate) fn resolve_place_from_ident<'tcx>(
         if let Some(param_index) = param_names.iter().position(|name| name == base_ident) {
             return resolve_projection_from_base_ident(
                 tcx,
-                base_ident.to_string(),
                 fields.to_vec(),
                 param_index + 1,
                 param_tys[param_index],
@@ -165,7 +164,6 @@ fn walk_fields<'tcx>(
 
 fn resolve_projection_from_base_ident<'tcx>(
     tcx: TyCtxt<'tcx>,
-    _base_ident: String,
     fields: Vec<String>,
     base_local: usize,
     base_ty: Ty<'tcx>,

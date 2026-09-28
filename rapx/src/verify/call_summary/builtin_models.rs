@@ -177,7 +177,6 @@ pub(crate) fn lookup_effect<'tcx>(
     tcx: TyCtxt<'tcx>,
     caller: DefId,
     callee: Option<DefId>,
-    name: &str,
     func: &Operand<'tcx>,
     destination: rustc_middle::mir::Local,
 ) -> Option<CallEffectSummary> {
@@ -191,7 +190,6 @@ pub(crate) fn lookup_effect<'tcx>(
                 dest,
             };
             return Some(CallEffectSummary {
-                name: name.to_string(),
                 effects: (e.effects)(&ctx),
                 unsupported: false,
             });
