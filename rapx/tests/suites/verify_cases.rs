@@ -1,3 +1,10 @@
+// ================ mut_ptr::read precond regression ================
+#[test]
+fn mut_ptr_read_precond() {
+    let output = run_with_args("verify_cases/mut_ptr_read_precond", CMD_VERIFY_TARGETED);
+    assert_function_result(&output, "read_slot", "SOUND");
+}
+
 
 // ================ LinkedList NonNull Sound ================
 #[test]

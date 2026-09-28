@@ -2718,7 +2718,7 @@
     {
       "tag": "ValidPtr",
       "args": [
-        "src",
+        "self",
         "T",
         "1"
       ]
@@ -2726,30 +2726,23 @@
     {
       "tag": "Align",
       "args": [
-        "src",
+        "self",
         "T"
       ]
     },
     {
       "tag": "Typed",
       "args": [
-        "src",
+        "self",
         "T"
       ]
     },
     {
-      "tag": "ValidPtr",
+      "tag": "Init",
       "args": [
         "self",
         "T",
         "1"
-      ]
-    },
-    {
-      "tag": "Align",
-      "args": [
-        "self",
-        "T"
       ]
     },
     {
@@ -2764,18 +2757,10 @@
         {
           "tag": "Alias",
           "args": [
-            "src",
+            "self",
             "ret"
           ]
         }
-      ]
-    },
-    {
-      "tag": "Init",
-      "args": [
-        "self",
-        "T",
-        "1"
       ]
     }
   ],
