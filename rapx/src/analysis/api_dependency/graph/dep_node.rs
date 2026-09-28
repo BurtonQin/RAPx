@@ -50,7 +50,7 @@ impl<'tcx> DepNode<'tcx> {
 
     pub fn desc_str(&self, tcx: TyCtxt<'tcx>) -> String {
         match self {
-            DepNode::Api(def_id, args) => tcx.def_path_str_with_args(*def_id, *args),
+            DepNode::Api(def_id, args) => tcx.def_path_str_with_args(*def_id, args),
             DepNode::Ty(ty) => ty.desc_str(tcx),
         }
     }

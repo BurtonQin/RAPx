@@ -966,7 +966,7 @@ impl<'tcx> Visitor<'tcx> for VerifyTargetCollector<'tcx> {
             if let Some(trait_ref) = trait_ref {
                 let trait_def_id = trait_ref.skip_binder().def_id;
 
-                let self_ty_def_id = resolve_impl_self_ty_def_id(&item);
+                let self_ty_def_id = resolve_impl_self_ty_def_id(item);
 
                 // Marker traits (`Send`/`Sync`) carry type-level obligations;
                 // unsafe traits with methods carry method-level `ensures`.

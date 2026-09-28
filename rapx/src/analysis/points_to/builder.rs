@@ -25,7 +25,7 @@ pub fn from_body<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> PtsGraph {
         let slot_idx = graph.ensure_slot(slot.clone(), may_drop, need_drop);
         graph.set_slot_kind(slot_idx, kind(ty));
 
-        register_field_slots(tcx, ty, &slot, slot_idx, &mut graph, 0, 0, ty_env);
+        register_field_slots(tcx, ty, &slot, &mut graph, 0, 0, ty_env);
     }
 
     graph
@@ -37,7 +37,6 @@ fn register_field_slots<'tcx>(
     tcx: TyCtxt<'tcx>,
     ty: Ty<'tcx>,
     base_slot: &Slot,
-    _base_idx: usize,
     graph: &mut PtsGraph,
     field_depth: usize,
     deref_depth: usize,
@@ -53,7 +52,6 @@ fn register_field_slots<'tcx>(
                 tcx,
                 *inner_ty,
                 base_slot,
-                _base_idx,
                 graph,
                 field_depth,
                 deref_depth + 1,
@@ -76,7 +74,6 @@ fn register_field_slots<'tcx>(
                     tcx,
                     field_ty,
                     &field_slot,
-                    field_idx_global,
                     graph,
                     field_depth + 1,
                     deref_depth,
@@ -99,7 +96,6 @@ fn register_field_slots<'tcx>(
                     tcx,
                     field_ty,
                     &field_slot,
-                    field_idx_global,
                     graph,
                     field_depth + 1,
                     deref_depth,

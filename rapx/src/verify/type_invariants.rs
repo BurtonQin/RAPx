@@ -47,7 +47,7 @@ pub(crate) fn build_type_invariants_from_params<'tcx>(
         collect_type_invariants(
             tcx,
             def_id,
-            &db,
+            db,
             &type_path,
             &param_name,
             elem_ty,
@@ -61,7 +61,7 @@ pub(crate) fn build_type_invariants_from_params<'tcx>(
         collect_type_invariants(
             tcx,
             def_id,
-            &db,
+            db,
             &type_path,
             "return",
             elem_ty,

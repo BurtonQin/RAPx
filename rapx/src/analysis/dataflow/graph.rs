@@ -24,11 +24,11 @@ pub fn build_dataflow_graph_from_body(
     let mut graph = DataflowGraph::new(def_id, body.span, body.arg_count, body.local_decls.len());
     for (block_idx, bb) in body.basic_blocks.iter().enumerate() {
         for (stmt_idx, stmt) in bb.statements.iter().enumerate() {
-            graph.add_statm_to_graph(&stmt, block_idx, stmt_idx);
+            graph.add_statm_to_graph(stmt, block_idx, stmt_idx);
         }
         if let Some(terminator) = &bb.terminator {
             let stmt_idx = bb.statements.len();
-            graph.add_terminator_to_graph(&terminator, block_idx, stmt_idx);
+            graph.add_terminator_to_graph(terminator, block_idx, stmt_idx);
         }
     }
     graph

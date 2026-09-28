@@ -1144,7 +1144,7 @@ impl<'tcx> PathGraph<'tcx> {
                 self.learn_constraint_with_backprop(
                     cur,
                     constraint_local,
-                    &targets,
+                    targets,
                     next,
                     constraints,
                 );

@@ -87,16 +87,13 @@ pub fn create_adt_impl_map(tcx: TyCtxt<'_>) -> AdtImplMap<'_> {
     let mut map = FxHashMap::default();
     for impl_item_id in tcx.hir_crate_items(()).impl_items() {
         let impl_item = tcx.hir_impl_item(impl_item_id);
-        match impl_item.kind {
-            ImplItemKind::Type(ty) => {
-                let impl_self_ty = tcx.type_of(ty.hir_id.owner).skip_binder();
-                if let ty::Adt(impl_self_adt_def, _impl_substs) = impl_self_ty.kind() {
-                    map.entry(impl_self_adt_def.did())
-                        .or_insert_with(Vec::new)
-                        .push((impl_item_id.owner_id.to_def_id(), impl_self_ty));
-                }
+        if let ImplItemKind::Type(ty) = impl_item.kind {
+            let impl_self_ty = tcx.type_of(ty.hir_id.owner).skip_binder();
+            if let ty::Adt(impl_self_adt_def, _impl_substs) = impl_self_ty.kind() {
+                map.entry(impl_self_adt_def.did())
+                    .or_insert_with(Vec::new)
+                    .push((impl_item_id.owner_id.to_def_id(), impl_self_ty));
             }
-            _ => (),
         }
     }
     map

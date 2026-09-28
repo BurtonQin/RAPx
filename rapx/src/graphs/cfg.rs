@@ -160,7 +160,6 @@ fn record_member_nodes<'tcx>(
 fn rerun_scc_in_isolation<'tcx>(
     graph: &mut ControlFlowGraph<'tcx>,
     root: usize,
-    _scc_components: &[usize],
 ) {
     let scc_exits = graph.block(root).scc.exits.clone();
     let backedges = graph.block(root).scc.backedges.clone();
@@ -220,7 +219,7 @@ fn scc_handler<'tcx>(graph: &mut ControlFlowGraph<'tcx>, root: usize, scc_compon
     record_member_nodes(graph, root, scc_components);
 
     rap_debug!("Scc Info: {:?}", graph.block(root).scc);
-    rerun_scc_in_isolation(graph, root, scc_components);
+    rerun_scc_in_isolation(graph, root);
 }
 
 impl<'tcx> Scc for ControlFlowGraph<'tcx> {

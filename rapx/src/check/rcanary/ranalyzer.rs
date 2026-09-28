@@ -113,7 +113,7 @@ impl<'tcx, 'o, 'a> RcxMut<'tcx, 'o, 'a> for FlowAnalysis<'tcx, 'a> {
 
     #[inline(always)]
     fn rcx_mut(&'o mut self) -> &'o mut rCanary<'tcx> {
-        &mut self.rcx
+        self.rcx
     }
 
     #[inline(always)]

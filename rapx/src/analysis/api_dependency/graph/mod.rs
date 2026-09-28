@@ -153,7 +153,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
     }
 
     pub fn is_node_exist(&self, node: &DepNode<'tcx>) -> bool {
-        self.node_indices.contains_key(&node)
+        self.node_indices.contains_key(node)
     }
 
     pub fn get_or_create_index(&mut self, node: DepNode<'tcx>) -> NodeIndex {

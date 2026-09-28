@@ -218,13 +218,10 @@ where
         for bb in body.basic_blocks.indices() {
             let block_data = &body[bb];
             if let Some(terminator) = &block_data.terminator {
-                match &terminator.kind {
-                    TerminatorKind::SwitchInt { discr, targets } => {
-                        if targets.iter().count() == 1 {
-                            self.build_value_branch_map(body, discr, targets, bb, block_data);
-                        }
+                if let TerminatorKind::SwitchInt { discr, targets } = &terminator.kind {
+                    if targets.iter().count() == 1 {
+                        self.build_value_branch_map(body, discr, targets, bb, block_data);
                     }
-                    _ => {}
                 }
             }
         }
@@ -355,10 +352,10 @@ where
                             _ => panic!("Expected a place"),
                         };
                         let target_vec = targets.all_targets();
-                        self.add_varnode(&p1);
+                        self.add_varnode(p1);
                         rap_trace!("add_vbm_varnode{:?}\n", p1.clone());
 
-                        self.add_varnode(&p2);
+                        self.add_varnode(p2);
                         rap_trace!("add_vbm_varnode{:?}\n", p2.clone());
                         let flipped_cmp_op = match Self::flipped_binop(cmp_op) {
                             Some(op) => op,
@@ -408,8 +405,8 @@ where
                             ValueBranchMap::new(p1, &target_vec[0], &target_vec[1], SFOp1, STOp1);
                         let vbm_2 =
                             ValueBranchMap::new(p2, &target_vec[0], &target_vec[1], SFOp2, STOp2);
-                        self.values_branchmap.insert(&p1, vbm_1);
-                        self.values_branchmap.insert(&p2, vbm_2);
+                        self.values_branchmap.insert(p1, vbm_1);
+                        self.values_branchmap.insert(p2, vbm_2);
                         self.switchbbs.insert(switch_block, (*p1, *p2));
                     }
                 }
@@ -468,8 +465,8 @@ where
                 if let Rvalue::BinaryOp(bin_op, pair) = rvalue {
                     let (op1, op2) = &**pair;
                     if lhs == place {
-                        let return_op1: &Operand<'tcx> = &op1;
-                        let return_op2: &Operand<'tcx> = &op2;
+                        let return_op1: &Operand<'tcx> = op1;
+                        let return_op2: &Operand<'tcx> = op2;
 
                         return Some((return_op1, return_op2, *bin_op));
                     }
@@ -620,76 +617,70 @@ where
         block: BasicBlock,
         body: &'tcx Body<'tcx>,
     ) {
-        match &inst.kind {
-            StatementKind::Assign(assign) => {
-                let (sink, rvalue) = &**assign;
-                match rvalue {
-                    Rvalue::BinaryOp(op, pair) => {
-                        let (op1, op2) = &**pair;
-                        match op {
-                            BinOp::Add
-                            | BinOp::Sub
-                            | BinOp::Mul
-                            | BinOp::Div
-                            | BinOp::Rem
-                            | BinOp::AddUnchecked => {
-                                self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
-                            }
-                            BinOp::AddWithOverflow => {
-                                self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
-                            }
-                            BinOp::SubUnchecked => {
-                                self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
-                            }
-                            BinOp::SubWithOverflow => {
-                                self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
-                            }
-                            BinOp::MulUnchecked => {
-                                self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
-                            }
-                            BinOp::MulWithOverflow => {
-                                self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
-                            }
-
-                            _ => {}
+        if let StatementKind::Assign(assign) = &inst.kind {
+            let (sink, rvalue) = &**assign;
+            match rvalue {
+                Rvalue::BinaryOp(op, pair) => {
+                    let (op1, op2) = &**pair;
+                    match op {
+                        BinOp::Add
+                        | BinOp::Sub
+                        | BinOp::Mul
+                        | BinOp::Div
+                        | BinOp::Rem
+                        | BinOp::AddUnchecked => {
+                            self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
                         }
-                    }
-                    Rvalue::UnaryOp(unop, operand) => {
-                        self.add_unary_op(sink, inst, rvalue, operand, *unop);
-                    }
-                    Rvalue::Aggregate(kind, operends) => match **kind {
-                        AggregateKind::Adt(def_id, _, _, _, _) => match def_id {
-                            _ if def_id == self.essa => {
-                                self.add_essa_op(sink, inst, rvalue, operends, block)
-                            }
-                            _ if def_id == self.ssa => {
-                                self.add_ssa_op(sink, inst, rvalue, operends)
-                            }
-                            _ => match self.unique_adt_handler(def_id) {
-                                1 => {
-                                    self.add_aggregate_op(sink, inst, rvalue, operends, 1);
-                                }
-                                _ => {
-                                    rap_trace!(
-                                        "AggregateKind::Adt with def_id {:?} in statement {:?} is not handled specially.\n",
-                                        def_id,
-                                        inst
-                                    );
-                                }
-                            },
-                        },
+                        BinOp::AddWithOverflow => {
+                            self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
+                        }
+                        BinOp::SubUnchecked => {
+                            self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
+                        }
+                        BinOp::SubWithOverflow => {
+                            self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
+                        }
+                        BinOp::MulUnchecked => {
+                            self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
+                        }
+                        BinOp::MulWithOverflow => {
+                            self.add_binary_op(sink, inst, rvalue, op1, op2, *op);
+                        }
+
                         _ => {}
-                    },
-                    Rvalue::Use(operend, ..) => {
-                        self.add_use_op(sink, inst, rvalue, operend);
                     }
-                    Rvalue::Ref(_, borrowkind, place) => {
-                        self.add_ref_op(sink, inst, rvalue, place, *borrowkind);
-                    }
-                    _ => {}
                 }
+                Rvalue::UnaryOp(unop, operand) => {
+                    self.add_unary_op(sink, inst, rvalue, operand, *unop);
+                }
+                Rvalue::Aggregate(kind, operends) => if let AggregateKind::Adt(def_id, _, _, _, _) = **kind { match def_id {
+                    _ if def_id == self.essa => {
+                        self.add_essa_op(sink, inst, rvalue, operends, block)
+                    }
+                    _ if def_id == self.ssa => {
+                        self.add_ssa_op(sink, inst, rvalue, operends)
+                    }
+                    _ => match self.unique_adt_handler(def_id) {
+                        1 => {
+                            self.add_aggregate_op(sink, inst, rvalue, operends, 1);
+                        }
+                        _ => {
+                            rap_trace!(
+                                "AggregateKind::Adt with def_id {:?} in statement {:?} is not handled specially.\n",
+                                def_id,
+                                inst
+                            );
+                        }
+                    },
+                } },
+                Rvalue::Use(operend, ..) => {
+                    self.add_use_op(sink, inst, rvalue, operend);
+                }
+                Rvalue::Ref(_, borrowkind, place) => {
+                    self.add_ref_op(sink, inst, rvalue, place, *borrowkind);
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -717,7 +708,7 @@ where
         block: BasicBlock,
     ) {
         rap_trace!("add_call_op for sink: {:?} {:?}\n", sink, terminator);
-        let sink_node = self.add_varnode(&sink);
+        let sink_node = self.add_varnode(sink);
 
         // Convert Operand arguments to Place arguments.
         // An Operand can be a Constant or a moved/copied Place.
@@ -789,7 +780,7 @@ where
             };
             let call_op = CallOp::new(
                 IntervalType::Basic(bi),
-                &sink,
+                sink,
                 terminator,
                 arg_operands,
                 *def_id,
@@ -803,10 +794,10 @@ where
             self.oprs.push(BasicOpKind::Call(call_op));
 
             // Insert this definition in defmap
-            self.defmap.insert(&sink, bop_index);
+            self.defmap.insert(sink, bop_index);
             if constant_count == arg_count {
                 rap_trace!("all args are constants\n");
-                self.const_func_place.insert(&sink, bop_index);
+                self.const_func_place.insert(sink, bop_index);
             }
         }
     }
@@ -1100,7 +1091,7 @@ where
         };
 
         rap_trace!("addvar_in_unary_op{:?}\n", source.unwrap());
-        self.use_add_varnode_sym(&source.unwrap(), rvalue);
+        self.use_add_varnode_sym(source.unwrap(), rvalue);
 
         let unaryop = UnaryOp::new(IntervalType::Basic(BI), sink, inst, source.unwrap(), op);
         // Insert the operation in the graph.

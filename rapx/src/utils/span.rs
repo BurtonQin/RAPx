@@ -30,7 +30,7 @@ pub fn span_to_trimmed_span(span: Span) -> Span {
 pub fn span_to_filename(span: Span) -> String {
     let filename = get_source_map().unwrap().span_to_filename(span);
     if let FileName::Real(realname) = filename {
-        if let Some(ref path) = realname.local_path() {
+        if let Some(path) = realname.local_path() {
             return path.to_string_lossy().into();
         }
     }

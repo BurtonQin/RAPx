@@ -97,7 +97,7 @@ impl<'b, 'tcx> CallGraphVisitor<'b, 'tcx> {
         self.call_graph_info.register_fn(self.def_id);
         for (_, data) in self.body.basic_blocks.iter().enumerate() {
             let terminator = data.terminator();
-            self.visit_terminator(&terminator);
+            self.visit_terminator(terminator);
         }
     }
 

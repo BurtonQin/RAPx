@@ -283,7 +283,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
 
             // check each generic API for new monomorphic API
             for fn_did in generic_apis.iter() {
-                let mono_set = mono::resolve_mono_apis(*fn_did, &all_reachable_tys, tcx);
+                let mono_set = mono::resolve_mono_apis(*fn_did, all_reachable_tys, tcx);
                 rap_debug!(
                     "[search_reachable_apis] {} -> {:?}",
                     tcx.def_path_str(*fn_did),

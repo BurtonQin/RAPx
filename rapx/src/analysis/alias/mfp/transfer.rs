@@ -142,7 +142,6 @@ pub fn transfer_aggregate<'tcx>(
 pub fn transfer_call<'tcx>(
     state: &mut AliasDomain,
     ret: Place<'tcx>,
-    _args: &[Operand<'tcx>],
     place_info: &PlaceInfo<'tcx>,
 ) {
     let ret_id = mir_place_to_place_id(ret);

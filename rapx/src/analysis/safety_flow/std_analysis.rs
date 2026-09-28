@@ -119,11 +119,6 @@ impl<'tcx> SafetyFlowAnalysis<'tcx> {
                     self.process_def_id(*impl_def_id, visited, unsafe_fn);
                 }
             }
-            DefKind::Ctor(_of, _kind) => {
-                if self.tcx.is_mir_available(def_id) {
-                    let _mir = self.tcx.optimized_mir(def_id);
-                }
-            }
             _ => {
                 // println!("{:?}",tcx.def_kind(def_id));
             }

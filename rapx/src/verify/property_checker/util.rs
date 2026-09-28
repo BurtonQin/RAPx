@@ -174,23 +174,20 @@ impl PropertyChecker {
         if !field_path.is_empty() && base_local == Local::from_usize(0) {
             for bb in vm_state.body.basic_blocks.iter() {
                 for stmt in &bb.statements {
-                    match &stmt.kind {
-                        rustc_middle::mir::StatementKind::Assign(assign) => {
-                            let (ref place, ref rval) = **assign;
-                            if let rustc_middle::mir::Rvalue::Aggregate(_, operands) = rval {
-                                if place.local == base_local {
-                                    if let Some(operand) =
-                                        operands.get(rustc_abi::FieldIdx::from_usize(field_path[0]))
-                                    {
-                                        let val = vm_state.value_of_operand(operand);
-                                        if field_path.len() == 1 {
-                                            return Some(val);
-                                        }
+                    if let rustc_middle::mir::StatementKind::Assign(assign) = &stmt.kind {
+                        let (ref place, ref rval) = **assign;
+                        if let rustc_middle::mir::Rvalue::Aggregate(_, operands) = rval {
+                            if place.local == base_local {
+                                if let Some(operand) =
+                                    operands.get(rustc_abi::FieldIdx::from_usize(field_path[0]))
+                                {
+                                    let val = vm_state.value_of_operand(operand);
+                                    if field_path.len() == 1 {
+                                        return Some(val);
                                     }
                                 }
                             }
                         }
-                        _ => {}
                     }
                 }
             }

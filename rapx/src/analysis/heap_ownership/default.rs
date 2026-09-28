@@ -391,21 +391,12 @@ impl<'tcx> Visitor<'tcx> for HeapOwnershipAnalyzer<'tcx> {
 
     fn visit_basic_block_data(&mut self, _block: BasicBlock, data: &BasicBlockData<'tcx>) {
         let term = data.terminator();
-        match &term.kind {
-            TerminatorKind::Call { func, .. } => match func {
-                Operand::Constant(constant) => match constant.ty().kind() {
-                    ty::FnDef(def_id, ..) => {
-                        if self.tcx.is_mir_available(*def_id) && self.fn_set_mut().insert(*def_id) {
-                            let body = self.tcx.instance_mir(Item(*def_id));
-                            self.visit_body(body);
-                        }
-                    }
-                    _ => (),
-                },
-                _ => (),
-            },
-            _ => (),
-        }
+        if let TerminatorKind::Call { func, .. } = &term.kind { if let Operand::Constant(constant) = func { if let ty::FnDef(def_id, ..) = constant.ty().kind() {
+            if self.tcx.is_mir_available(*def_id) && self.fn_set_mut().insert(*def_id) {
+                let body = self.tcx.instance_mir(Item(*def_id));
+                self.visit_body(body);
+            }
+        } } }
     }
 
     fn visit_ty(&mut self, ty: Ty<'tcx>, ty_context: TyContext) {
@@ -589,12 +580,9 @@ impl<'tcx, 'a> TypeVisitor<TyCtxt<'tcx>> for HeapPropagation<'tcx, 'a> {
                 }
                 let get_ans = get_ans[0].clone();
 
-                match get_ans.0 {
-                    HeapOwnership::True => {
-                        self.heap = HeapOwnership::True;
-                        return ControlFlow::Break(());
-                    }
-                    _ => (),
+                if get_ans.0 == HeapOwnership::True {
+                    self.heap = HeapOwnership::True;
+                    return ControlFlow::Break(());
                 };
 
                 for field in adtdef.all_fields() {
@@ -725,7 +713,7 @@ pub struct TyWithIndex<'tcx>(pub Option<(usize, &'tcx TyKind<'tcx>, Option<usize
 impl<'tcx> TyWithIndex<'tcx> {
     pub fn new(ty: Ty<'tcx>, vidx: Option<VariantIdx>) -> Self {
         match &ty.kind() {
-            TyKind::Tuple(list) => TyWithIndex(Some((list.len(), &ty.kind(), None, true))),
+            TyKind::Tuple(list) => TyWithIndex(Some((list.len(), ty.kind(), None, true))),
             TyKind::Adt(adtdef, ..) => {
                 if adtdef.is_enum() {
                     if vidx.is_none() {
@@ -733,14 +721,14 @@ impl<'tcx> TyWithIndex<'tcx> {
                     }
                     let idx = vidx.unwrap();
                     let len = adtdef.variants()[idx].fields.len();
-                    TyWithIndex(Some((len, &ty.kind(), Some(idx.index()), true)))
+                    TyWithIndex(Some((len, ty.kind(), Some(idx.index()), true)))
                 } else {
                     let len = adtdef.variants()[VariantIdx::from_usize(0)].fields.len();
-                    TyWithIndex(Some((len, &ty.kind(), None, true)))
+                    TyWithIndex(Some((len, ty.kind(), None, true)))
                 }
             }
             TyKind::Array(..) | TyKind::Param(..) | TyKind::RawPtr(..) | TyKind::Ref(..) => {
-                TyWithIndex(Some((1, &ty.kind(), None, true)))
+                TyWithIndex(Some((1, ty.kind(), None, true)))
             }
             TyKind::Bool
             | TyKind::Char
@@ -748,7 +736,7 @@ impl<'tcx> TyWithIndex<'tcx> {
             | TyKind::Uint(..)
             | TyKind::Float(..)
             | TyKind::Str
-            | TyKind::Slice(..) => TyWithIndex(Some((1, &ty.kind(), None, false))),
+            | TyKind::Slice(..) => TyWithIndex(Some((1, ty.kind(), None, false))),
             _ => TyWithIndex(None),
         }
     }
@@ -1100,7 +1088,7 @@ pub struct IndexedTy<'tcx>(pub Option<(usize, &'tcx TyKind<'tcx>, Option<usize>,
 impl<'tcx> IndexedTy<'tcx> {
     pub fn new(ty: Ty<'tcx>, vidx: Option<VariantIdx>) -> Self {
         match &ty.kind() {
-            TyKind::Tuple(list) => IndexedTy(Some((list.len(), &ty.kind(), None, true))),
+            TyKind::Tuple(list) => IndexedTy(Some((list.len(), ty.kind(), None, true))),
             TyKind::Adt(adtdef, ..) => {
                 if adtdef.is_enum() {
                     if vidx.is_none() {
@@ -1108,14 +1096,14 @@ impl<'tcx> IndexedTy<'tcx> {
                     }
                     let idx = vidx.unwrap();
                     let len = adtdef.variants()[idx].fields.len();
-                    IndexedTy(Some((len, &ty.kind(), Some(idx.index()), true)))
+                    IndexedTy(Some((len, ty.kind(), Some(idx.index()), true)))
                 } else {
                     let len = adtdef.variants()[VariantIdx::from_usize(0)].fields.len();
-                    IndexedTy(Some((len, &ty.kind(), None, true)))
+                    IndexedTy(Some((len, ty.kind(), None, true)))
                 }
             }
             TyKind::Array(..) | TyKind::Param(..) | TyKind::RawPtr(..) | TyKind::Ref(..) => {
-                IndexedTy(Some((1, &ty.kind(), None, true)))
+                IndexedTy(Some((1, ty.kind(), None, true)))
             }
             TyKind::Bool
             | TyKind::Char
@@ -1123,7 +1111,7 @@ impl<'tcx> IndexedTy<'tcx> {
             | TyKind::Uint(..)
             | TyKind::Float(..)
             | TyKind::Str
-            | TyKind::Slice(..) => IndexedTy(Some((1, &ty.kind(), None, false))),
+            | TyKind::Slice(..) => IndexedTy(Some((1, ty.kind(), None, false))),
             _ => IndexedTy(None),
         }
     }

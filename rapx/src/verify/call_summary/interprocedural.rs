@@ -475,7 +475,7 @@ pub(crate) fn try_ptr_field_return_effect(tcx: TyCtxt<'_>, callee: DefId) -> Opt
     // In that case the returned pointer is `field - offset` elements past the
     // stored field value; returning the un-adjusted field would point one past
     // the last element. Record the offset so the effect can be adjusted.
-    let pre_dec_offset = detect_pre_dec_end_offset(tcx, &body);
+    let pre_dec_offset = detect_pre_dec_end_offset(tcx, body);
     // Trace backward from the return local through Copy/Move/Cast/CopyForDeref
     // assignments until a `(*arg).field` load of the receiver is reached. This
     // handles the optimized-MIR form where the field is first copied into a
@@ -612,7 +612,7 @@ pub(crate) fn try_slice_bounded_return_effect(
                 continue;
             };
             if p.projection.is_empty() {
-                payload_root = Some(copy_root(&body, p.local));
+                payload_root = Some(copy_root(body, p.local));
             }
         }
     }
@@ -663,7 +663,7 @@ pub(crate) fn try_slice_bounded_return_effect(
             let (a, b) = &**pair;
             let a_root = match a {
                 Operand::Copy(p) | Operand::Move(p) if p.projection.is_empty() => {
-                    copy_root(&body, p.local)
+                    copy_root(body, p.local)
                 }
                 _ => continue,
             };
@@ -831,7 +831,7 @@ pub(crate) fn try_decode_length_return_effect(
                 continue;
             };
             // Payload is `(code, len)` (or a temp holding it).
-            match tuple_field_len_kind(&body, payload, field) {
+            match tuple_field_len_kind(body, payload, field) {
                 Some(TupleFieldLen::Const(len)) => returns.push((bb, len)),
                 Some(TupleFieldLen::LenSub) => computed_returns.push(bb),
                 None => {}
@@ -881,7 +881,7 @@ pub(crate) fn try_decode_length_return_effect(
         let Some(&(get_bb, _)) = gets.iter().find(|(_, kk)| *kk == k) else {
             return None;
         };
-        if !block_dominates(&body, get_bb, *bb) {
+        if !block_dominates(body, get_bb, *bb) {
             return None;
         }
     }

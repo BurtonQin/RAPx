@@ -90,7 +90,7 @@ impl<'tcx> MfpAliasAnalyzer<'tcx> {
         );
 
         // Extract the function summary from this analysis
-        let new_summary = interproc::extract_summary(&mut results, body, def_id);
+        let new_summary = interproc::extract_summary(&mut results, body);
 
         // Join with existing summary to maintain monotonicity
         // This ensures we never lose alias relationships discovered in previous iterations

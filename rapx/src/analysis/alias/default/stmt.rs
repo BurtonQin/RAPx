@@ -27,12 +27,9 @@ impl<'tcx> AliasGraph<'tcx> {
 
         for stmt in &bb.statements {
             let span = stmt.source_info.span;
-            match &stmt.kind {
-                StatementKind::Assign(assign) => {
-                    let (place, rvalue) = &**assign;
-                    self.process_assignment(place, rvalue, span, obs);
-                }
-                _ => {}
+            if let StatementKind::Assign(assign) = &stmt.kind {
+                let (place, rvalue) = &**assign;
+                self.process_assignment(place, rvalue, span, obs);
             }
         }
     }

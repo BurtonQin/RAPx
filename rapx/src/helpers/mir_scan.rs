@@ -116,7 +116,7 @@ pub fn has_raw_ptr_write(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
         bb.statements.iter().any(|stmt| {
             if let StatementKind::Assign(assign) = &stmt.kind {
                 let (lhs, _) = &**assign;
-                place_has_raw_deref(&body, lhs)
+                place_has_raw_deref(body, lhs)
             } else {
                 false
             }
@@ -166,13 +166,13 @@ pub fn get_rawptr_deref(tcx: TyCtxt<'_>, def_id: DefId) -> HashSet<Local> {
             for stmt in &bb.statements {
                 if let StatementKind::Assign(assign) = &stmt.kind {
                     let (lhs, rhs) = &**assign;
-                    if place_has_raw_deref(&body, lhs) {
+                    if place_has_raw_deref(body, lhs) {
                         raw_ptrs.insert(lhs.local);
                     }
                     if let Rvalue::Use(op, ..) = rhs {
                         match op {
                             Operand::Copy(place) | Operand::Move(place) => {
-                                if place_has_raw_deref(&body, place) {
+                                if place_has_raw_deref(body, place) {
                                     raw_ptrs.insert(place.local);
                                 }
                             }
@@ -180,27 +180,24 @@ pub fn get_rawptr_deref(tcx: TyCtxt<'_>, def_id: DefId) -> HashSet<Local> {
                         }
                     }
                     if let Rvalue::Ref(_, _, place) = rhs {
-                        if place_has_raw_deref(&body, place) {
+                        if place_has_raw_deref(body, place) {
                             raw_ptrs.insert(place.local);
                         }
                     }
                 }
             }
             if let Some(terminator) = &bb.terminator {
-                match &terminator.kind {
-                    rustc_middle::mir::TerminatorKind::Call { args, .. } => {
-                        for arg in args {
-                            match arg.node {
-                                Operand::Copy(place) | Operand::Move(place) => {
-                                    if place_has_raw_deref(&body, &place) {
-                                        raw_ptrs.insert(place.local);
-                                    }
+                if let rustc_middle::mir::TerminatorKind::Call { args, .. } = &terminator.kind {
+                    for arg in args {
+                        match arg.node {
+                            Operand::Copy(place) | Operand::Move(place) => {
+                                if place_has_raw_deref(body, &place) {
+                                    raw_ptrs.insert(place.local);
                                 }
-                                _ => {}
                             }
+                            _ => {}
                         }
                     }
-                    _ => {}
                 }
             }
         }
@@ -438,13 +435,13 @@ pub fn collect_raw_ptr_deref_info<'tcx>(
             };
             let (lhs, rhs) = &**assign;
 
-            let is_write = place_has_raw_deref(&body, lhs);
+            let is_write = place_has_raw_deref(body, lhs);
             let (is_read, is_ptr2ref, is_mut_ref) = match rhs {
                 Rvalue::Use(Operand::Copy(place) | Operand::Move(place), ..) => {
-                    (place_has_raw_deref(&body, place), false, false)
+                    (place_has_raw_deref(body, place), false, false)
                 }
                 Rvalue::Ref(_, borrow_kind, place) => (
-                    place_has_raw_deref(&body, place),
+                    place_has_raw_deref(body, place),
                     true,
                     matches!(borrow_kind, rustc_middle::mir::BorrowKind::Mut { .. }),
                 ),
@@ -563,21 +560,18 @@ pub fn collect_static_mut_access_info<'tcx>(
         if let Some(terminator) = &data.terminator {
             if let TerminatorKind::Call { args, .. } = &terminator.kind {
                 for arg in args {
-                    match &arg.node {
-                        op @ Operand::Constant(c) => {
-                            if let Some(static_id) = c.check_static_ptr(tcx) {
-                                if matches!(tcx.static_mutability(static_id), Some(m) if m.is_mut())
-                                {
-                                    let ty = tcx.type_of(static_id).skip_binder();
-                                    infos.push(StaticMutAccessInfo {
-                                        block: bb,
-                                        ty,
-                                        ptr_operand: op.clone(),
-                                    });
-                                }
+                    if let op @ Operand::Constant(c) = &arg.node {
+                        if let Some(static_id) = c.check_static_ptr(tcx) {
+                            if matches!(tcx.static_mutability(static_id), Some(m) if m.is_mut())
+                            {
+                                let ty = tcx.type_of(static_id).skip_binder();
+                                infos.push(StaticMutAccessInfo {
+                                    block: bb,
+                                    ty,
+                                    ptr_operand: op.clone(),
+                                });
                             }
                         }
-                        _ => {}
                     }
                 }
             }

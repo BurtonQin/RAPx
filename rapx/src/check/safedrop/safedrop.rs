@@ -166,13 +166,10 @@ impl<'tcx> SafeDropGraph<'tcx> {
             self.bug_records.uaf_bugs
         );
         let filename = get_filename(self.alias_graph.tcx(), self.alias_graph.def_id());
-        match filename {
-            Some(filename) => {
-                if filename.contains(".cargo") {
-                    return;
-                }
+        if let Some(filename) = filename {
+            if filename.contains(".cargo") {
+                return;
             }
-            None => {}
         }
         if self.bug_records.is_bug_free() {
             return;

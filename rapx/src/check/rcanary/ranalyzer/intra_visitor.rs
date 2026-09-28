@@ -330,9 +330,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                     goal,
                     solver,
                     term.clone(),
-                    &func,
-                    &args,
-                    &destination,
+                    func,
+                    args,
+                    destination,
                     bidx,
                 );
             }
@@ -541,53 +541,49 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                     return;
                 }
                 let kind = AsgnKind::Aggregate;
-                match **akind {
-                    AggregateKind::Adt(did, vidx, ..) => {
-                        self.handle_aggregate_init(
-                            ctx, goal, solver, kind, lplace, did, vidx, disc, bidx, sidx,
-                        );
-                        for (fidx, op) in operands.iter().enumerate() {
-                            let aggre = Some(fidx);
-                            match op {
-                                Operand::Copy(rplace) => {
-                                    let rvalue_has_projection = has_projection(rplace);
-                                    match rvalue_has_projection {
-                                        true => {
-                                            self.handle_copy_field_to_field(
-                                                ctx, goal, solver, kind, lplace, rplace, disc,
-                                                aggre, bidx, sidx,
-                                            );
-                                        }
-                                        false => {
-                                            self.handle_copy_to_field(
-                                                ctx, goal, solver, kind, lplace, rplace, disc,
-                                                aggre, bidx, sidx,
-                                            );
-                                        }
+                if let AggregateKind::Adt(did, vidx, ..) = **akind {
+                    self.handle_aggregate_init(
+                        ctx, goal, solver, kind, lplace, did, vidx, disc, bidx, sidx,
+                    );
+                    for (fidx, op) in operands.iter().enumerate() {
+                        let aggre = Some(fidx);
+                        match op {
+                            Operand::Copy(rplace) => {
+                                let rvalue_has_projection = has_projection(rplace);
+                                match rvalue_has_projection {
+                                    true => {
+                                        self.handle_copy_field_to_field(
+                                            ctx, goal, solver, kind, lplace, rplace, disc,
+                                            aggre, bidx, sidx,
+                                        );
+                                    }
+                                    false => {
+                                        self.handle_copy_to_field(
+                                            ctx, goal, solver, kind, lplace, rplace, disc,
+                                            aggre, bidx, sidx,
+                                        );
                                     }
                                 }
-                                Operand::Move(rplace) => {
-                                    let rvalue_has_projection = has_projection(rplace);
-                                    match rvalue_has_projection {
-                                        true => {
-                                            self.handle_move_field_to_field(
-                                                ctx, goal, solver, kind, lplace, rplace, disc,
-                                                aggre, bidx, sidx,
-                                            );
-                                        }
-                                        false => {
-                                            self.handle_move_to_field(
-                                                ctx, goal, solver, kind, lplace, rplace, disc,
-                                                aggre, bidx, sidx,
-                                            );
-                                        }
-                                    }
-                                }
-                                _ => (),
                             }
+                            Operand::Move(rplace) => {
+                                let rvalue_has_projection = has_projection(rplace);
+                                match rvalue_has_projection {
+                                    true => {
+                                        self.handle_move_field_to_field(
+                                            ctx, goal, solver, kind, lplace, rplace, disc,
+                                            aggre, bidx, sidx,
+                                        );
+                                    }
+                                    false => {
+                                        self.handle_move_to_field(
+                                            ctx, goal, solver, kind, lplace, rplace, disc,
+                                            aggre, bidx, sidx,
+                                        );
+                                    }
+                                }
+                            }
+                            _ => (),
                         }
-                    }
-                    _ => {
                     }
                 }
             }
@@ -2080,37 +2076,25 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         dest: &Place<'tcx>,
         bidx: usize,
     ) {
-        match func {
-            Operand::Constant(constant) => {
-                match constant.ty().kind() {
-                    ty::FnDef(id, ..) => {
-                        //rap_debug!("{:?}", id);
-                        //rap_debug!("{:?}", mir_body(self.tcx, *id));
-                        match id.index.as_usize() {
-                            2171 => {
-                                // this for calling std::mem::drop(TY)
-                                match args[0].node {
-                                    Operand::Move(aplace) => {
-                                        let a_place_ty =
-                                            dest.ty(&self.body.local_decls, self.tcx());
-                                        let a_ty = a_place_ty.ty;
-                                        if a_ty.is_adt() {
-                                            self.handle_drop(
-                                                ctx, goal, solver, &aplace, bidx, false,
-                                            );
-                                            return;
-                                        }
-                                    }
-                                    _ => (),
-                                }
-                            }
-                            _ => (),
+        if let Operand::Constant(constant) = func {
+            if let ty::FnDef(id, ..) = constant.ty().kind() {
+                //rap_debug!("{:?}", id);
+                //rap_debug!("{:?}", mir_body(self.tcx, *id));
+                if id.index.as_usize() == 2171 {
+                    // this for calling std::mem::drop(TY)
+                    if let Operand::Move(aplace) = args[0].node {
+                        let a_place_ty =
+                            dest.ty(&self.body.local_decls, self.tcx());
+                        let a_ty = a_place_ty.ty;
+                        if a_ty.is_adt() {
+                            self.handle_drop(
+                                ctx, goal, solver, &aplace, bidx, false,
+                            );
+                            return;
                         }
                     }
-                    _ => (),
                 }
             }
-            _ => (),
         }
 
         // for return value

@@ -124,8 +124,8 @@ impl<'tcx> Replacer<'tcx> {
                 if let Rvalue::BinaryOp(bin_op, pair) = rvalue {
                     let (op1, op2) = &**pair;
                     if lhs == place {
-                        let return_op1: &Operand<'tcx> = &op1;
-                        let return_op2: &Operand<'tcx> = &op2;
+                        let return_op1: &Operand<'tcx> = op1;
+                        let return_op2: &Operand<'tcx> = op2;
 
                         return Some((return_op1.clone(), return_op2.clone(), *bin_op));
                     }
@@ -636,20 +636,20 @@ impl<'tcx> Replacer<'tcx> {
             | Rvalue::Repeat(operand, _)
             | Rvalue::UnaryOp(_, operand)
             | Rvalue::Cast(_, operand, _) => {
-                self.replace_operand(operand, &bb);
+                self.replace_operand(operand, bb);
             }
             #[cfg(not(rapx_ge_99))]
             Rvalue::ShallowInitBox(operand, _) => {
-                self.replace_operand(operand, &bb);
+                self.replace_operand(operand, bb);
             }
             Rvalue::BinaryOp(_, pair) => {
                 let (lhs, rhs) = &mut **pair;
-                self.replace_operand(lhs, &bb);
-                self.replace_operand(rhs, &bb);
+                self.replace_operand(lhs, bb);
+                self.replace_operand(rhs, bb);
             }
             Rvalue::Aggregate(_, operands) => {
                 for operand in operands {
-                    self.replace_operand(operand, &bb);
+                    self.replace_operand(operand, bb);
                 }
             }
             _ => {}
@@ -668,7 +668,7 @@ impl<'tcx> Replacer<'tcx> {
 
     fn replace_place(&mut self, place: &mut Place<'tcx>, bb: &BasicBlock) {
         // let old_local = place.local;
-        self.update_reachinf_def(&place.local, &bb);
+        self.update_reachinf_def(&place.local, bb);
 
         if let Some(Some(reaching_local)) = self.ssatransformer.reaching_def.get(&place.local) {
             let local = reaching_local.clone();
@@ -682,7 +682,7 @@ impl<'tcx> Replacer<'tcx> {
 
     fn ssa_rename_local_def(&mut self, place: &mut Place<'tcx>, bb: &BasicBlock, not_phi: bool) {
         // let old_local = place.as_local().as_mut().unwrap();
-        self.update_reachinf_def(&place.local, &bb);
+        self.update_reachinf_def(&place.local, bb);
         let Place {
             local: old_local,
             projection: _,
@@ -697,7 +697,6 @@ impl<'tcx> Replacer<'tcx> {
         *place = new_place.clone();
         self.new_locals_to_declare.insert(new_local, old_local);
 
-        let _old_local = old_local.clone();
         self.ssatransformer
             .ssa_locals_map
             .entry(old_place)
@@ -710,7 +709,7 @@ impl<'tcx> Replacer<'tcx> {
         let old_local_reaching = self
             .ssatransformer
             .reaching_def
-            .get(&_old_local.clone())
+            .get(&old_local)
             .unwrap();
 
         self.ssatransformer
@@ -718,7 +717,7 @@ impl<'tcx> Replacer<'tcx> {
             .insert(new_local.clone(), *old_local_reaching);
         self.ssatransformer
             .reaching_def
-            .insert(_old_local.clone(), Some(new_local.clone()));
+            .insert(old_local.clone(), Some(new_local.clone()));
 
         // self.reaching_def
         //     .entry(old_local)
@@ -727,7 +726,7 @@ impl<'tcx> Replacer<'tcx> {
     }
     fn rename_local_def(&mut self, place: &mut Place<'tcx>, bb: &BasicBlock, not_phi: bool) {
         // let old_local = place.as_local().as_mut().unwrap();
-        self.update_reachinf_def(&place.local, &bb);
+        self.update_reachinf_def(&place.local, bb);
         let Place {
             local: old_local,
             projection: _,
@@ -768,14 +767,13 @@ impl<'tcx> Replacer<'tcx> {
             .or_insert_with(HashSet::new)
             .insert(new_place);
 
-        let _old_local = old_local.clone();
         self.ssatransformer
             .local_defination_block
             .insert(new_local.clone(), bb.clone());
         let old_local_reaching = self
             .ssatransformer
             .reaching_def
-            .get(&_old_local.clone())
+            .get(&old_local)
             .unwrap();
 
         self.ssatransformer
@@ -783,7 +781,7 @@ impl<'tcx> Replacer<'tcx> {
             .insert(new_local.clone(), *old_local_reaching);
         self.ssatransformer
             .reaching_def
-            .insert(_old_local.clone(), Some(new_local.clone()));
+            .insert(old_local.clone(), Some(new_local.clone()));
 
         // self.reaching_def
         //     .entry(old_local)

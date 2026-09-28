@@ -1,5 +1,4 @@
 /// Interprocedural analysis utilities
-use rustc_hir::def_id::DefId;
 use rustc_middle::mir::{Body, TerminatorKind};
 use rustc_mir_dataflow::ResultsCursor;
 use std::collections::HashSet;
@@ -70,7 +69,6 @@ fn is_field_prefix(prefix: &[usize], full: &[usize]) -> bool {
 pub fn extract_summary<'tcx>(
     results: &mut ResultsCursor<'_, 'tcx, FnAliasAnalyzer<'tcx>>,
     body: &Body<'tcx>,
-    _def_id: DefId,
 ) -> FnAliasPairs {
     let arg_count = body.arg_count;
     let mut summary = FnAliasPairs::new(arg_count);

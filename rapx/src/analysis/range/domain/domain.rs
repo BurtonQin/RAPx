@@ -606,29 +606,23 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> BinaryOp<'tcx, T> {
             op2 = vars[self.source2.unwrap()].get_range().clone();
         }
         let mut result = Range::bottom();
-        match &self.inst.kind {
-            StatementKind::Assign(assign) => {
-                let (place, rvalue) = &**assign;
-                match rvalue {
-                    Rvalue::BinaryOp(binop, _) => match binop {
-                        BinOp::Add | BinOp::AddUnchecked | BinOp::AddWithOverflow => {
-                            result = op1.add(&op2);
-                        }
-
-                        BinOp::SubUnchecked | BinOp::SubWithOverflow | BinOp::Sub => {
-                            result = op1.sub(&op2);
-                        }
-
-                        BinOp::MulUnchecked | BinOp::MulWithOverflow | BinOp::Mul => {
-                            result = op1.mul(&op2);
-                        }
-
-                        _ => {}
-                    },
-                    _ => {}
+        if let StatementKind::Assign(assign) = &self.inst.kind {
+            let (place, rvalue) = &**assign;
+            if let Rvalue::BinaryOp(binop, _) = rvalue { match binop {
+                BinOp::Add | BinOp::AddUnchecked | BinOp::AddWithOverflow => {
+                    result = op1.add(&op2);
                 }
-            }
-            _ => {}
+
+                BinOp::SubUnchecked | BinOp::SubWithOverflow | BinOp::Sub => {
+                    result = op1.sub(&op2);
+                }
+
+                BinOp::MulUnchecked | BinOp::MulWithOverflow | BinOp::Mul => {
+                    result = op1.mul(&op2);
+                }
+
+                _ => {}
+            } }
         }
 
         result

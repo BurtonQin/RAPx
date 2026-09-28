@@ -156,7 +156,7 @@ fn parse_local_signature<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> (Vec<String>
     let mut param_names = Vec::new();
     let mut param_tys = Vec::new();
     for param in params {
-        let ident = extract_pat_ident(&param.pat);
+        let ident = extract_pat_ident(param.pat);
         match ident {
             Some(name) => {
                 param_names.push(name.name.to_string());
@@ -216,7 +216,7 @@ fn parse_trait_fn_sig<'tcx>(
             let body = tcx.hir_body(*body_id);
             body.params
                 .iter()
-                .filter_map(|param| extract_pat_ident(&param.pat).map(|i| i.name.to_string()))
+                .filter_map(|param| extract_pat_ident(param.pat).map(|i| i.name.to_string()))
                 .collect()
         }
     };

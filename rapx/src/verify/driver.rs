@@ -1158,7 +1158,7 @@ impl<'tcx> VerifyRun<'tcx> {
                         tgt.owner_struct_def_id,
                         Some(tgt.def_id),
                     );
-                    self.print_contract_lines("  ", &ibranch, &call, &meaning);
+                    self.print_contract_lines("  ", ibranch, &call, &meaning);
                 }
                 rap_info!("");
             }

@@ -62,10 +62,7 @@ impl<'tcx> NodeOrder<'tcx> {
                     // Terminator { source_info: SourceInfo { span: src/main.rs:100:9: 100:35 (#7), scope: scope[0] },
                     // kind: core::panicking::panic(const "assertion failed: index <= self.len") -> bb24 },
                     // destination -> None, cleanup -> Some(bb24)
-                    match target {
-                        Some(t) => result.push(t.as_usize()),
-                        None => (),
-                    }
+                    if let Some(t) = target { result.push(t.as_usize()) }
                 }
                 TerminatorKind::TailCall { .. } => todo!(),
             }

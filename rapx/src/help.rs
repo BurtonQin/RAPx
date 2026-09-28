@@ -65,8 +65,8 @@ pub fn styled_cargo_rapx_usage() -> String {
     let style = RAPX_STYLING.get_literal();
     format!(
         "{} {}",
-        styled_str("cargo rapx", &style, true),
-        styled_str("[OPTIONS] <COMMAND> [-- [CARGO_FLAGS]]", &style, false)
+        styled_str("cargo rapx", style, true),
+        styled_str("[OPTIONS] <COMMAND> [-- [CARGO_FLAGS]]", style, false)
     )
 }
 
@@ -74,8 +74,8 @@ pub fn styled_rapx_usage() -> String {
     let style = RAPX_STYLING.get_literal();
     format!(
         "{} {} {}",
-        styled_str("RAPXFLAGS=\"[OPTIONS] <COMMAND>\"", &style, false),
-        styled_str("rapx", &style, true),
-        styled_str("[RUSTFLAGS]", &style, false)
+        styled_str("RAPXFLAGS=\"[OPTIONS] <COMMAND>\"", style, false),
+        styled_str("rapx", style, true),
+        styled_str("[RUSTFLAGS]", style, false)
     )
 }

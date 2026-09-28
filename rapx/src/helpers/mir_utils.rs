@@ -692,14 +692,11 @@ pub fn field_offset_in_bytes<'tcx>(
     let Some(layout) = layout_of_ty(tcx, caller, ty) else {
         return 0;
     };
-    match layout.fields {
-        rustc_abi::FieldsShape::Arbitrary { ref offsets, .. } => {
-            let idx = rustc_abi::FieldIdx::from_usize(field_idx);
-            if idx.as_usize() < offsets.len() {
-                return offsets[idx].bytes();
-            }
+    if let rustc_abi::FieldsShape::Arbitrary { ref offsets, .. } = layout.fields {
+        let idx = rustc_abi::FieldIdx::from_usize(field_idx);
+        if idx.as_usize() < offsets.len() {
+            return offsets[idx].bytes();
         }
-        _ => {}
     }
     0
 }

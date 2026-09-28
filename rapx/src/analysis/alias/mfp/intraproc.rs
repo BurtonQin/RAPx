@@ -643,34 +643,31 @@ fn apply_statement_effect<'tcx>(
     state: &mut AliasDomain,
     statement: &Statement<'tcx>,
 ) {
-    match &statement.kind {
-        StatementKind::Assign(assign) => {
-            let (lv, rvalue) = &**assign;
-            match rvalue {
-                Rvalue::Use(operand, ..) => {
-                    transfer::transfer_assign(state, *lv, operand, &analyzer.place_info);
-                }
-                Rvalue::Ref(_, _, rv) | Rvalue::RawPtr(_, rv) => {
-                    transfer::transfer_ref(state, *lv, *rv, &analyzer.place_info);
-                }
-                Rvalue::CopyForDeref(rv) => {
-                    transfer::transfer_ref(state, *lv, *rv, &analyzer.place_info);
-                }
-                Rvalue::Cast(_, operand, _) => {
-                    transfer::transfer_assign(state, *lv, operand, &analyzer.place_info);
-                }
-                Rvalue::Aggregate(_, operands) => {
-                    let operand_slice: Vec<_> = operands.iter().map(|op| op.clone()).collect();
-                    transfer::transfer_aggregate(state, *lv, &operand_slice, &analyzer.place_info);
-                }
-                #[cfg(not(rapx_ge_99))]
-                Rvalue::ShallowInitBox(operand, _) => {
-                    transfer::transfer_assign(state, *lv, operand, &analyzer.place_info);
-                }
-                _ => {}
+    if let StatementKind::Assign(assign) = &statement.kind {
+        let (lv, rvalue) = &**assign;
+        match rvalue {
+            Rvalue::Use(operand, ..) => {
+                transfer::transfer_assign(state, *lv, operand, &analyzer.place_info);
             }
+            Rvalue::Ref(_, _, rv) | Rvalue::RawPtr(_, rv) => {
+                transfer::transfer_ref(state, *lv, *rv, &analyzer.place_info);
+            }
+            Rvalue::CopyForDeref(rv) => {
+                transfer::transfer_ref(state, *lv, *rv, &analyzer.place_info);
+            }
+            Rvalue::Cast(_, operand, _) => {
+                transfer::transfer_assign(state, *lv, operand, &analyzer.place_info);
+            }
+            Rvalue::Aggregate(_, operands) => {
+                let operand_slice: Vec<_> = operands.iter().map(|op| op.clone()).collect();
+                transfer::transfer_aggregate(state, *lv, &operand_slice, &analyzer.place_info);
+            }
+            #[cfg(not(rapx_ge_99))]
+            Rvalue::ShallowInitBox(operand, _) => {
+                transfer::transfer_assign(state, *lv, operand, &analyzer.place_info);
+            }
+            _ => {}
         }
-        _ => {}
     }
 }
 
@@ -694,7 +691,7 @@ fn apply_terminator_effect<'tcx, 'mir>(
                 .iter()
                 .map(|spanned_arg| spanned_arg.node.clone())
                 .collect();
-            transfer::transfer_call(state, *destination, &operand_slice, &analyzer.place_info);
+            transfer::transfer_call(state, *destination, &analyzer.place_info);
 
             if let Operand::Constant(c) = func {
                 if let ty::FnDef(callee_def_id, _) = c.ty().kind() {

@@ -232,11 +232,11 @@ impl DataflowGraph {
     }
 
     pub fn param_return_deps(&self) -> IndexVec<Local, bool> {
-        let _0 = Local::from_usize(0);
+        let ret_local = Local::from_usize(0);
         let deps = (0..self.argc + 1)
             .map(|i| {
-                let _i = Local::from_usize(i);
-                self.is_connected(_i, _0)
+                let arg_local = Local::from_usize(i);
+                self.is_connected(arg_local, ret_local)
             })
             .collect();
         deps

@@ -850,7 +850,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     bb.terminator().kind,
                     rustc_middle::mir::TerminatorKind::SwitchInt { .. }
                 )
-                && !Self::switch_is_debug_assert(self.tcx, &callee_body, idx)
+                && !Self::switch_is_debug_assert(self.tcx, callee_body, idx)
         });
         if arg_values.len() > 4 || callee_body.basic_blocks.len() > 16 || n_return > 1 || has_switch
         {
@@ -1217,7 +1217,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 TerminatorKind::SwitchInt { discr, targets } => {
                     // A constant discriminant folds to a single live edge.
-                    if let Some(v) = Self::switch_discr_const(&self.body, discr) {
+                    if let Some(v) = Self::switch_discr_const(self.body, discr) {
                         let t = targets
                             .iter()
                             .find(|(val, _)| *val == v as u128)
@@ -1229,7 +1229,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // A `debug_assert!`/`assert!` switch or a drop-flag dispatch
                     // has its non-otherwise edges dead on the normal path, so
                     // follow only `otherwise`.
-                    let trivial = Self::switch_targets_unreachable(self.tcx, &self.body, targets);
+                    let trivial = Self::switch_targets_unreachable(self.tcx, self.body, targets);
                     if trivial {
                         queue.push(targets.otherwise());
                         continue;
@@ -3151,7 +3151,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if ptr.provenance.as_ref().map(|p| p.alloc_id) != Some(ep.alloc_id) {
             return None;
         }
-        let sz = self.iter_elem_size(&ptr);
+        let sz = self.iter_elem_size(ptr);
         if let Some(offset) = self.iter_ptr_offset.get(&local) {
             let base_len = ep.offset.div(&sz);
             let zero = Int::from_u64(self.ctx, 0);
@@ -3161,7 +3161,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .ite(&zero, &Int::sub(self.ctx, &[&base_len, offset])),
             )
         } else {
-            self.iter_len_from_ptrs(&ptr, &end)
+            self.iter_len_from_ptrs(ptr, end)
         }
     }
 

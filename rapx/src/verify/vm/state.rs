@@ -1119,58 +1119,55 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Fall back to type-level resolution with single-element projections
         if place.projection.len() == 1 {
             if let Some(proj) = place.projection.first() {
-                match proj {
-                    ProjectionElem::Index(local) => {
-                        if let Some(ref prov) = base.provenance {
-                            let alloc_id = prov.alloc_id;
-                            let byte_vals: Vec<_> = self.alloc_byte_values(alloc_id);
-                            if !byte_vals.is_empty() {
-                                let inner_ty = match base.ty.kind() {
-                                    rustc_middle::ty::TyKind::Array(inner, _) => *inner,
-                                    _ => return Some(base.clone()),
-                                };
-                                let elem_sz = self.size_of_ty(inner_ty) as usize;
-                                let step = elem_sz.max(1);
-                                if let Some(index_val) = self.locals.get(local) {
-                                    if let Some(concrete_idx) = index_val.term.as_u64() {
-                                        let offset = concrete_idx as usize * step;
-                                        let term = self
-                                            .get_byte_value(alloc_id, offset)
-                                            .cloned()
-                                            .unwrap_or_else(|| self.fresh_int("arr_elem"));
-                                        return Some(VmValue {
-                                            term,
-                                            ty: place.ty(self.body, self.tcx).ty,
-                                            provenance: None,
-                                            invariants: ValueInvariants::default(),
-                                            field_offset: false,
-                                            discriminant: None,
-                                            bool_cond: None,
-                                        });
-                                    } else {
-                                        let mut chain = self.fresh_int("arr_elem");
-                                        for (offset, term) in byte_vals.iter().rev() {
-                                            let vidx = offset / step;
-                                            let idx_term = Int::from_u64(self.ctx, vidx as u64);
-                                            let cond = index_val.term._eq(&idx_term);
-                                            chain = Bool::ite(&cond, term, &chain);
-                                        }
-                                        return Some(VmValue {
-                                            term: chain,
-                                            ty: place.ty(self.body, self.tcx).ty,
-                                            provenance: None,
-                                            invariants: ValueInvariants::default(),
-                                            field_offset: false,
-                                            discriminant: None,
-                                            bool_cond: None,
-                                        });
+                if let ProjectionElem::Index(local) = proj {
+                    if let Some(ref prov) = base.provenance {
+                        let alloc_id = prov.alloc_id;
+                        let byte_vals: Vec<_> = self.alloc_byte_values(alloc_id);
+                        if !byte_vals.is_empty() {
+                            let inner_ty = match base.ty.kind() {
+                                rustc_middle::ty::TyKind::Array(inner, _) => *inner,
+                                _ => return Some(base.clone()),
+                            };
+                            let elem_sz = self.size_of_ty(inner_ty) as usize;
+                            let step = elem_sz.max(1);
+                            if let Some(index_val) = self.locals.get(local) {
+                                if let Some(concrete_idx) = index_val.term.as_u64() {
+                                    let offset = concrete_idx as usize * step;
+                                    let term = self
+                                        .get_byte_value(alloc_id, offset)
+                                        .cloned()
+                                        .unwrap_or_else(|| self.fresh_int("arr_elem"));
+                                    return Some(VmValue {
+                                        term,
+                                        ty: place.ty(self.body, self.tcx).ty,
+                                        provenance: None,
+                                        invariants: ValueInvariants::default(),
+                                        field_offset: false,
+                                        discriminant: None,
+                                        bool_cond: None,
+                                    });
+                                } else {
+                                    let mut chain = self.fresh_int("arr_elem");
+                                    for (offset, term) in byte_vals.iter().rev() {
+                                        let vidx = offset / step;
+                                        let idx_term = Int::from_u64(self.ctx, vidx as u64);
+                                        let cond = index_val.term._eq(&idx_term);
+                                        chain = Bool::ite(&cond, term, &chain);
                                     }
+                                    return Some(VmValue {
+                                        term: chain,
+                                        ty: place.ty(self.body, self.tcx).ty,
+                                        provenance: None,
+                                        invariants: ValueInvariants::default(),
+                                        field_offset: false,
+                                        discriminant: None,
+                                        bool_cond: None,
+                                    });
                                 }
                             }
                         }
-                        return Some(base.clone());
                     }
-                    _ => {}
+                    return Some(base.clone());
                 }
                 match proj.kind() {
                     ProjectionElem::Deref => {

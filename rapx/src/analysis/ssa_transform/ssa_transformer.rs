@@ -43,19 +43,19 @@ impl<'tcx> SSATransformer<'tcx> {
         essa_def_id: DefId,
         arg_count: usize,
     ) -> Self {
-        let cfg: HashMap<BasicBlock, Vec<BasicBlock>> = Self::extract_cfg_from_predecessors(&body);
+        let cfg: HashMap<BasicBlock, Vec<BasicBlock>> = Self::extract_cfg_from_predecessors(body);
 
         let dominators: Dominators<BasicBlock> = body.basic_blocks.dominators().clone();
 
-        let dom_tree: HashMap<BasicBlock, Vec<BasicBlock>> = Self::construct_dominance_tree(&body);
+        let dom_tree: HashMap<BasicBlock, Vec<BasicBlock>> = Self::construct_dominance_tree(body);
 
         let df: HashMap<BasicBlock, HashSet<BasicBlock>> =
-            Self::compute_dominance_frontier(&body, &dom_tree);
+            Self::compute_dominance_frontier(body, &dom_tree);
 
         let local_assign_blocks: HashMap<Local, HashSet<BasicBlock>> =
-            Self::map_locals_to_assign_blocks(&body);
+            Self::map_locals_to_assign_blocks(body);
         let local_defination_block: HashMap<Local, BasicBlock> =
-            Self::map_locals_to_definition_block(&body);
+            Self::map_locals_to_definition_block(body);
         let len = body.local_decls.len();
         let mut skipped = HashSet::new();
         if len > 0 {
@@ -89,30 +89,24 @@ impl<'tcx> SSATransformer<'tcx> {
 
         for (bb, block_data) in body.basic_blocks.iter_enumerated() {
             for statement in &block_data.statements {
-                match &statement.kind {
-                    StatementKind::Assign(assign) => {
-                        let (place, _) = &**assign;
-                        if let Some(local) = place.as_local() {
-                            if local.as_u32() == 0 {
-                                continue; // Skip the return place
-                            }
-                            local_to_block_map.entry(local).or_insert(bb);
+                if let StatementKind::Assign(assign) = &statement.kind {
+                    let (place, _) = &**assign;
+                    if let Some(local) = place.as_local() {
+                        if local.as_u32() == 0 {
+                            continue; // Skip the return place
                         }
+                        local_to_block_map.entry(local).or_insert(bb);
                     }
-                    _ => {}
                 }
             }
             if let Some(terminator) = &block_data.terminator {
-                match &terminator.kind {
-                    TerminatorKind::Call { destination, .. } => {
-                        if let Some(local) = destination.as_local() {
-                            if local.as_u32() == 0 {
-                                continue; // Skip the return place
-                            }
-                            local_to_block_map.entry(local).or_insert(bb);
+                if let TerminatorKind::Call { destination, .. } = &terminator.kind {
+                    if let Some(local) = destination.as_local() {
+                        if local.as_u32() == 0 {
+                            continue; // Skip the return place
                         }
+                        local_to_block_map.entry(local).or_insert(bb);
                     }
-                    _ => {}
                 }
             }
         }

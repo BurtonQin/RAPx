@@ -300,7 +300,7 @@ where
 
                 self.fix_intersects(&component);
 
-                let variable: &Place<'tcx> = *component.iter().next().unwrap();
+                let variable: &Place<'tcx> = component.iter().next().unwrap();
                 if let Some(varnode) = self.vars.get_mut(variable) {
                     if varnode.get_range().is_unknown() {
                         varnode.set_default();
