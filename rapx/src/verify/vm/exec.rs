@@ -123,7 +123,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.set_field_value(Local::from_usize(callee_param), fields, fv);
         }
 
-        self.inline_frames.push(InlineFrame {
+        self.inline.frames.push(InlineFrame {
             body: saved_body,
             def_id: saved_def_id,
             saved_locals,
@@ -142,7 +142,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .filter(|((l, _), _)| *l == Local::from_usize(0))
             .map(|((_, f), v)| (f.clone(), v.clone()))
             .collect();
-        if let Some(frame) = self.inline_frames.pop() {
+        if let Some(frame) = self.inline.frames.pop() {
             self.body = frame.body;
             self.caller_def_id = frame.def_id;
             self.locals = frame.saved_locals;
@@ -249,6 +249,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     ..Default::default()
                                 },
                                 field_offset: false,
+                                discriminant: None,
+                                bool_cond: None,
                             },
                         );
                         // For Vec: materialize `buf.cap` ([0, 1]) and `len`
@@ -273,6 +275,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 }),
                                 invariants,
                                 field_offset: false,
+                                discriminant: None,
+                                bool_cond: None,
                             },
                         );
                         continue;
@@ -291,6 +295,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 provenance: None,
                                 invariants,
                                 field_offset: false,
+                                discriminant: None,
+                                bool_cond: None,
                             },
                         );
                         continue;
@@ -351,6 +357,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                             ..Default::default()
                                         },
                                         field_offset: false,
+                                        discriminant: None,
+                                        bool_cond: None,
                                     },
                                 );
                             }
@@ -369,6 +377,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         ..Default::default()
                                     },
                                     field_offset: false,
+                                    discriminant: None,
+                                    bool_cond: None,
                                 },
                             );
                         }
@@ -392,6 +402,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         ..Default::default()
                                     },
                                     field_offset: false,
+                                    discriminant: None,
+                                    bool_cond: None,
                                 },
                             );
                             continue;
@@ -409,6 +421,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 ..Default::default()
                             },
                             field_offset: false,
+                            discriminant: None,
+                            bool_cond: None,
                         },
                     );
                     continue;
@@ -504,6 +518,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 }),
                                 invariants,
                                 field_offset: false,
+                                discriminant: None,
+                                bool_cond: None,
                             },
                         );
                         continue;
@@ -533,6 +549,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             }),
                             invariants,
                             field_offset: false,
+                            discriminant: None,
+                            bool_cond: None,
                         },
                     );
 
@@ -654,6 +672,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                                 ..Default::default()
                                             },
                                             field_offset: false,
+                                            discriminant: None,
+                                            bool_cond: None,
                                         },
                                     );
                                 }
@@ -680,6 +700,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             provenance: None,
                             invariants,
                             field_offset: false,
+                            discriminant: None,
+                            bool_cond: None,
                         },
                     );
                     continue;
@@ -706,6 +728,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             }),
                             invariants,
                             field_offset: false,
+                            discriminant: None,
+                            bool_cond: None,
                         },
                     );
                     continue;
@@ -781,6 +805,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 ..invariants
                             },
                             field_offset: false,
+                            discriminant: None,
+                            bool_cond: None,
                         },
                     );
                     continue;
@@ -795,6 +821,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         provenance: None,
                         invariants,
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     },
                 );
                 continue;
@@ -818,6 +846,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     provenance: None,
                     invariants,
                     field_offset: false,
+                    discriminant: None,
+                    bool_cond: None,
                 },
             );
         }
@@ -850,7 +880,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     });
                     if let Some(src_local) = src {
                         if let Some(src_val) = self.locals.get(&src_local) {
-                            let has_better_prov = src_val.provenance.is_some()
+                            let has_better_prov = src_val.is_pointer()
                                 && src_val.invariants.non_null
                                 && self.locals.get(&dest_local).map_or(true, |d| {
                                     d.provenance.is_none() || !d.invariants.non_null
@@ -864,6 +894,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         provenance: src_val.provenance.clone(),
                                         invariants: src_val.invariants.clone(),
                                         field_offset: false,
+                                        discriminant: None,
+                                        bool_cond: None,
                                     },
                                 );
                             }
@@ -934,6 +966,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     ..Default::default()
                 },
                 field_offset: false,
+                discriminant: None,
+                bool_cond: None,
             },
         );
     }
@@ -1005,6 +1039,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }),
                     invariants,
                     field_offset: false,
+                    discriminant: None,
+                    bool_cond: None,
                 },
             );
         } else {
@@ -1065,6 +1101,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }),
                     invariants,
                     field_offset: false,
+                    discriminant: None,
+                    bool_cond: None,
                 },
             );
         }
@@ -1124,6 +1162,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             ..Default::default()
                         },
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     },
                 );
             }
@@ -1180,6 +1220,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             ..Default::default()
                         },
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     },
                 );
                 self.decompose_pointee_fields(
@@ -1215,6 +1257,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             ..Default::default()
                         },
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     },
                 );
             } else if let TyKind::Array(elem_ty, const_len) = field_ty.kind() {
@@ -1250,6 +1294,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             ..Default::default()
                         },
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     },
                 );
             }
@@ -1380,7 +1426,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let mut found = false;
                     for arg in args {
                         self.try_materialize_const_bytes(&mut dv, &arg.node);
-                        if dv.provenance.is_some() {
+                        if dv.is_pointer() {
                             self.set_local(dest, dv);
                             found = true;
                             break;
@@ -1483,6 +1529,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             ..src_val.invariants
                         },
                         field_offset: src_val.field_offset,
+                        discriminant: None,
+                        bool_cond: None,
                     },
                 );
             }
@@ -1513,6 +1561,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             provenance: val.provenance,
                             invariants: val.invariants,
                             field_offset: false,
+                            discriminant: None,
+                            bool_cond: None,
                         },
                     );
                 }
@@ -1543,7 +1593,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         false
                     };
                 let src_in_bounds = if is_slice_ref && is_from_raw_parts_like && has_deref {
-                    addr.provenance.is_some()
+                    addr.is_pointer()
                 } else {
                     self.locals
                         .get(&place.local)
@@ -1562,6 +1612,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             align_n: alloc_align,
                         },
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     },
                 );
             }
@@ -1594,6 +1646,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             ..Default::default()
                         },
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     },
                 );
             }
@@ -1626,6 +1680,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 provenance: None,
                                 invariants: ValueInvariants::default(),
                                 field_offset: false,
+                                discriminant: None,
+                                bool_cond: None,
                             });
                         let prov = self.provenance_for_binary_op(*op, &src_val, &rhs_val);
                         let dest_ty = self.body.local_decls[dest_local].ty;
@@ -1641,6 +1697,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     ..src_val.invariants
                                 },
                                 field_offset: false,
+                                discriminant: None,
+                                bool_cond: None,
                             },
                         );
                     }
@@ -1865,9 +1923,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             // `&mut self` referent and defer the write until the
                             // caller's `field_values` is restored.
                             if let Some(referent) =
-                                self.inline_arg_referents.get(arg_idx).copied().flatten()
+                                self.inline.arg_referents.get(arg_idx).copied().flatten()
                             {
-                                self.deferred_field_writes
+                                self.inline.deferred_field_writes
                                     .push((referent, field_indices, value));
                             }
                         }
@@ -2117,7 +2175,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             false
                         };
                     let src_in_bounds = if is_slice_ref && is_from_raw_parts_like && has_deref {
-                        addr.provenance.is_some()
+                        addr.is_pointer()
                     } else {
                         self.locals
                             .get(&place.local)
@@ -2158,6 +2216,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             align_n: slice_elem_align.or(alloc_align),
                         },
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     };
                     self.propagate_byte_values_to_ref(place, &val);
                     self.propagate_field_values_to_ref(place, dest_place.local);
@@ -2182,6 +2242,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             ..Default::default()
                         },
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     }
                 }
             }
@@ -2207,6 +2269,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             ..Default::default()
                         },
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     };
                     val
                 } else {
@@ -2220,6 +2284,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             ..Default::default()
                         },
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     }
                 }
             }
@@ -2235,10 +2301,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let rhs_pk = crate::helpers::mir_utils::operand_place(rhs_op);
                 self.binary_op_sources
                     .insert(dest_pk.clone(), (lhs_pk, rhs_pk, *op));
-                // Store the direct boolean condition for comparison results so
-                // exec_switchint can record a precise path condition (e.g.
-                // `offset <= len - 16`) instead of `ite(cond, 1, 0) != 0`, which
-                // the SMT solver often fails to unfold.
+                // Carry the direct boolean condition alongside the ite-encoded
+                // result so `switchInt`/`Assert` can record a precise path
+                // condition (e.g. `offset <= len - 16`) instead of
+                // `ite(cond, 1, 0) != 0`, which the SMT solver often fails to
+                // unfold.
                 let cmp_cond = match *op {
                     BinOp::Le => Some(lhs.term.le(&rhs.term)),
                     BinOp::Lt => Some(lhs.term.lt(&rhs.term)),
@@ -2248,9 +2315,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     BinOp::Ne => Some(lhs.term._eq(&rhs.term).not()),
                     _ => None,
                 };
-                if let Some(cond) = cmp_cond {
-                    self.comparison_conds.insert(dest_pk.clone(), cond);
-                }
                 // Add Euclidean division identity for Div and Rem:
                 //   lhs == (lhs/rhs)*rhs + lhs%rhs  ∧  lhs%rhs >= 0
                 // Also add (lhs/rhs)*rhs <= lhs directly for Div for robustness.
@@ -2306,6 +2370,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             provenance: provenance.clone(),
                             invariants: invariants.clone(),
                             field_offset: false,
+                            discriminant: None,
+                            bool_cond: None,
                         };
                         self.set_field_value(dest_place.local, vec![0], result_val);
                         let overflow_term = self.fresh_int("overflow_flag");
@@ -2319,6 +2385,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     provenance,
                     invariants,
                     field_offset: false,
+                    discriminant: None,
+                    bool_cond: cmp_cond,
                 }
             }
             Rvalue::UnaryOp(op, operand) => {
@@ -2341,6 +2409,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     provenance: val.provenance,
                     invariants: val.invariants,
                     field_offset: false,
+                    discriminant: None,
+                    bool_cond: None,
                 }
             }
             Rvalue::Cast(_kind, operand, cast_ty) => {
@@ -2410,6 +2480,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         },
                     },
                     field_offset: src_val.field_offset,
+                    discriminant: None,
+                    bool_cond: None,
                 }
             }
             Rvalue::Aggregate(_kind, operands) => {
@@ -2449,6 +2521,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         provenance: field_val.provenance,
                         invariants: field_val.invariants,
                         field_offset: false,
+                        discriminant: None,
+                        bool_cond: None,
                     };
                 }
                 let term = self.fresh_int("aggregate");
@@ -2592,6 +2666,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     provenance: result_prov,
                     invariants: ValueInvariants::default(),
                     field_offset: false,
+                    discriminant: None,
+                    bool_cond: None,
                 }
             }
             Rvalue::Discriminant(place) => {
@@ -2599,21 +2675,24 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // returns `Some` iff the iterator was non-empty), reuse that term
                 // so `switchInt(discriminant)` branches stay tied to the real
                 // condition instead of a fresh unconstrained symbol.
-                let term = self
-                    .discriminant_terms
-                    .get(&place.local)
-                    .cloned()
+                let place_val = self
+                    .value_of_place(place)
+                    .or_else(|| self.local_value(place.local).cloned());
+                let term = place_val
+                    .as_ref()
+                    .and_then(|v| v.discriminant().cloned())
                     .unwrap_or_else(|| self.fresh_int("discriminant"));
-                if self.discriminant_terms.contains_key(&place.local) {
+                if place_val
+                    .as_ref()
+                    .map(|v| v.discriminant().is_some())
+                    .unwrap_or(false)
+                {
                     self.contract_flags.saw_next_discriminant = true;
                 }
                 // For Ordering (repr i8, values: Less=-1 Equal=0 Greater=1),
                 // the discriminant index equals the repr value + 1.
                 // Connect the fresh discriminant term to the ADT value so
                 // that SwitchInt constraints propagate to the stored value.
-                let place_val = self
-                    .value_of_place(place)
-                    .or_else(|| self.local_value(place.local).cloned());
                 if let Some(ref pv) = place_val {
                     if let rustc_middle::ty::TyKind::Adt(adt_def, _) = pv.ty.kind() {
                         if api_classify::is_std_ordering(adt_def.did()) && adt_def.is_enum() {
@@ -2639,6 +2718,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     provenance: val.provenance,
                     invariants: val.invariants,
                     field_offset: false,
+                    discriminant: None,
+                    bool_cond: None,
                 }
             }
             Rvalue::CopyForDeref(place) => {
@@ -2686,6 +2767,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         ..Default::default()
                     },
                     field_offset: false,
+                    discriminant: None,
+                    bool_cond: None,
                 }
             }
         }
@@ -2976,7 +3059,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         match op {
             BinOp::Add | BinOp::AddWithOverflow | BinOp::AddUnchecked | BinOp::Offset => {
                 // ptr + scalar → propagate with adjusted offset
-                if rhs.provenance.is_some() {
+                if rhs.is_pointer() {
                     return None;
                 }
                 lhs.provenance.as_ref().map(|prov| Provenance {
@@ -2986,7 +3069,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 })
             }
             BinOp::Sub | BinOp::SubWithOverflow | BinOp::SubUnchecked => {
-                if rhs.provenance.is_some() {
+                if rhs.is_pointer() {
                     // ptr - ptr → integer (difference), no provenance
                     return None;
                 }
@@ -2997,7 +3080,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 })
             }
             BinOp::BitAnd => {
-                if rhs.provenance.is_some() {
+                if rhs.is_pointer() {
                     return None;
                 }
                 lhs.provenance.as_ref().map(|prov| Provenance {
@@ -3010,13 +3093,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 })
             }
             BinOp::BitXor | BinOp::Shr | BinOp::ShrUnchecked => {
-                if rhs.provenance.is_some() {
+                if rhs.is_pointer() {
                     return None;
                 }
                 lhs.provenance.clone()
             }
             BinOp::BitOr | BinOp::Shl | BinOp::ShlUnchecked => {
-                if rhs.provenance.is_some() {
+                if rhs.is_pointer() {
                     return None;
                 }
                 lhs.provenance.as_ref().map(|prov| Provenance {
@@ -3026,7 +3109,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 })
             }
             BinOp::Mul | BinOp::MulWithOverflow | BinOp::MulUnchecked => {
-                if rhs.provenance.is_some() {
+                if rhs.is_pointer() {
                     return None;
                 }
                 lhs.provenance.as_ref().map(|prov| Provenance {
@@ -3219,10 +3302,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // If the discriminator is a comparison result, record the direct
         // boolean condition alongside the ite-encoded `discr == value` fact,
         // so the SMT solver can reason about `offset <= len` directly.
-        let cmp_cond = discr.place().and_then(|p| {
-            let pk = PlaceKey::from_mir_place(&p);
-            self.comparison_conds.get(&pk).cloned()
-        });
+        let cmp_cond = discr_val.bool_cond().cloned();
 
         // Determine which target block is taken along the path.
         if let Some(ref path) = self.path {
@@ -3284,10 +3364,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // If the asserted operand is a comparison result, record the direct
         // boolean condition (`idx < len`) alongside the ite-encoded fact, so
         // the SMT solver can unfold it (mirrors `exec_switchint`).
-        let cmp_cond = cond.place().and_then(|p| {
-            let pk = PlaceKey::from_mir_place(&p);
-            self.comparison_conds.get(&pk).cloned()
-        });
+        let cmp_cond = cond_val.bool_cond().cloned();
         if expected {
             let zero = Int::from_u64(self.ctx, 0);
             self.path_conditions.push(cond_val.term._eq(&zero).not());
@@ -3697,6 +3774,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 align_n: heap_align_n,
             },
             field_offset: false,
+            discriminant: None,
+            bool_cond: None,
         }
     }
 
@@ -4570,6 +4649,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         align_n: first_arg_val.invariants.align_n,
                     },
                     field_offset: first_arg_val.field_offset,
+                    discriminant: None,
+                    bool_cond: None,
                 },
             );
             return true;

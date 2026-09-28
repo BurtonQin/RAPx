@@ -102,6 +102,18 @@ pub(crate) struct VmValue<'ctx, 'tcx> {
     /// offset.  It is origin information, not an SMT-assertable invariant, so it
     /// lives on `VmValue` rather than in `ValueInvariants`.
     pub field_offset: bool,
+    /// Symbolic discriminant (variant index) for an ADT value whose variant is
+    /// known symbolically (e.g. `Iterator::next` returns `Some(x) iff
+    /// !is_empty`).  `None` for non-enum values or unknown variants.  Used by
+    /// `Rvalue::Discriminant` so `switchInt` branches stay tied to the real
+    /// condition instead of a fresh unconstrained symbol.
+    pub discriminant: Option<Int<'ctx>>,
+    /// Direct boolean condition for a comparison result (Le/Lt/Ge/Gt/Eq/Ne),
+    /// recorded alongside the ite-encoded `term` so `switchInt`/`Assert` can
+    /// emit a precise path condition (`offset <= len`) instead of
+    /// `ite(cond, 1, 0) != 0`, which the SMT solver often fails to unfold.
+    /// `None` for non-comparison values.
+    pub bool_cond: Option<Bool<'ctx>>,
 }
 
 impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
@@ -112,12 +124,34 @@ impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
             provenance: None,
             invariants: ValueInvariants::default(),
             field_offset: false,
+            discriminant: None,
+            bool_cond: None,
         }
     }
 
     /// Convenience: extract the `AllocId` from provenance, if any.
     pub(crate) fn provenance_alloc_id(&self) -> Option<AllocId> {
         self.provenance.as_ref().map(|p| p.alloc_id)
+    }
+
+    /// Symbolic enum discriminant, if known.
+    pub(crate) fn discriminant(&self) -> Option<&Int<'ctx>> {
+        self.discriminant.as_ref()
+    }
+
+    /// Direct boolean condition of a comparison result, if any.
+    pub(crate) fn bool_cond(&self) -> Option<&Bool<'ctx>> {
+        self.bool_cond.as_ref()
+    }
+
+    /// Whether this scalar is a compile-time `offset_of!` field offset.
+    pub(crate) fn is_field_offset(&self) -> bool {
+        self.field_offset
+    }
+
+    /// Whether this value is a pointer (carries provenance).
+    pub(crate) fn is_pointer(&self) -> bool {
+        self.provenance.is_some()
     }
 }
 
@@ -345,6 +379,29 @@ pub(crate) struct InlineFrame<'ctx, 'tcx> {
     pub saved_move_sources: FxHashMap<Local, Local>,
 }
 
+/// State owned by the inlined-callee execution (`exec_inline_call`): the
+/// recursion depth, the caller-frame stack, and the temporary bindings that are
+/// swapped in on entry and restored on exit.
+pub(crate) struct InlineCtx<'ctx, 'tcx> {
+    /// Current depth of the recursive `exec_inline_call` stack.  `exec_call`
+    /// re-enters inline execution with `depth = 0` on every nested call, so a
+    /// separate counter is needed to actually bound nested inlining.
+    pub depth: usize,
+    /// Stack of saved caller contexts for inlined-callee path execution.
+    pub frames: Vec<InlineFrame<'ctx, 'tcx>>,
+    /// During `exec_inline_call`, maps each callee argument index to the
+    /// *caller* local its value points at (resolved from the reference's
+    /// address term before the caller's address map is saved away).  Used by
+    /// `exec_assign` to resolve `(*self).field = val` writes through a `&mut
+    /// self` reborrow temp back to the caller's referent.
+    pub arg_referents: Vec<Option<Local>>,
+    /// Field writes collected during `exec_inline_call` that must be applied to
+    /// the caller's `field_values` *after* the inline frame is popped (the
+    /// caller's field map is not live while the callee executes).  Each entry is
+    /// `(caller_referent_local, field_path, value)`.
+    pub deferred_field_writes: Vec<(Local, Vec<usize>, VmValue<'ctx, 'tcx>)>,
+}
+
 /// The full symbolic execution state at a program point.
 ///
 /// Accumulates locals, allocations, path conditions, and definitions
@@ -386,16 +443,6 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// alignment/equality guards (`Eq`).
     pub(crate) binary_op_sources:
         FxHashMap<PlaceKey, (Option<PlaceKey>, Option<PlaceKey>, rustc_middle::mir::BinOp)>,
-
-    /// Direct boolean condition for a comparison result place (Le/Lt/Ge/Gt/Eq/Ne),
-    /// used to record precise switch-guard path conditions.
-    pub(crate) comparison_conds: FxHashMap<PlaceKey, Bool<'ctx>>,
-
-    /// Enum discriminant term for a local holding an `Option`-like value whose
-    /// variant is known symbolically (e.g. `Iterator::next` returns
-    /// `Some(x) iff !is_empty`). Used by `Rvalue::Discriminant` so `switchInt`
-    /// branches stay tied to the actual emptiness condition.
-    pub(crate) discriminant_terms: FxHashMap<Local, Int<'ctx>>,
 
     /// Non-binary-op sources (select_unpredictable, etc.): destination → (lhs, rhs)
     /// place keys.  Kept separately from `binary_op_sources` so guard inference
@@ -445,32 +492,14 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// `DefId` of the most recent call (for `DefId`-based API classification).
     pub(crate) last_call_callee: Option<DefId>,
 
-    /// Current depth of the recursive `exec_inline_call` stack.  `exec_call`
-    /// re-enters inline execution with `depth = 0` on every nested call, so a
-    /// separate counter (instead of the `depth` argument) is needed to actually
-    /// bound nested inlining and avoid unbounded recursion / stack overflow.
-    pub(crate) inline_depth: usize,
-
-    /// Stack of saved caller contexts for inlined-callee path execution.
-    pub(crate) inline_frames: Vec<InlineFrame<'ctx, 'tcx>>,
+    /// Inlined-callee execution state (depth, frame stack, and per-call
+    /// temporary bindings swapped on entry / restored on exit).
+    pub(crate) inline: InlineCtx<'ctx, 'tcx>,
 
     /// Terms that are the result of a bitwise `Not` (two's-complement mask).
     /// Used to recognize `x & !(align-1)` alignment patterns in BitAnd so we
     /// can derive `align = -mask` and emit linear bounds for the result.
     pub(crate) not_mask_terms: FxHashSet<Int<'ctx>>,
-
-    /// During `exec_inline_call`, maps each callee argument index to the
-    /// *caller* local its value points at (resolved from the reference's
-    /// address term before the caller's address map is saved away). Used by
-    /// `exec_assign` to resolve `(*self).field = val` writes through a `&mut
-    /// self` reborrow temp back to the caller's referent.
-    pub(crate) inline_arg_referents: Vec<Option<Local>>,
-
-    /// Field writes collected during `exec_inline_call` that must be applied to
-    /// the caller's `field_values` *after* the inline frame is popped (the
-    /// caller's field map is not live while the callee executes). Each entry is
-    /// `(caller_referent_local, field_path, value)`.
-    pub(crate) deferred_field_writes: Vec<(Local, Vec<usize>, VmValue<'ctx, 'tcx>)>,
 
     /// Symbolic element size for generic types whose concrete `size_of` is
     /// unknown at verification time (e.g. an unconstrained `T`).  A single
@@ -506,8 +535,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             next_alloc_id: 0,
             block_occurrences: FxHashMap::default(),
             binary_op_sources: FxHashMap::default(),
-            comparison_conds: FxHashMap::default(),
-            discriminant_terms: FxHashMap::default(),
             other_op_sources: FxHashMap::default(),
             move_sources: FxHashMap::default(),
             contract_flags: ContractFlags::default(),
@@ -518,11 +545,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             notes: Vec::new(),
             path: None,
             last_call_callee: None,
-            inline_depth: 0,
-            inline_frames: Vec::new(),
+            inline: InlineCtx {
+                depth: 0,
+                frames: Vec::new(),
+                arg_referents: Vec::new(),
+                deferred_field_writes: Vec::new(),
+            },
             not_mask_terms: FxHashSet::default(),
-            inline_arg_referents: Vec::new(),
-            deferred_field_writes: Vec::new(),
             sym_sizes: FxHashMap::default(),
             sym_aligns: FxHashMap::default(),
         }
@@ -907,6 +936,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     provenance: None,
                     invariants: ValueInvariants::default(),
                     field_offset,
+                    discriminant: None,
+                    bool_cond: None,
                 }
             }
             #[cfg(rapx_ge_95)]
@@ -969,6 +1000,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             provenance: Some(prov.clone()),
                             invariants: base_val.invariants.clone(),
                             field_offset: false,
+                            discriminant: None,
+                            bool_cond: None,
                         });
                     }
                 }
@@ -1086,6 +1119,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                             provenance: None,
                                             invariants: ValueInvariants::default(),
                                             field_offset: false,
+                                            discriminant: None,
+                                            bool_cond: None,
                                         });
                                     } else {
                                         let mut chain = self.fresh_int("arr_elem");
@@ -1101,6 +1136,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                             provenance: None,
                                             invariants: ValueInvariants::default(),
                                             field_offset: false,
+                                            discriminant: None,
+                                            bool_cond: None,
                                         });
                                     }
                                 }

@@ -75,7 +75,7 @@ impl PropertyChecker {
         if matches!(value.ty.kind(), TyKind::Ref(..)) {
             return CheckResult::ProvedByRule;
         }
-        if value.provenance.is_some() {
+        if value.is_pointer() {
             if let TyKind::Adt(adt_def, _) = value.ty.kind() {
                 if api_classify::is_std_nonnull(adt_def.did()) {
                     return CheckResult::ProvedByRule;
@@ -603,7 +603,7 @@ impl PropertyChecker {
         // an external allocation (raw pointer params get this in init_parameters).
         if let Some(op) = checkpoint.args.first() {
             let target_val = vm_state.value_of_operand(op);
-            if target_val.provenance.is_some() {
+            if target_val.is_pointer() {
                 return true;
             }
         }

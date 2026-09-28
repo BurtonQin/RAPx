@@ -137,6 +137,8 @@ impl PropertyChecker {
                         provenance: base_val.provenance.clone(),
                         invariants: base_val.invariants,
                         field_offset: base_val.field_offset,
+                        discriminant: None,
+                        bool_cond: None,
                     });
                 }
                 ContractProjection::ForEach => {
@@ -146,13 +148,15 @@ impl PropertyChecker {
                         return Some(val.clone());
                     }
                     if let Some(base_val) = vm_state.local_value(base_local) {
-                        if base_val.provenance.is_some() {
+                        if base_val.is_pointer() {
                             return Some(VmValue {
                                 term: base_val.term.clone(),
                                 ty: base_val.ty,
                                 provenance: base_val.provenance.clone(),
                                 invariants: base_val.invariants.clone(),
                                 field_offset: base_val.field_offset,
+                                discriminant: None,
+                                bool_cond: None,
                             });
                         }
                     }
@@ -199,6 +203,8 @@ impl PropertyChecker {
                     provenance: Some(prov.clone()),
                     invariants: base_val.invariants.clone(),
                     field_offset: base_val.field_offset,
+                    discriminant: None,
+                    bool_cond: None,
                 });
             }
         }
@@ -221,7 +227,7 @@ impl PropertyChecker {
         ) {
             if let Some(owner) = vm_state.find_local_by_address(&value.term) {
                 if let Some(heap_field) = vm_state.owner_ptr_field(owner) {
-                    if heap_field.provenance.is_some() {
+                    if heap_field.is_pointer() {
                         value.term = heap_field.term.clone();
                         value.provenance = heap_field.provenance.clone();
                         value.invariants = heap_field.invariants.clone();
