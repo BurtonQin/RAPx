@@ -22,7 +22,7 @@ fn apply_function_summary<'tcx>(
     destination: Place<'tcx>,
     args: &[Operand<'tcx>],
     summary: &FnAliasPairs,
-    place_info: &PlaceInfo<'tcx>,
+    place_info: &PlaceInfo,
 ) {
     // Convert destination to PlaceId
     let dest_id = transfer::mir_place_to_place_id(destination);
@@ -88,7 +88,7 @@ fn apply_conservative_alias_for_call<'tcx>(
     state: &mut AliasDomain,
     destination: Place<'tcx>,
     args: &[Spanned<rustc_middle::mir::Operand<'tcx>>],
-    place_info: &PlaceInfo<'tcx>,
+    place_info: &PlaceInfo,
 ) {
     // Get destination place
     let dest_id = transfer::mir_place_to_place_id(destination);
@@ -165,7 +165,7 @@ impl PlaceId {
 
 /// Information about all places in a function
 #[derive(Clone)]
-pub struct PlaceInfo<'tcx> {
+pub struct PlaceInfo {
     /// Mapping from PlaceId to index
     place_to_index: FxHashMap<PlaceId, usize>,
     /// Mapping from index to PlaceId
@@ -176,10 +176,9 @@ pub struct PlaceInfo<'tcx> {
     need_drop: Vec<bool>,
     /// Total number of places
     num_places: usize,
-    _phantom: std::marker::PhantomData<&'tcx ()>,
 }
 
-impl<'tcx> PlaceInfo<'tcx> {
+impl<'tcx> PlaceInfo {
     /// Create a new PlaceInfo with initial capacity
     pub fn new() -> Self {
         PlaceInfo {
@@ -188,7 +187,6 @@ impl<'tcx> PlaceInfo<'tcx> {
             may_drop: Vec::new(),
             need_drop: Vec::new(),
             num_places: 0,
-            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -526,7 +524,7 @@ impl DebugWithContext<FnAliasAnalyzer<'_>> for AliasDomain {}
 /// Intraprocedural alias analyzer
 pub struct FnAliasAnalyzer<'tcx> {
     pub tcx: TyCtxt<'tcx>,
-    place_info: PlaceInfo<'tcx>,
+    place_info: PlaceInfo,
     /// Function summaries for interprocedural analysis
     fn_summaries: Rc<RefCell<FnAliasMap>>,
     /// (Debug) Number of BBs we have iterated through
@@ -552,7 +550,7 @@ impl<'tcx> FnAliasAnalyzer<'tcx> {
     }
 
     /// Get the place info
-    pub fn place_info(&self) -> &PlaceInfo<'tcx> {
+    pub fn place_info(&self) -> &PlaceInfo {
         &self.place_info
     }
 }
@@ -576,7 +574,7 @@ impl<'tcx> Analysis<'tcx> for FnAliasAnalyzer<'tcx> {
         &self,
         state: &mut Self::Domain,
         statement: &Statement<'tcx>,
-        _location: Location,
+        _: Location,
     ) {
         apply_statement_effect(self, state, statement)
     }
@@ -585,16 +583,16 @@ impl<'tcx> Analysis<'tcx> for FnAliasAnalyzer<'tcx> {
         &self,
         state: &mut Self::Domain,
         terminator: &'mir Terminator<'tcx>,
-        _location: Location,
+        _: Location,
     ) -> TerminatorEdges<'mir, 'tcx> {
         apply_terminator_effect(self, state, terminator)
     }
 
     fn apply_call_return_effect(
         &self,
-        _state: &mut Self::Domain,
-        _block: rustc_middle::mir::BasicBlock,
-        _return_places: CallReturnPlaces<'_, 'tcx>,
+        _: &mut Self::Domain,
+        _: rustc_middle::mir::BasicBlock,
+        _: CallReturnPlaces<'_, 'tcx>,
     ) {
     }
 }
@@ -615,7 +613,7 @@ impl<'tcx> Analysis<'tcx> for FnAliasAnalyzer<'tcx> {
         &self,
         state: &mut Self::Domain,
         statement: &Statement<'tcx>,
-        _location: Location,
+        _: Location,
     ) {
         apply_statement_effect(self, state, statement)
     }
@@ -624,16 +622,16 @@ impl<'tcx> Analysis<'tcx> for FnAliasAnalyzer<'tcx> {
         &self,
         state: &mut Self::Domain,
         terminator: &'mir Terminator<'tcx>,
-        _location: Location,
+        _: Location,
     ) {
         apply_terminator_effect(self, state, terminator);
     }
 
     fn apply_call_return_effect(
         &self,
-        _state: &mut Self::Domain,
-        _block: rustc_middle::mir::BasicBlock,
-        _return_places: CallReturnPlaces<'_, 'tcx>,
+        _: &mut Self::Domain,
+        _: rustc_middle::mir::BasicBlock,
+        _: CallReturnPlaces<'_, 'tcx>,
     ) {
     }
 }

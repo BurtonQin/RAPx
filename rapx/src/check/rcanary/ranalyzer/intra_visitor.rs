@@ -1,7 +1,6 @@
 use crate::compat::Spanned;
 use rustc_abi::VariantIdx;
 use rustc_data_structures::graph;
-use rustc_hir::def_id::DefId;
 use rustc_middle::{
     mir::{
         AggregateKind, BasicBlock, BasicBlockData, Body, Local, Operand, Place, ProjectionElem,
@@ -365,7 +364,6 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
         match rvalue {
             Rvalue::Use(op, ..) => {
-                let kind = AsgnKind::Assign;
                 let aggre = None;
                 match op {
                     Operand::Copy(rplace) => {
@@ -373,24 +371,24 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         match (lvalue_has_projection, rvalue_has_projection) {
                             (true, true) => {
                                 self.handle_copy_field_to_field(
-                                    ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx,
+                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (true, false) => {
                                 self.handle_copy_to_field(
-                                    ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx,
+                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (false, true) => {
                                 self.handle_copy_from_field(
-                                    ctx, goal, solver, kind, lplace, rplace, bidx, sidx,
+                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                             (false, false) => {
                                 self.handle_copy(
-                                    ctx, goal, solver, kind, lplace, rplace, bidx, sidx,
+                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                         }
@@ -400,24 +398,24 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         match (lvalue_has_projection, rvalue_has_projection) {
                             (true, true) => {
                                 self.handle_move_field_to_field(
-                                    ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx,
+                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (true, false) => {
                                 self.handle_move_to_field(
-                                    ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx,
+                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (false, true) => {
                                 self.handle_move_from_field(
-                                    ctx, goal, solver, kind, lplace, rplace, bidx, sidx,
+                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                             (false, false) => {
                                 self.handle_move(
-                                    ctx, goal, solver, kind, lplace, rplace, bidx, sidx,
+                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                         }
@@ -426,57 +424,54 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 }
             }
             Rvalue::Ref(.., rplace) => {
-                let kind = AsgnKind::Reference;
                 let aggre = None;
                 let rvalue_has_projection = has_projection(rplace);
                 match (lvalue_has_projection, rvalue_has_projection) {
                     (true, true) => {
                         self.handle_copy_field_to_field(
-                            ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx, sidx,
+                            ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                         );
                     }
                     (true, false) => {
                         self.handle_copy_to_field(
-                            ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx, sidx,
+                            ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                         );
                     }
                     (false, true) => {
                         self.handle_copy_from_field(
-                            ctx, goal, solver, kind, lplace, rplace, bidx, sidx,
+                            ctx, goal, solver, lplace, rplace, bidx, sidx,
                         );
                     }
                     (false, false) => {
-                        self.handle_copy(ctx, goal, solver, kind, lplace, rplace, bidx, sidx);
+                        self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
                     }
                 }
             }
             Rvalue::RawPtr(_, rplace) => {
-                let kind = AsgnKind::Reference;
                 let aggre = None;
                 let rvalue_has_projection = has_projection(rplace);
                 match (lvalue_has_projection, rvalue_has_projection) {
                     (true, true) => {
                         self.handle_copy_field_to_field(
-                            ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx, sidx,
+                            ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                         );
                     }
                     (true, false) => {
                         self.handle_copy_to_field(
-                            ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx, sidx,
+                            ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                         );
                     }
                     (false, true) => {
                         self.handle_copy_from_field(
-                            ctx, goal, solver, kind, lplace, rplace, bidx, sidx,
+                            ctx, goal, solver, lplace, rplace, bidx, sidx,
                         );
                     }
                     (false, false) => {
-                        self.handle_copy(ctx, goal, solver, kind, lplace, rplace, bidx, sidx);
+                        self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
                     }
                 }
             }
             Rvalue::Cast(_cast_kind, op, ..) => {
-                let kind = AsgnKind::Cast;
                 let aggre = None;
                 match op {
                     Operand::Copy(rplace) => {
@@ -484,24 +479,24 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         match (lvalue_has_projection, rvalue_has_projection) {
                             (true, true) => {
                                 self.handle_copy_field_to_field(
-                                    ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx,
+                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (true, false) => {
                                 self.handle_copy_to_field(
-                                    ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx,
+                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (false, true) => {
                                 self.handle_copy_from_field(
-                                    ctx, goal, solver, kind, lplace, rplace, bidx, sidx,
+                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                             (false, false) => {
                                 self.handle_copy(
-                                    ctx, goal, solver, kind, lplace, rplace, bidx, sidx,
+                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                         }
@@ -511,24 +506,24 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         match (lvalue_has_projection, rvalue_has_projection) {
                             (true, true) => {
                                 self.handle_move_field_to_field(
-                                    ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx,
+                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (true, false) => {
                                 self.handle_move_to_field(
-                                    ctx, goal, solver, kind, lplace, rplace, disc, aggre, bidx,
+                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (false, true) => {
                                 self.handle_move_from_field(
-                                    ctx, goal, solver, kind, lplace, rplace, bidx, sidx,
+                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                             (false, false) => {
                                 self.handle_move(
-                                    ctx, goal, solver, kind, lplace, rplace, bidx, sidx,
+                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                         }
@@ -540,10 +535,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 if lvalue_has_projection {
                     return;
                 }
-                let kind = AsgnKind::Aggregate;
-                if let AggregateKind::Adt(did, vidx, ..) = **akind {
+                if let AggregateKind::Adt(_, vidx, ..) = **akind {
                     self.handle_aggregate_init(
-                        ctx, goal, solver, kind, lplace, did, vidx, disc, bidx, sidx,
+                        ctx, goal, solver, lplace, vidx, disc, bidx, sidx,
                     );
                     for (fidx, op) in operands.iter().enumerate() {
                         let aggre = Some(fidx);
@@ -553,13 +547,13 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                                 match rvalue_has_projection {
                                     true => {
                                         self.handle_copy_field_to_field(
-                                            ctx, goal, solver, kind, lplace, rplace, disc,
+                                            ctx, goal, solver, lplace, rplace, disc,
                                             aggre, bidx, sidx,
                                         );
                                     }
                                     false => {
                                         self.handle_copy_to_field(
-                                            ctx, goal, solver, kind, lplace, rplace, disc,
+                                            ctx, goal, solver, lplace, rplace, disc,
                                             aggre, bidx, sidx,
                                         );
                                     }
@@ -570,13 +564,13 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                                 match rvalue_has_projection {
                                     true => {
                                         self.handle_move_field_to_field(
-                                            ctx, goal, solver, kind, lplace, rplace, disc,
+                                            ctx, goal, solver, lplace, rplace, disc,
                                             aggre, bidx, sidx,
                                         );
                                     }
                                     false => {
                                         self.handle_move_to_field(
-                                            ctx, goal, solver, kind, lplace, rplace, disc,
+                                            ctx, goal, solver, lplace, rplace, disc,
                                             aggre, bidx, sidx,
                                         );
                                     }
@@ -596,7 +590,6 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         ctx: &'ctx z3::Context,
         goal: &'ctx z3::Goal<'ctx>,
         solver: &'ctx z3::Solver<'ctx>,
-        _kind: AsgnKind,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         bidx: usize,
@@ -732,7 +725,6 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         ctx: &'ctx z3::Context,
         goal: &'ctx z3::Goal<'ctx>,
         solver: &'ctx z3::Solver<'ctx>,
-        _kind: AsgnKind,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         bidx: usize,
@@ -858,7 +850,6 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         ctx: &'ctx z3::Context,
         goal: &'ctx z3::Goal<'ctx>,
         solver: &'ctx z3::Solver<'ctx>,
-        _kind: AsgnKind,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         bidx: usize,
@@ -901,7 +892,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             return;
         }
         if !rpj_fields.has_field() {
-            self.handle_copy(ctx, goal, solver, _kind, lplace, rplace, bidx, sidx);
+            self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
             return;
         }
         let index_needed = rpj_fields.index_needed();
@@ -1049,7 +1040,6 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         ctx: &'ctx z3::Context,
         goal: &'ctx z3::Goal<'ctx>,
         solver: &'ctx z3::Solver<'ctx>,
-        _kind: AsgnKind,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         bidx: usize,
@@ -1085,7 +1075,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             return;
         }
         if !rpj_fields.has_field() {
-            self.handle_move(ctx, goal, solver, _kind, lplace, rplace, bidx, sidx);
+            self.handle_move(ctx, goal, solver, lplace, rplace, bidx, sidx);
             return;
         }
         let index_needed = rpj_fields.index_needed();
@@ -1233,9 +1223,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         ctx: &'ctx z3::Context,
         goal: &'ctx z3::Goal<'ctx>,
         solver: &'ctx z3::Solver<'ctx>,
-        _kind: AsgnKind,
         lplace: &Place<'tcx>,
-        _aggre_did: DefId,
         vidx: VariantIdx,
         disc: Disc,
         bidx: usize,
@@ -1275,7 +1263,6 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         ctx: &'ctx z3::Context,
         goal: &'ctx z3::Goal<'ctx>,
         solver: &'ctx z3::Solver<'ctx>,
-        _kind: AsgnKind,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         mut disc: Disc,
@@ -1324,7 +1311,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
                 // variant.len = 1 && field[0]
                 if lpj_fields.index_needed() == 0 && ty_with_index.0.unwrap().0 == 1 {
-                    self.handle_copy(ctx, goal, solver, _kind, lplace, rplace, bidx, sidx);
+                    self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
                     return;
                 }
             }
@@ -1336,7 +1323,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 return;
             }
             (false, false) => {
-                self.handle_copy(ctx, goal, solver, _kind, lplace, rplace, bidx, sidx);
+                self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
         }
@@ -1465,7 +1452,6 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         ctx: &'ctx z3::Context,
         goal: &'ctx z3::Goal<'ctx>,
         solver: &'ctx z3::Solver<'ctx>,
-        _kind: AsgnKind,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         mut disc: Disc,
@@ -1514,7 +1500,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
                 // variant.len = 1 && field[0]
                 if lpj_fields.index_needed() == 0 && ty_with_index.0.unwrap().0 == 1 {
-                    self.handle_move(ctx, goal, solver, _kind, lplace, rplace, bidx, sidx);
+                    self.handle_move(ctx, goal, solver, lplace, rplace, bidx, sidx);
                     return;
                 }
             }
@@ -1526,7 +1512,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 return;
             }
             (false, false) => {
-                self.handle_move(ctx, goal, solver, _kind, lplace, rplace, bidx, sidx);
+                self.handle_move(ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
         }
@@ -1635,7 +1621,6 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         ctx: &'ctx z3::Context,
         goal: &'ctx z3::Goal<'ctx>,
         solver: &'ctx z3::Solver<'ctx>,
-        _kind: AsgnKind,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         disc: Disc,
@@ -1684,17 +1669,17 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         match (rpj_fields.has_field(), lpj_fields.has_field()) {
             (true, true) => (),
             (true, false) => {
-                self.handle_copy_from_field(ctx, goal, solver, _kind, lplace, rplace, bidx, sidx);
+                self.handle_copy_from_field(ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
             (false, true) => {
                 self.handle_copy_to_field(
-                    ctx, goal, solver, _kind, lplace, rplace, disc, aggre, bidx, sidx,
+                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                 );
                 return;
             }
             (false, false) => {
-                self.handle_copy(ctx, goal, solver, _kind, lplace, rplace, bidx, sidx);
+                self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
         }
@@ -1822,7 +1807,6 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         ctx: &'ctx z3::Context,
         goal: &'ctx z3::Goal<'ctx>,
         solver: &'ctx z3::Solver<'ctx>,
-        _kind: AsgnKind,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         disc: Disc,
@@ -1875,16 +1859,16 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         match (rpj_fields.has_field(), lpj_fields.has_field()) {
             (true, true) => (),
             (true, false) => {
-                self.handle_move_from_field(ctx, goal, solver, _kind, lplace, rplace, bidx, sidx);
+                self.handle_move_from_field(ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
             (false, true) => {
                 self.handle_move_to_field(
-                    ctx, goal, solver, _kind, lplace, rplace, disc, aggre, bidx, sidx,
+                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                 );
             }
             (false, false) => {
-                self.handle_move(ctx, goal, solver, _kind, lplace, rplace, bidx, sidx);
+                self.handle_move(ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
         }

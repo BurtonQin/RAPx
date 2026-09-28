@@ -1003,10 +1003,10 @@ impl<'tcx> Visitor<'tcx> for VerifyTargetCollector<'tcx> {
     /// that have no unsafe content and no struct invariants.
     fn visit_fn(
         &mut self,
-        _fk: FnKind<'tcx>,
-        _fd: &'tcx FnDecl<'tcx>,
+        _: FnKind<'tcx>,
+        _: &'tcx FnDecl<'tcx>,
         body_id: BodyId,
-        _span: Span,
+        _: Span,
         id: LocalDefId,
     ) -> Self::Result {
         if matches!(self.mode, VerifyMode::Targeted) && !has_rapx_verify_attr(self.tcx, id) {

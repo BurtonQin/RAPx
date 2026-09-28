@@ -145,7 +145,7 @@ impl BugRecords {
             span,
             "Dangling pointer detected",
             "Dangling pointer detected.",
-            dp_detail,
+            |bug, dl, tl, db, _| dp_detail(bug, dl, tl, db),
         );
 
         self.emit_bug_reports(
@@ -155,7 +155,7 @@ impl BugRecords {
             span,
             "Dangling pointer detected during unwinding",
             "Dangling pointer detected during unwinding.",
-            dp_detail,
+            |bug, dl, tl, db, _| dp_detail(bug, dl, tl, db),
         );
     }
 
@@ -308,7 +308,6 @@ fn dp_detail(
     drop_local: &str,
     trigger_local: &str,
     drop_bb: &str,
-    _trigger_bb: &str,
 ) -> String {
     format!(
         "Dangling pointer (confidence {}%): Location in file {} line {}.\n    | MIR detail: Value {} and {} are alias.\n    | MIR detail: {} is dropped at {}; {} became dangling.",

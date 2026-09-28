@@ -76,7 +76,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
 
         // Iter::next() / IterMut::next(): advance ptr by 1 and return old.
-        if self.try_iter_next(&name, &arg_values, args, destination) {
+        if self.try_iter_next(&name, &arg_values, destination) {
             return;
         }
 
@@ -662,7 +662,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         &mut self,
         name: &str,
         arg_values: &[VmValue<'ctx, 'tcx>],
-        _args: &[Spanned<Operand<'tcx>>],
         destination: Local,
     ) -> bool {
         let is_next = name.ends_with("::next")

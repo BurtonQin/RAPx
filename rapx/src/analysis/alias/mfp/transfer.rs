@@ -41,7 +41,7 @@ pub fn transfer_assign<'tcx>(
     state: &mut AliasDomain,
     lv: Place<'tcx>,
     rv: &Operand<'tcx>,
-    place_info: &PlaceInfo<'tcx>,
+    place_info: &PlaceInfo,
 ) {
     let lv_id = mir_place_to_place_id(lv);
 
@@ -77,7 +77,7 @@ pub fn transfer_ref<'tcx>(
     state: &mut AliasDomain,
     lv: Place<'tcx>,
     rv: Place<'tcx>,
-    place_info: &PlaceInfo<'tcx>,
+    place_info: &PlaceInfo,
 ) {
     // Reference creation is similar to assignment
     let lv_id = mir_place_to_place_id(lv);
@@ -112,7 +112,7 @@ pub fn transfer_aggregate<'tcx>(
     state: &mut AliasDomain,
     lv: Place<'tcx>,
     operands: &[Operand<'tcx>],
-    place_info: &PlaceInfo<'tcx>,
+    place_info: &PlaceInfo,
 ) {
     let lv_id = mir_place_to_place_id(lv);
 
@@ -142,7 +142,7 @@ pub fn transfer_aggregate<'tcx>(
 pub fn transfer_call<'tcx>(
     state: &mut AliasDomain,
     ret: Place<'tcx>,
-    place_info: &PlaceInfo<'tcx>,
+    place_info: &PlaceInfo,
 ) {
     let ret_id = mir_place_to_place_id(ret);
 
@@ -160,7 +160,7 @@ pub fn sync_fields<'tcx>(
     state: &mut AliasDomain,
     lv: &PlaceId,
     rv: &PlaceId,
-    place_info: &PlaceInfo<'tcx>,
+    place_info: &PlaceInfo,
 ) {
     // Recursively sync fields up to a reasonable depth
     const MAX_SYNC_DEPTH: usize = 3;
@@ -172,7 +172,7 @@ fn sync_fields_recursive<'tcx>(
     state: &mut AliasDomain,
     lv: &PlaceId,
     rv: &PlaceId,
-    place_info: &PlaceInfo<'tcx>,
+    place_info: &PlaceInfo,
     depth: usize,
     max_depth: usize,
 ) {

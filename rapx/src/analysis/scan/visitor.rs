@@ -42,9 +42,9 @@ impl<'tcx> FnVisitor<'tcx> {
     fn work_at_fn<'v>(
         &mut self,
         fk: FnKind<'v>,
-        _fd: &'v FnDecl<'v>,
-        _b: BodyId,
-        _span: Span,
+        _: &'v FnDecl<'v>,
+        _: BodyId,
+        _: Span,
         id: LocalDefId,
     ) {
         let fn_did = id.to_def_id();

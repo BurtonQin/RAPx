@@ -114,8 +114,8 @@ impl<'tcx> Visitor<'tcx> for FnVisitor<'tcx> {
     fn visit_fn<'v>(
         &mut self,
         fk: FnKind<'v>,
-        _fd: &'v FnDecl<'v>,
-        _b: BodyId,
+        _: &'v FnDecl<'v>,
+        _: BodyId,
         span: Span,
         id: LocalDefId,
     ) -> Self::Result {
