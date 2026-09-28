@@ -15,7 +15,7 @@ use rustc_hir::LangItem;
 #[cfg(all(not(rapx_has_attr_ir), rapx_ge_100))]
 use rustc_hir::attrs::lang_items::LangItem;
 use rustc_middle::ty::{Ty, TyKind};
-use z3::{Solver, ast::Ast};
+use z3::ast::Ast;
 
 use super::PropertyChecker;
 
@@ -23,7 +23,6 @@ impl PropertyChecker {
     pub(super) fn check_typed<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -303,7 +302,6 @@ impl PropertyChecker {
     pub(super) fn check_no_padding<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {

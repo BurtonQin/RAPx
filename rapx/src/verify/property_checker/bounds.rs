@@ -307,7 +307,7 @@ impl PropertyChecker {
         };
         let (index_val, is_range) = match index_arg_idx.and_then(|idx| checkpoint.args.get(idx)) {
             Some(op) => {
-                if let Some(end_val) = self.extract_range_end(vm_state, op, checkpoint) {
+                if let Some(end_val) = self.extract_range_end(vm_state, op) {
                     (end_val, true)
                 } else {
                     (vm_state.value_of_operand(op), false)
@@ -359,7 +359,6 @@ impl PropertyChecker {
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
         op: &Operand<'tcx>,
-        _checkpoint: &Checkpoint<'tcx>,
     ) -> Option<VmValue<'ctx, 'tcx>> {
         let place = match op {
             Operand::Copy(p) | Operand::Move(p) => p,

@@ -25,7 +25,6 @@ impl PropertyChecker {
     pub(super) fn check_align<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -258,7 +257,6 @@ impl PropertyChecker {
     pub(super) fn check_non_null<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -295,7 +293,6 @@ impl PropertyChecker {
     pub(super) fn check_null<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -364,7 +361,6 @@ impl PropertyChecker {
     pub(super) fn check_allocated<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -636,7 +632,6 @@ impl PropertyChecker {
     pub(super) fn check_init<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -878,7 +873,6 @@ impl PropertyChecker {
     pub(super) fn check_alive<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {

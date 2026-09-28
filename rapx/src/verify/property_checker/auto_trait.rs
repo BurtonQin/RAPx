@@ -23,7 +23,6 @@ use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::{ClauseKind, GenericArgKind, ParamTy, Ty, TyCtxt, TyKind};
-use z3::Solver;
 
 use crate::compat::FxHashMap;
 use crate::helpers::mir_scan::{Checkpoint, has_atomic_call, has_raw_ptr_write};
@@ -63,7 +62,6 @@ impl PropertyChecker {
     pub(super) fn check_contain_no_type<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -90,7 +88,6 @@ impl PropertyChecker {
     pub(super) fn check_no_raw_ptr<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -107,8 +104,6 @@ impl PropertyChecker {
     pub(super) fn check_no_internal_mut<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
-        _checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
         let Some(ty) = property.args().first().and_then(|a| match a {
@@ -125,8 +120,6 @@ impl PropertyChecker {
     pub(super) fn check_uni_internal_mut<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
-        _checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
         let Some(ty) = property.args().first().and_then(|a| match a {
@@ -144,7 +137,6 @@ impl PropertyChecker {
     pub(super) fn check_atomic_update<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -162,7 +154,6 @@ impl PropertyChecker {
     pub(super) fn check_ref_send<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {

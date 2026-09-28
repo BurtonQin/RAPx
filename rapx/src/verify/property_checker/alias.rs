@@ -7,7 +7,6 @@ use crate::helpers::mir_scan::Checkpoint;
 use crate::verify::contract::Property;
 use crate::verify::report::CheckResult;
 use crate::verify::vm::state::VmState;
-use z3::Solver;
 
 use super::PropertyChecker;
 
@@ -15,9 +14,7 @@ impl PropertyChecker {
     pub(super) fn check_alias<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
-        _property: &Property<'tcx>,
     ) -> CheckResult {
         match crate::verify::vm::alias::check_alias_vm(vm_state, checkpoint) {
             crate::verify::vm::alias::VmAliasResult::Proved => CheckResult::ProvedByRule,
@@ -29,7 +26,6 @@ impl PropertyChecker {
     pub(super) fn check_owning<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {

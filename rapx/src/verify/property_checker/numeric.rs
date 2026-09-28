@@ -116,7 +116,7 @@ impl PropertyChecker {
             _ => None,
         };
         let op = op?;
-        let end = self.extract_range_end(vm_state, op, ck)?;
+        let end = self.extract_range_end(vm_state, op)?;
         Some(end.term.clone())
     }
 

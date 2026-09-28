@@ -23,8 +23,7 @@ impl OptCheck for FlattenCollectCheck {
     }
 
     fn check(&mut self, graph: &Graph, tcx: &TyCtxt) {
-        let _ = &DEFPATHS.get_or_init(|| DefPaths::new(tcx));
-        let def_paths = DEFPATHS.get().unwrap();
+        let def_paths = DEFPATHS.get_or_init(|| DefPaths::new(tcx));
         for node in graph.nodes.iter() {
             if node_matches_call(
                 node,

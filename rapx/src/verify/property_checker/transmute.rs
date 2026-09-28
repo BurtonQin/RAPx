@@ -1,7 +1,6 @@
 //! Transmute / trait / size property checking for the symbolic VM.
 
 use rustc_middle::ty::{GenericArgKind, Ty, TyKind};
-use z3::Solver;
 
 use crate::helpers::mir_scan::Checkpoint;
 use crate::verify::vm::state::VmState;
@@ -18,8 +17,6 @@ impl PropertyChecker {
     pub(super) fn check_valid_transmute<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
-        _checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
         let src = property.args().get(0).and_then(|a| {
@@ -63,7 +60,6 @@ impl PropertyChecker {
     pub(super) fn check_trait<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -124,7 +120,6 @@ impl PropertyChecker {
     pub(super) fn check_split_transmute<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
-        _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {

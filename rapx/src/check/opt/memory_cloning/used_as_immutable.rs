@@ -59,8 +59,7 @@ impl OptCheck for UsedAsImmutableCheck {
     }
 
     fn check(&mut self, graph: &Graph, tcx: &TyCtxt) {
-        let _ = &DEFPATHS.get_or_init(|| DefPaths::new(tcx));
-        let def_paths = &DEFPATHS.get().unwrap();
+        let def_paths = DEFPATHS.get_or_init(|| DefPaths::new(tcx));
         let level = LEVEL.lock().unwrap();
         for (idx, node) in graph.nodes.iter_enumerated() {
             if node.ops.len() > 1 {

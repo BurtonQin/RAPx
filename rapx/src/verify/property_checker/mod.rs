@@ -65,22 +65,22 @@ impl PropertyChecker {
             Property::Or(_) => self.check_or(vm_state, solver, checkpoint, property),
             Property::And(_) => self.check_and(vm_state, solver, checkpoint, property),
             Property::Atom(atom) => match atom.kind {
-                PropertyKind::Align => self.check_align(vm_state, solver, checkpoint, property),
+                PropertyKind::Align => self.check_align(vm_state, checkpoint, property),
                 PropertyKind::NonNull => {
-                    self.check_non_null(vm_state, solver, checkpoint, property)
+                    self.check_non_null(vm_state, checkpoint, property)
                 }
-                PropertyKind::Null => self.check_null(vm_state, solver, checkpoint, property),
+                PropertyKind::Null => self.check_null(vm_state, checkpoint, property),
                 PropertyKind::Allocated => {
-                    self.check_allocated(vm_state, solver, checkpoint, property)
+                    self.check_allocated(vm_state, checkpoint, property)
                 }
                 PropertyKind::InBound => {
                     self.check_in_bound(vm_state, solver, checkpoint, property)
                 }
-                PropertyKind::Init => self.check_init(vm_state, solver, checkpoint, property),
-                PropertyKind::Typed => self.check_typed(vm_state, solver, checkpoint, property),
-                PropertyKind::Alias => self.check_alias(vm_state, solver, checkpoint, property),
-                PropertyKind::Owning => self.check_owning(vm_state, solver, checkpoint, property),
-                PropertyKind::Alive => self.check_alive(vm_state, solver, checkpoint, property),
+                PropertyKind::Init => self.check_init(vm_state, checkpoint, property),
+                PropertyKind::Typed => self.check_typed(vm_state, checkpoint, property),
+                PropertyKind::Alias => self.check_alias(vm_state, checkpoint),
+                PropertyKind::Owning => self.check_owning(vm_state, checkpoint, property),
+                PropertyKind::Alive => self.check_alive(vm_state, checkpoint, property),
                 PropertyKind::NonOverlap => {
                     self.check_non_overlap(vm_state, solver, checkpoint, property)
                 }
@@ -100,33 +100,33 @@ impl PropertyChecker {
                     self.check_valid_cstr(vm_state, solver, checkpoint, property)
                 }
                 PropertyKind::ValidTransmute => {
-                    self.check_valid_transmute(vm_state, solver, checkpoint, property)
+                    self.check_valid_transmute(vm_state, property)
                 }
                 PropertyKind::SplitTransmute => {
-                    self.check_split_transmute(vm_state, solver, checkpoint, property)
+                    self.check_split_transmute(vm_state, checkpoint, property)
                 }
-                PropertyKind::Trait => self.check_trait(vm_state, solver, checkpoint, property),
+                PropertyKind::Trait => self.check_trait(vm_state, checkpoint, property),
                 PropertyKind::Size => self.check_size(vm_state, checkpoint, property),
                 PropertyKind::NoPadding => {
-                    self.check_no_padding(vm_state, solver, checkpoint, property)
+                    self.check_no_padding(vm_state, checkpoint, property)
                 }
                 PropertyKind::ContainNoType => {
-                    self.check_contain_no_type(vm_state, solver, checkpoint, property)
+                    self.check_contain_no_type(vm_state, checkpoint, property)
                 }
                 PropertyKind::NoRawPtr => {
-                    self.check_no_raw_ptr(vm_state, solver, checkpoint, property)
+                    self.check_no_raw_ptr(vm_state, checkpoint, property)
                 }
                 PropertyKind::NoInternalMut => {
-                    self.check_no_internal_mut(vm_state, solver, checkpoint, property)
+                    self.check_no_internal_mut(vm_state, property)
                 }
                 PropertyKind::UniInternalMut => {
-                    self.check_uni_internal_mut(vm_state, solver, checkpoint, property)
+                    self.check_uni_internal_mut(vm_state, property)
                 }
                 PropertyKind::AtomicUpdate => {
-                    self.check_atomic_update(vm_state, solver, checkpoint, property)
+                    self.check_atomic_update(vm_state, checkpoint, property)
                 }
                 PropertyKind::RefSend => {
-                    self.check_ref_send(vm_state, solver, checkpoint, property)
+                    self.check_ref_send(vm_state, checkpoint, property)
                 }
 
                 _ => CheckResult::Unknown,

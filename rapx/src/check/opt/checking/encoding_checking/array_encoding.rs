@@ -53,7 +53,7 @@ impl OptCheck for ArrayEncodingCheck {
     }
 
     fn check(&mut self, graph: &Graph, tcx: &TyCtxt) {
-        let _ = &DEFPATHS.get_or_init(|| DefPaths::new(tcx));
+        DEFPATHS.get_or_init(|| DefPaths::new(tcx));
         let common_ancestor = graph
             .edges
             .iter()

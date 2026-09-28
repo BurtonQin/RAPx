@@ -57,7 +57,7 @@ impl OptCheck for StringPushCheck {
     }
 
     fn check(&mut self, graph: &Graph, tcx: &TyCtxt) {
-        let _ = &DEFPATHS.get_or_init(|| DefPaths::new(tcx));
+        DEFPATHS.get_or_init(|| DefPaths::new(tcx));
         for (node_idx, node) in graph.nodes.iter_enumerated() {
             if let Some(pushed_value_idx) = extract_value_if_is_string_push(graph, node) {
                 if find_upside_string_new(graph, node_idx).is_some() {

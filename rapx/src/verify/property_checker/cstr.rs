@@ -156,7 +156,7 @@ impl PropertyChecker {
 
         // 3. MIR-level fallback: scan the body for constant byte assignments
         //    (mirrors the legacy checker's approach for promoted constants)
-        if let Some(r) = self.check_valid_cstr_from_mir_constants(vm_state, checkpoint, property) {
+        if let Some(r) = self.check_valid_cstr_from_mir_constants(vm_state, checkpoint) {
             return r;
         }
 
@@ -417,7 +417,6 @@ impl PropertyChecker {
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
-        _property: &Property<'tcx>,
     ) -> Option<CheckResult> {
         let target_local = first_arg_local(checkpoint)?;
 

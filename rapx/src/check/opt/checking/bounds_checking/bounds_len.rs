@@ -104,7 +104,7 @@ impl OptCheck for BoundsLenCheck {
     }
 
     fn check(&mut self, graph: &Graph, tcx: &TyCtxt) {
-        let _ = &DEFPATHS.get_or_init(|| DefPaths::new(tcx));
+        DEFPATHS.get_or_init(|| DefPaths::new(tcx));
         for (node_idx, node) in graph.nodes.iter_enumerated() {
             if let Some(upperbound_node_idx) = extract_upperbound_node_if_ops_range(graph, node) {
                 if let Some(vec_len_node_idx) = find_upside_len_node(graph, upperbound_node_idx) {

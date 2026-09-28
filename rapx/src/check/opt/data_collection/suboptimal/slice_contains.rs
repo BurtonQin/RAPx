@@ -23,7 +23,7 @@ impl OptCheck for SliceContainsCheck {
     }
 
     fn check(&mut self, graph: &Graph, tcx: &TyCtxt) {
-        let _ = &DEFPATHS.get_or_init(|| DefPaths::new(tcx));
+        DEFPATHS.get_or_init(|| DefPaths::new(tcx));
         let def_id = graph.def_id;
         let body = tcx.hir_body_owned_by(def_id.as_local().unwrap());
         let typeck_results = tcx.typeck(def_id.as_local().unwrap());

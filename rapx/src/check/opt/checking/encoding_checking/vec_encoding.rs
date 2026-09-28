@@ -81,7 +81,7 @@ impl OptCheck for VecEncodingCheck {
     }
 
     fn check(&mut self, graph: &Graph, tcx: &TyCtxt) {
-        let _ = &DEFPATHS.get_or_init(|| DefPaths::new(tcx));
+        DEFPATHS.get_or_init(|| DefPaths::new(tcx));
         for node in graph.nodes.iter() {
             if let Some(vec_node_idx) = extract_vec_if_is_string_from(graph, node) {
                 if let Some(vec_new_idx) = find_upside_vec_new_node(graph, vec_node_idx) {
