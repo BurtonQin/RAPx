@@ -1027,7 +1027,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             self.set_field_value(
                 local,
-                path.clone(),
+                path,
                 VmValue {
                     term: field_term,
                     ty: field_ty,
@@ -1089,7 +1089,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             };
             self.set_field_value(
                 local,
-                path.clone(),
+                path,
                 VmValue {
                     term: field_term,
                     ty: field_ty,
@@ -2246,7 +2246,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .locals
                         .get(&place.local)
                         .is_some_and(|v| v.invariants.in_bounds);
-                    let val = VmValue {
+                    VmValue {
                         term: addr.term,
                         ty: dest_ty,
                         provenance: addr.provenance,
@@ -2259,8 +2259,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         field_offset: false,
                         discriminant: None,
                         bool_cond: None,
-                    };
-                    val
+                    }
                 } else {
                     let term = self.fresh_int("rawptr_addr");
                     VmValue {
@@ -2288,7 +2287,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let lhs_pk = crate::helpers::mir_utils::operand_place(lhs_op);
                 let rhs_pk = crate::helpers::mir_utils::operand_place(rhs_op);
                 self.op_sources.insert(
-                    dest_pk.clone(),
+                    dest_pk,
                     OpSource::Binary {
                         lhs: lhs_pk,
                         rhs: rhs_pk,
@@ -2532,10 +2531,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             matches!(field_val.ty.kind(), rustc_middle::ty::TyKind::Ref(..));
                         let dst_is_raw =
                             matches!(field_ty.kind(), rustc_middle::ty::TyKind::RawPtr(..));
-                        if src_is_ref && dst_is_raw {
-                            field_val.invariants.in_bounds = true;
-                            field_val.ty = *field_ty;
-                        } else if dst_is_raw && field_val.invariants.non_null {
+                        if dst_is_raw && (src_is_ref || field_val.invariants.non_null) {
                             field_val.invariants.in_bounds = true;
                             field_val.ty = *field_ty;
                         }
@@ -2970,17 +2966,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if let Some(len) = self.try_index_range_len(val) {
             return Some(len);
         }
-        if let Some(len) = self.slice_len_from_value(val) {
-            return Some(len);
-        }
-        let alloc_id = val.provenance_alloc_id()?;
-        let alloc = self.alloc(alloc_id);
-        let elem_ty = alloc.element_ty.as_ty()?;
-        let elem_term = self.size_sym_read(elem_ty);
-        if elem_term.simplify().as_u64() == Some(1) {
-            return Some(alloc.size.clone());
-        }
-        Some(alloc.size.div(&elem_term))
+        self.slice_len_from_value(val)
     }
 
     /// Resolve `x.len()` for a struct `x` (e.g. `NodeRef`) whose `len()` method
@@ -3471,13 +3457,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     }
 
     fn mark_guard_pointer(&mut self, lhs: &Option<PlaceKey>, rhs: &Option<PlaceKey>) {
-        for ptr_pk in [lhs, rhs] {
-            if let Some(pk) = ptr_pk {
-                if let Some(local) = pk.local() {
-                    if let Some(mut val) = self.locals.get(&local).cloned() {
-                        val.invariants.non_null = true;
-                        self.set_local(local, val);
-                    }
+        for pk in [lhs, rhs].into_iter().flatten() {
+            if let Some(local) = pk.local() {
+                if let Some(mut val) = self.locals.get(&local).cloned() {
+                    val.invariants.non_null = true;
+                    self.set_local(local, val);
                 }
             }
         }
@@ -3967,24 +3951,34 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     }
 
     /// Evaluate a numeric predicate to a Z3 Bool for path-condition assertion.
+    fn relop_to_bool(
+        &self,
+        op: crate::verify::contract::RelOp,
+        lhs: &Int<'ctx>,
+        rhs: &Int<'ctx>,
+    ) -> Bool<'ctx> {
+        use crate::verify::contract::RelOp;
+        match op {
+            RelOp::Eq => lhs._eq(rhs),
+            RelOp::Ne => lhs._eq(rhs).not(),
+            RelOp::Le => lhs.le(rhs),
+            RelOp::Lt => lhs.lt(rhs),
+            RelOp::Ge => lhs.ge(rhs),
+            RelOp::Gt => lhs.gt(rhs),
+        }
+    }
+
     fn eval_predicate_as_bool(
         &self,
         pred: &crate::verify::contract::NumericPredicate<'tcx>,
     ) -> Option<Bool<'ctx>> {
-        use crate::verify::contract::{ContractExpr, RelOp};
+        use crate::verify::contract::ContractExpr;
         let lhs = self.eval_contract_expr_simple(&pred.lhs)?;
         let rhs = match &pred.rhs {
             ContractExpr::Const(v) => Int::from_u64(self.ctx, *v as u64),
             _ => self.eval_contract_expr_simple(&pred.rhs)?,
         };
-        Some(match pred.op {
-            RelOp::Eq => lhs._eq(&rhs),
-            RelOp::Ne => lhs._eq(&rhs).not(),
-            RelOp::Le => lhs.le(&rhs),
-            RelOp::Lt => lhs.lt(&rhs),
-            RelOp::Ge => lhs.ge(&rhs),
-            RelOp::Gt => lhs.gt(&rhs),
-        })
+        Some(self.relop_to_bool(pred.op, &lhs, &rhs))
     }
 
     fn eval_contract_expr_simple(
@@ -4055,41 +4049,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let val = self.eval_contract_expr_simple_value(inner)?;
                 self.len_from_value(&val)
             }
-            ContractExpr::Binary {
-                op: NumericBinOp::Mul,
-                lhs,
-                rhs,
-            } => {
+            ContractExpr::Binary { op, lhs, rhs } => {
                 let l = self.eval_contract_expr_simple(lhs)?;
                 let r = self.eval_contract_expr_simple(rhs)?;
-                Some(Int::mul(self.ctx, &[&l, &r]))
-            }
-            ContractExpr::Binary {
-                op: NumericBinOp::Add,
-                lhs,
-                rhs,
-            } => {
-                let l = self.eval_contract_expr_simple(lhs)?;
-                let r = self.eval_contract_expr_simple(rhs)?;
-                Some(Int::add(self.ctx, &[&l, &r]))
-            }
-            ContractExpr::Binary {
-                op: NumericBinOp::Sub,
-                lhs,
-                rhs,
-            } => {
-                let l = self.eval_contract_expr_simple(lhs)?;
-                let r = self.eval_contract_expr_simple(rhs)?;
-                Some(Int::sub(self.ctx, &[&l, &r]))
-            }
-            ContractExpr::Binary {
-                op: NumericBinOp::Div,
-                lhs,
-                rhs,
-            } => {
-                let l = self.eval_contract_expr_simple(lhs)?;
-                let r = self.eval_contract_expr_simple(rhs)?;
-                Some(l.div(&r))
+                Some(match op {
+                    NumericBinOp::Mul => Int::mul(self.ctx, &[&l, &r]),
+                    NumericBinOp::Add => Int::add(self.ctx, &[&l, &r]),
+                    NumericBinOp::Sub => Int::sub(self.ctx, &[&l, &r]),
+                    NumericBinOp::Div => l.div(&r),
+                    _ => return None,
+                })
             }
             ContractExpr::Const(n) => Some(Int::from_u64(self.ctx, *n as u64)),
             _ => None,
@@ -4113,16 +4082,19 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// `interpreter_iter_len` in call.rs). Used by `eval_contract_expr_simple`
     /// so that ContractFact assertions use the same symbolic term as the
     /// VM execution path.
-    fn try_simple_iter_len(&self, arg_val: &VmValue<'ctx, 'tcx>) -> Option<Int<'ctx>> {
+    fn is_iter_ref(&self, val: &VmValue<'ctx, 'tcx>) -> bool {
         use rustc_middle::ty::TyKind;
-        let is_iter = match arg_val.ty.kind() {
+        match val.ty.kind() {
             TyKind::Ref(_, pointee, _) => match pointee.kind() {
                 TyKind::Adt(adt_def, _) => api_classify::is_std_iter_or_itermut(adt_def.did()),
                 _ => false,
             },
             _ => false,
-        };
-        if !is_iter {
+        }
+    }
+
+    fn try_simple_iter_len(&self, arg_val: &VmValue<'ctx, 'tcx>) -> Option<Int<'ctx>> {
+        if !self.is_iter_ref(arg_val) {
             return None;
         }
         let local = Local::from_usize(1);
@@ -4161,16 +4133,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             Some(v) => v,
             None => return,
         };
-        let is_iter = match local_val.ty.kind() {
-            rustc_middle::ty::TyKind::Ref(_, pointee, _) => match pointee.kind() {
-                rustc_middle::ty::TyKind::Adt(adt_def, _) => {
-                    api_classify::is_std_iter_or_itermut(adt_def.did())
-                }
-                _ => false,
-            },
-            _ => false,
-        };
-        if !is_iter {
+        if !self.is_iter_ref(local_val) {
             return;
         }
         let one = Int::from_u64(self.ctx, 1);
@@ -4226,13 +4189,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             Some(PropertyArg::Expr(ContractExpr::Place(cp))) => cp.base.try_to_local(),
             _ => None,
         };
-        let data_size = slice_local
-            .and_then(|loc| self.locals.get(&loc))
-            .and_then(|sl_val| sl_val.provenance_alloc_id())
-            .map(|da_id| self.alloc(da_id).size.clone());
-        let elem_sz = slice_local
-            .and_then(|loc| self.locals.get(&loc))
-            .and_then(|sl_val| sl_val.provenance_alloc_id())
+        let slice_val = slice_local.and_then(|loc| self.locals.get(&loc));
+        let slice_alloc_id = slice_val.and_then(|sl_val| sl_val.provenance_alloc_id());
+        let data_size = slice_alloc_id.map(|da_id| self.alloc(da_id).size.clone());
+        let elem_sz = slice_alloc_id
             .and_then(|da_id| self.alloc(da_id).element_ty.as_ty())
             .map(|ty| self.size_of_ty(ty))
             .unwrap_or(1)
@@ -4240,8 +4200,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let Some(data_size) = data_size else { return };
         let elem_sz_term = Int::from_u64(self.ctx, elem_sz);
         // Prefer the materialized slice length; fall back to `size / elem_size`.
-        let len = slice_local
-            .and_then(|loc| self.locals.get(&loc))
+        let len = slice_val
             .and_then(|sl_val| self.slice_len_from_value(sl_val))
             .unwrap_or_else(|| data_size.div(&elem_sz_term));
         let zero = Int::from_u64(self.ctx, 0);
@@ -4375,17 +4334,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         view_ty: Ty<'tcx>,
         pred: &crate::verify::contract::NumericPredicate<'tcx>,
     ) -> Option<Bool<'ctx>> {
-        use crate::verify::contract::RelOp;
         let lhs = self.eval_pointee_expr(alloc_id, view_ty, &pred.lhs)?;
         let rhs = self.eval_pointee_expr(alloc_id, view_ty, &pred.rhs)?;
-        Some(match pred.op {
-            RelOp::Eq => lhs._eq(&rhs),
-            RelOp::Ne => lhs._eq(&rhs).not(),
-            RelOp::Le => lhs.le(&rhs),
-            RelOp::Lt => lhs.lt(&rhs),
-            RelOp::Ge => lhs.ge(&rhs),
-            RelOp::Gt => lhs.gt(&rhs),
-        })
+        Some(self.relop_to_bool(pred.op, &lhs, &rhs))
     }
 
     /// Evaluate a numeric `ContractExpr` against a pointee allocation.
@@ -4722,13 +4673,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             Operand::Copy(p) | Operand::Move(p) => p,
             _ => return None,
         };
-        let base_local = if place.projection.len() == 1
-            && matches!(
-                place.projection.first().map(|p| p.kind()),
-                Some(rustc_middle::mir::ProjectionElem::Deref)
-            ) {
-            place.local
-        } else if place.projection.is_empty() {
+        let base_local = if place.projection.is_empty()
+            || (place.projection.len() == 1
+                && matches!(
+                    place.projection.first().map(|p| p.kind()),
+                    Some(rustc_middle::mir::ProjectionElem::Deref)
+                ))
+        {
             place.local
         } else {
             return None;

@@ -107,9 +107,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     };
                     let cand_rank = rank(is_param, is_owned);
                     let ex_rank = rank(ex_is_param, ex_is_owned);
-                    if cand_rank < ex_rank {
-                        best = Some(candidate);
-                    } else if cand_rank == ex_rank && local.as_usize() < existing.local.as_usize() {
+                    if cand_rank < ex_rank
+                        || (cand_rank == ex_rank && local.as_usize() < existing.local.as_usize())
+                    {
                         best = Some(candidate);
                     }
                 }

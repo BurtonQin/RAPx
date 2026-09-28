@@ -2425,17 +2425,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             if let Some(old_data) = self.alloc(prov.alloc_id).slice_data {
                                 // Subsequent mutation: invalidate old heap data.
                                 self.alloc_mut(old_data).dead = true;
-                                let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
-                                let (data_alloc, _) =
-                                    self.allocate_external(max_size, heap_align, elem_ty);
-                                self.alloc_mut(prov.alloc_id).slice_data = Some(data_alloc);
-                            } else {
-                                // First mutation: create heap data allocation.
-                                let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
-                                let (data_alloc, _) =
-                                    self.allocate_external(max_size, heap_align, elem_ty);
-                                self.alloc_mut(prov.alloc_id).slice_data = Some(data_alloc);
                             }
+                            let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
+                            let (data_alloc, _) =
+                                self.allocate_external(max_size, heap_align, elem_ty);
+                            self.alloc_mut(prov.alloc_id).slice_data = Some(data_alloc);
                         }
                         // When offset is concrete, only mark the bytes actually
                         // written. For symbolic offsets, mark entire allocation.
@@ -3003,14 +2997,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let alloc_id = indices_val.provenance_alloc_id().or_else(|| {
                             // Slicer may have dropped the &indices
                             // assignment, losing provenance.  Fall back
-                            let fallback = self.locals.values().find_map(|v| {
+                            self.locals.values().find_map(|v| {
                                 if v.ty == arr_ty {
                                     v.provenance_alloc_id()
                                 } else {
                                     None
                                 }
-                            });
-                            fallback
+                            })
                         });
                         if let Some(alloc_id) = alloc_id {
                             self.contract_flags.has_checked_bounds = true;

@@ -1794,9 +1794,7 @@ fn pre_existing_view_on_origin(
             let (_target, rvalue) = assign.as_ref();
             let src_place: Option<&Place<'_>> = match rvalue {
                 Rvalue::Ref(_, _, place) => Some(place),
-                Rvalue::Cast(kind, operand, _)
-                    if matches!(kind, rustc_middle::mir::CastKind::PtrToPtr) =>
-                {
+                Rvalue::Cast(rustc_middle::mir::CastKind::PtrToPtr, operand, _) => {
                     match operand {
                         Operand::Copy(place) | Operand::Move(place) => Some(place),
                         _ => None,
