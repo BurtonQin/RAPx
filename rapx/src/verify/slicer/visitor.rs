@@ -469,7 +469,9 @@ impl<'tcx> BackwardSlicer<'tcx> {
                     #[cfg(rapx_rvalue_use_with_retag)]
                     Rvalue::Use(operand, _) => {
                         let is_projected = match operand {
-                            Operand::Copy(p) | Operand::Move(p) => !p.projection.is_empty(),
+                            Operand::Copy(p) | Operand::Move(p) => p.projection.iter().any(|e| {
+                                matches!(e.kind(), rustc_middle::mir::ProjectionElem::Deref)
+                            }),
                             _ => false,
                         };
                         dest_is_ptr || is_projected
@@ -477,7 +479,9 @@ impl<'tcx> BackwardSlicer<'tcx> {
                     #[cfg(not(rapx_rvalue_use_with_retag))]
                     Rvalue::Use(operand) => {
                         let is_projected = match operand {
-                            Operand::Copy(p) | Operand::Move(p) => !p.projection.is_empty(),
+                            Operand::Copy(p) | Operand::Move(p) => p.projection.iter().any(|e| {
+                                matches!(e.kind(), rustc_middle::mir::ProjectionElem::Deref)
+                            }),
                             _ => false,
                         };
                         dest_is_ptr || is_projected
