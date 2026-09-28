@@ -34,7 +34,7 @@ pub fn span_to_filename(span: Span) -> String {
             return path.to_string_lossy().into();
         }
     }
-    return "<unknown>".to_string();
+    "<unknown>".to_string()
 }
 
 #[inline]

@@ -290,7 +290,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                     );
                 }
                 let dist_to_target = child_path.iter().position(|&b| b == target_block);
-                if block_stmt_count > 0 && dist_to_target.map_or(false, |d| d <= 2) {
+                if block_stmt_count > 0 && dist_to_target.is_some_and(|d| d <= 2) {
                     Self::re_visit_newly_added(
                         visitor,
                         def_id,

@@ -39,7 +39,6 @@ impl<'tcx> ContainsUnsafe<'tcx> {
             let sig = self.tcx.fn_sig(did);
             if let rustc_hir::Safety::Unsafe = sig.skip_binder().safety() {
                 self.fn_unsafe = true;
-                return;
             }
         }
     }

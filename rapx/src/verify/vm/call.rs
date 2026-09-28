@@ -319,7 +319,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let array_term = arg_values[0].term.clone();
         let (elem_ty, elem_size) = match arg_values[0].ty.kind() {
             TyKind::Ref(_, inner, _) => match inner.kind() {
-                TyKind::Array(e, _) | TyKind::Slice(e) => (*e, self.size_of_ty(*e).max(1) as u64),
+                TyKind::Array(e, _) | TyKind::Slice(e) => (*e, self.size_of_ty(*e).max(1)),
                 _ => (arg_values[0].ty, 1),
             },
             _ => (arg_values[0].ty, 1),
@@ -458,7 +458,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let array_term = arg_values[0].term.clone();
         let (elem_ty, elem_size) = match arg_values[0].ty.kind() {
             TyKind::Ref(_, inner, _) => match inner.kind() {
-                TyKind::Array(e, _) | TyKind::Slice(e) => (*e, self.size_of_ty(*e).max(1) as u64),
+                TyKind::Array(e, _) | TyKind::Slice(e) => (*e, self.size_of_ty(*e).max(1)),
                 _ => (arg_values[0].ty, 1),
             },
             _ => (arg_values[0].ty, 1),
@@ -1483,11 +1483,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let TyKind::Tuple(elem_tys) = dest_ty.kind() {
                     // Look up the source allocation from self's provenance.
                     let src_alloc_id = self_val.provenance.as_ref().map(|p| p.alloc_id);
-                    let _src_offset = self_val
-                        .provenance
-                        .as_ref()
-                        .map(|p| p.offset.clone())
-                        .unwrap_or_else(|| Int::from_u64(self.ctx, 0));
 
                     let (elem_ty, elem_sz_term, alloc_size) = src_alloc_id
                         .map(|id| self.alloc(id))
@@ -1691,7 +1686,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     },
                     _ => return,
                 };
-                let size_u = self.size_of_ty(body_elem_ty).max(1) as u64;
+                let size_u = self.size_of_ty(body_elem_ty).max(1);
                 let align_u = self.align_sym(body_elem_ty);
 
                 let Some(src_prov) = self_val.provenance.clone() else {
@@ -1700,7 +1695,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let alloc = self.alloc(src_prov.alloc_id);
                 let (elem_ty, elem_sz, len_bytes) = {
                     let ty = alloc.element_ty.as_ty();
-                    let sz = self.size_of_ty(ty.unwrap_or(self_val.ty)).max(1) as u64;
+                    let sz = self.size_of_ty(ty.unwrap_or(self_val.ty)).max(1);
                     (ty, sz, alloc.size.clone())
                 };
 
@@ -3070,7 +3065,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let Some(n) = base_align.simplify().as_u64() else {
             return None;
         };
-        if stride_bytes > 0 && stride_bytes % n == 0 {
+        if stride_bytes > 0 && stride_bytes.is_multiple_of(n) {
             return Some(base_align.clone());
         }
         None
@@ -3372,7 +3367,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             if let Some(offset) = sub_offset {
                 // `field - offset` elements: subtract the element stride from
                 // both the address term and the provenance offset.
-                let stride = self.pointee_elem_size(v.ty).max(1) as u64;
+                let stride = self.pointee_elem_size(v.ty).max(1);
                 let scaled = Int::from_u64(self.ctx, offset * stride);
                 v.term = Int::sub(self.ctx, &[&v.term, &scaled]);
                 if let Some(prov) = &v.provenance {
@@ -3478,7 +3473,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         cap: Int<'ctx>,
         len: Int<'ctx>,
     ) {
-        let elem_size = self.size_of_ty(ptr.ty).max(1) as u64;
+        let elem_size = self.size_of_ty(ptr.ty).max(1);
         self.set_field_value(local, vec![0, 0], ptr);
         self.materialize_vec_len_cap(local, cap, len, elem_size);
     }

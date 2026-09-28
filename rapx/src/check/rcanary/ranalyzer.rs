@@ -497,8 +497,5 @@ pub enum Z3GoalDisplay {
 }
 
 pub fn is_z3_goal_verbose() -> bool {
-    match env::var_os("Z3") {
-        Some(_) => true,
-        _ => false,
-    }
+    env::var_os("Z3").is_some()
 }

@@ -143,7 +143,7 @@ where
             }
         }
         Self {
-            tcx: tcx,
+            tcx,
             debug,
             ssa_def_id: ssa_id,
             essa_def_id: essa_id,

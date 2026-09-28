@@ -130,12 +130,10 @@ where
     }
 
     pub fn mul(&self, other: &Range<T>) -> Range<T> {
-        let candidates = vec![
-            self.get_lower().clone() * other.get_lower().clone(),
+        let candidates = [self.get_lower().clone() * other.get_lower().clone(),
             self.get_lower().clone() * other.get_upper().clone(),
             self.get_upper().clone() * other.get_lower().clone(),
-            self.get_upper().clone() * other.get_upper().clone(),
-        ];
+            self.get_upper().clone() * other.get_upper().clone()];
         let min = candidates
             .iter()
             .cloned()
@@ -151,17 +149,17 @@ where
 
     pub fn intersectwith(&self, other: &Range<T>) -> Range<T> {
         if self.is_unknown() {
-            return Range::new(
+            Range::new(
                 other.get_lower().clone(),
                 other.get_upper().clone(),
                 RangeType::Regular,
-            );
+            )
         } else if other.is_unknown() {
-            return Range::new(
+            Range::new(
                 self.get_lower().clone(),
                 self.get_upper().clone(),
                 RangeType::Regular,
-            );
+            )
         } else {
             let result = self.range.clone().intersection(&other.range.clone());
             let mut range = Range::bottom();
@@ -177,17 +175,17 @@ where
 
     pub fn unionwith(&self, other: &Range<T>) -> Range<T> {
         if self.is_unknown() {
-            return Range::new(
+            Range::new(
                 other.get_lower().clone(),
                 other.get_upper().clone(),
                 RangeType::Regular,
-            );
+            )
         } else if other.is_unknown() {
-            return Range::new(
+            Range::new(
                 self.get_lower().clone(),
                 self.get_upper().clone(),
                 RangeType::Regular,
-            );
+            )
         } else {
             let left = std::cmp::min_by(self.get_lower(), other.get_lower(), |a, b| {
                 a.partial_cmp(b).unwrap()

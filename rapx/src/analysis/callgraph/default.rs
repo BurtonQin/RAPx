@@ -42,7 +42,7 @@ impl<'tcx> CallGraphAnalysis for CallGraphAnalyzer<'tcx> {
 impl<'tcx> CallGraphAnalyzer<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>) -> Self {
         Self {
-            tcx: tcx,
+            tcx,
             graph: CallGraph::new(tcx),
         }
     }
@@ -110,7 +110,7 @@ impl<'tcx> CallGraph<'tcx> {
 
     /// Register a function to the call graph. Return true on insert, false if that DefId already exists.
     pub fn register_fn(&mut self, def_id: DefId) -> bool {
-        if let Some(_) = self.functions.iter().find(|func_id| **func_id == def_id) {
+        if self.functions.iter().find(|func_id| **func_id == def_id).is_some() {
             false
         } else {
             self.functions.insert(def_id);

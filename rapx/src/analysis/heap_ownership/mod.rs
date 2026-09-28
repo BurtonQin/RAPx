@@ -27,10 +27,7 @@ impl Default for HeapOwnership {
 
 impl HeapOwnership {
     pub fn is_onheap(&self) -> bool {
-        match self {
-            HeapOwnership::True => true,
-            _ => false,
-        }
+        matches!(self, HeapOwnership::True)
     }
 }
 

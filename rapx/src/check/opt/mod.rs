@@ -73,7 +73,7 @@ impl<'tcx> Opt<'tcx> {
             return;
         }
 
-        let mut statistics = vec![0 as usize; 6];
+        let mut statistics = [0_usize; 6];
 
         dataflow.graphs.iter().for_each(|(_, graph)| {
             let mut bounds_check = BoundsCheck::new();

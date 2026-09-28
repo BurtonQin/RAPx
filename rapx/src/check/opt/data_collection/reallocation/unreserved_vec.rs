@@ -59,7 +59,7 @@ impl OptCheck for UnreservedVecCheck {
                     self.record.push(node.span);
                 }
                 if node_matches_call(node, &[def_paths.vec_push.last_def_id()]) {
-                    if let None = find_upside_reservation(graph, node_idx) {
+                    if find_upside_reservation(graph, node_idx).is_none() {
                         self.record.push(node.span);
                     }
                 }
@@ -75,7 +75,7 @@ impl OptCheck for UnreservedVecCheck {
         for (_, push_record) in loop_finder.into_record() {
             for push_span in push_record {
                 if let Some((node_idx, _)) = graph.query_node_by_span(push_span, false) {
-                    if let None = find_upside_reservation(graph, node_idx) {
+                    if find_upside_reservation(graph, node_idx).is_none() {
                         self.record.push(push_span);
                     }
                 }

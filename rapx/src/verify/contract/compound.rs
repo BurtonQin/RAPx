@@ -289,13 +289,13 @@ impl VisitMut for Subst<'_> {
 /// Whether a compound parameter annotation matches a primitive argument role.
 fn compound_param_ty_matches_arg_kind(def_ty: &str, kind: super::spec::ArgKind) -> bool {
     use super::spec::ArgKind;
-    match (def_ty, kind) {
-        ("Ptr", ArgKind::Target) => true,
-        ("Ty", ArgKind::Ty) => true,
-        ("Expr", ArgKind::Expr) => true,
-        ("Ident", ArgKind::Ident) => true,
-        _ => false,
-    }
+    matches!(
+        (def_ty, kind),
+        ("Ptr", ArgKind::Target)
+            | ("Ty", ArgKind::Ty)
+            | ("Expr", ArgKind::Expr)
+            | ("Ident", ArgKind::Ident)
+    )
 }
 
 /// Expand a `CompoundBody` into the property list it denotes.

@@ -285,7 +285,7 @@ pub(crate) fn field_invariant_check<'tcx>(
     let invariants = get_struct_invariants_from_annotation(tcx, adt_def_id, adt_def_id);
     let matched = invariants.iter().any(|p| {
         p.kind() == Some(kind)
-            && field.map_or(true, |f| {
+            && field.is_none_or(|f| {
                 p.args()
                     .first()
                     .and_then(|a| {

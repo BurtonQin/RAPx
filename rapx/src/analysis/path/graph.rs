@@ -837,7 +837,7 @@ impl<'tcx> PathGraph<'tcx> {
             Operand::RuntimeChecks(_) => return true,
         };
         self.resolve_bool_local(cond_local, constraints)
-            .map_or(true, |v| v == 1)
+            .is_none_or(|v| v == 1)
     }
 
     fn resolve_simple_bool(

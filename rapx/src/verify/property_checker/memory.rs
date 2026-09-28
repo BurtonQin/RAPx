@@ -351,7 +351,7 @@ impl PropertyChecker {
             && {
                 let a = vm_state.alloc(alloc_id);
                 !a.is_external()
-                    && a.element_ty.as_ty().map_or(false, |ty| {
+                    && a.element_ty.as_ty().is_some_and(|ty| {
                         if let TyKind::Adt(adt, _) = ty.kind() {
                             api_classify::is_maybe_uninit_type(adt.did())
                         } else {
@@ -417,7 +417,7 @@ impl PropertyChecker {
             let dropped_here =
                 crate::verify::api_classify::is_manually_drop_drop(checkpoint.callee) && unrolled;
             if !dropped_here && !Self::is_maybe_uninit_ptr(vm_state, &value, alloc_id) {
-                let is_param_ref = vm_state.resolve_origin(&value).map_or(false, |origin| {
+                let is_param_ref = vm_state.resolve_origin(&value).is_some_and(|origin| {
                     origin.local.as_usize() <= vm_state.body.arg_count
                         && origin.local != Local::from_usize(0)
                 });
@@ -571,7 +571,7 @@ impl PropertyChecker {
             .alloc(alloc_id)
             .element_ty
             .as_ty()
-            .map_or(false, |ty| matches!(ty.kind(), TyKind::Param(_)));
+            .is_some_and(|ty| matches!(ty.kind(), TyKind::Param(_)));
         let elem_size = vm_state.generic_elem_size(alloc_id);
         if alloc_elem_is_generic && !size.as_u64().is_some() && !access.as_u64().is_some() {
             return Self::allocation_covers_access(

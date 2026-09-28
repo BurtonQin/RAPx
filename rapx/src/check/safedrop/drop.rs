@@ -92,7 +92,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
         if self
             .alias_graph
             .value_to_slot_idx(value_idx)
-            .map_or(false, |si| self.alias_graph.pts_graph.slot_is_ref_count(si))
+            .is_some_and(|si| self.alias_graph.pts_graph.slot_is_ref_count(si))
         {
             return;
         }

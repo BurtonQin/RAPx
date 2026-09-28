@@ -473,7 +473,7 @@ pub fn rvalue_any_place_matching<'tcx>(
             #[cfg(rapx_ge_95)]
             Operand::RuntimeChecks(_) => false,
         }),
-        _ => rvalue_source_place(rvalue).map_or(false, |place| pred(place)),
+        _ => rvalue_source_place(rvalue).is_some_and(pred),
     }
 }
 
@@ -506,7 +506,7 @@ pub(crate) fn resolve_const_item_value<'tcx>(tcx: TyCtxt<'tcx>, name: &str) -> O
         let Some(scalar) = val.try_to_scalar_int() else {
             continue;
         };
-        return Some(scalar.to_bits(scalar.size()) as u128);
+        return Some(scalar.to_bits(scalar.size()));
     }
     None
 }

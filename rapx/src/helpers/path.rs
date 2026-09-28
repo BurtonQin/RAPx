@@ -97,11 +97,11 @@ impl<'tcx> PathResolver<'tcx> {
                 match self_ty.kind() {
                     // Theoretically, we need to check visibility of generic args.
                     // However, it is a bit complicated and we currently do not consider it.
-                    TyKind::Adt(adt_def, _) => return self.path_exists(adt_def.did()),
-                    _ => return true,
+                    TyKind::Adt(adt_def, _) => self.path_exists(adt_def.did()),
+                    _ => true,
                 }
             }
-            DefKind::Trait => return self.path_exists(assoc_id),
+            DefKind::Trait => self.path_exists(assoc_id),
             _ => panic!(
                 "unexpected parent kind: {:?} for assoc item: {:?}",
                 kind, did

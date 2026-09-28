@@ -125,7 +125,7 @@ impl<'tcx> FnVisitor<'tcx> {
             self.stats.pub_non_generic_api.insert(fn_did);
         }
 
-        if fk.header().map_or(false, |header| header.is_unsafe()) {
+        if fk.header().is_some_and(|header| header.is_unsafe()) {
             self.stats.pub_unsafe_api.insert(fn_did);
         }
     }

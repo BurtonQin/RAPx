@@ -330,7 +330,7 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
     }
 
     pub fn eval(&self, caller_vars: &VarNodes<'tcx, T>) -> Range<T> {
-        return Range::bottom();
+        Range::bottom()
     }
 }
 #[derive(Debug, Clone)]

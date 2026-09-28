@@ -55,24 +55,15 @@ impl<'ctx> Default for IntraVar<'ctx> {
 
 impl<'ctx> IntraVar<'ctx> {
     pub fn is_declared(&self) -> bool {
-        match *self {
-            IntraVar::Declared => true,
-            _ => false,
-        }
+        matches!(self, IntraVar::Declared)
     }
 
     pub fn is_init(&self) -> bool {
-        match *self {
-            IntraVar::Init(_) => true,
-            _ => false,
-        }
+        matches!(self, IntraVar::Init(_))
     }
 
     pub fn is_unsupported(&self) -> bool {
-        match *self {
-            IntraVar::Unsupported => true,
-            _ => false,
-        }
+        matches!(self, IntraVar::Unsupported)
     }
 
     pub fn extract(&self) -> ast::BV<'ctx> {

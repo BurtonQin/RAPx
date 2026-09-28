@@ -96,7 +96,7 @@ where
             rerurn_places: HashSet::new(),
             switchbbs: HashMap::new(),
             const_func_place: HashMap::new(),
-            unique_adt_path: unique_adt_path,
+            unique_adt_path,
         }
     }
 
@@ -129,7 +129,7 @@ where
             rerurn_places: HashSet::new(),
             switchbbs: HashMap::new(),
             const_func_place: HashMap::new(),
-            unique_adt_path: unique_adt_path,
+            unique_adt_path,
         }
     }
 

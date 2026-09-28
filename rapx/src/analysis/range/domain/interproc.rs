@@ -220,7 +220,7 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
 
                 // 5. Retrieve the return value.
                 //    The return value is stored in `_0` (RETURN_PLACE).
-                let return_place_local = 0 as usize; // `_0` is typically the first local.
+                let return_place_local = 0_usize; // `_0` is typically the first local.
 
                 // Find all variables that contribute to the return value.
                 // The `rerurn_places` set in the callee's graph tracks these.

@@ -190,7 +190,7 @@ fn push_drop_top_down(
     for (_field_id, field_value_id) in graph.values[value_idx].fields.clone() {
         if graph
             .value_to_slot_idx(field_value_id)
-            .map_or(false, |si| graph.pts_graph.slot_kind(si) == ValueKind::Ref)
+            .is_some_and(|si| graph.pts_graph.slot_kind(si) == ValueKind::Ref)
         {
             continue;
         }

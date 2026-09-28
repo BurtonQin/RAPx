@@ -681,13 +681,13 @@ impl PropertyChecker {
                     }
                 }
                 if size > 0 {
-                    Some(Int::from_u64(vm_state.ctx, size as u64))
+                    Some(Int::from_u64(vm_state.ctx, size))
                 } else {
                     Some(Int::from_u64(vm_state.ctx, 0))
                 }
             }
             ContractExpr::AlignOf(ty) => {
-                let align = vm_state.align_of_ty(*ty) as u64;
+                let align = vm_state.align_of_ty(*ty);
                 if align > 0 {
                     Some(Int::from_u64(vm_state.ctx, align.max(1)))
                 } else {

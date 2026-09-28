@@ -53,7 +53,6 @@ impl<'tcx> SafetyFlowAnalysis<'tcx> {
         match ins {
             TargetCrate::Std => {
                 self.audit_std_unsafe();
-                return;
             }
             _ => {
                 let fns = FnCollector::collect(self.tcx);
@@ -103,7 +102,7 @@ impl<'tcx> SafetyFlowAnalysis<'tcx> {
 
         // Skip processing if the caller is the dummy raw pointer dereference function
         let caller_name = get_fn_name_byid(&def_id);
-        if let Some(_) = caller_name.find("__raw_ptr_deref_dummy") {
+        if caller_name.find("__raw_ptr_deref_dummy").is_some() {
             return;
         }
 

@@ -1410,7 +1410,7 @@ pub(super) fn ownership_transfer_violation(
 
     for block_index in &reachable {
         if let Some(terminator) = &body.basic_blocks[*block_index].terminator
-            && terminator_returns_ownership(tcx, &terminator.kind, &owner_locals)
+            && terminator_returns_ownership(&terminator.kind, &owner_locals)
         {
             return None;
         }
@@ -1711,7 +1711,6 @@ fn terminator_uses_live_origin(kind: &TerminatorKind<'_>, live_origins: &[PlaceK
 }
 
 fn terminator_returns_ownership(
-    _tcx: TyCtxt<'_>,
     terminator: &TerminatorKind<'_>,
     owner_locals: &HashSet<Local>,
 ) -> bool {

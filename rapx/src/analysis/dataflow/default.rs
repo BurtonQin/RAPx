@@ -61,7 +61,7 @@ impl<'tcx> Analysis for DataflowAnalyzer<'tcx> {
 impl<'tcx> DataflowAnalyzer<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, debug: bool) -> Self {
         Self {
-            tcx: tcx,
+            tcx,
             graphs: HashMap::new(),
             debug,
             draw: false,

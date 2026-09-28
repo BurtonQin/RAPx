@@ -209,7 +209,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             None
                         };
                         let heap_ty = heap_ty.unwrap_or(ty);
-                        let heap_size = self.size_of_ty(heap_ty) as u64;
+                        let heap_size = self.size_of_ty(heap_ty);
                         let heap_align = self.align_sym(heap_ty);
                         let heap_size_term = Int::from_u64(self.ctx, heap_size.max(1));
                         // Vec/CString can hold many elements — use an external
@@ -388,7 +388,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // `self.pointer` back to "owned" (the local's provenance would
                     // be `None`).
                     if crate::helpers::mir_utils::is_raw_ptr_wrapper(self.tcx, adt_def.did()) {
-                        if let Some(f0) = self.field_value(local, &vec![0]).cloned() {
+                        if let Some(f0) = self.field_value(local, &[0]).cloned() {
                             let prov = f0.provenance.clone();
                             self.set_local(
                                 local,
@@ -472,7 +472,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     invariants.in_bounds = true;
 
                     if let rustc_middle::ty::TyKind::Slice(elem_ty) = pointee_ty.kind() {
-                        let elem_size = self.size_of_ty(*elem_ty) as u64;
+                        let elem_size = self.size_of_ty(*elem_ty);
                         let len = self.fresh_int(&format!("slice_len_{}", local_idx));
                         let zero = Int::from_u64(self.ctx, 0);
                         self.path_conditions.push(len.ge(&zero));
@@ -741,7 +741,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let n: Option<usize> =
                         crate::helpers::mir_utils::eval_array_len(self.tcx, const_len)
                             .map(|v| v as usize);
-                    let elem_size = self.size_of_ty(*elem_ty) as u64;
+                    let elem_size = self.size_of_ty(*elem_ty);
                     let step = (elem_size.max(1)) as usize;
                     let align = self.align_sym(*elem_ty);
                     // Symbolic-aware element size: a generic `T` gets `sizeof_T`
@@ -881,7 +881,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         if let Some(src_val) = self.locals.get(&src_local) {
                             let has_better_prov = src_val.is_pointer()
                                 && src_val.invariants.non_null
-                                && self.locals.get(&dest_local).map_or(true, |d| {
+                                && self.locals.get(&dest_local).is_none_or(|d| {
                                     d.provenance.is_none() || !d.invariants.non_null
                                 });
                             if has_better_prov {
@@ -1383,7 +1383,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             for pred in self.body.basic_blocks.predecessors()[block].to_vec() {
-                if path_blocks.map_or(true, |b| b.contains(&pred)) {
+                if path_blocks.is_none_or(|b| b.contains(&pred)) {
                     worklist.push(pred);
                 }
             }
@@ -1596,7 +1596,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 } else {
                     self.locals
                         .get(&place.local)
-                        .map_or(false, |v| v.invariants.in_bounds)
+                        .is_some_and(|v| v.invariants.in_bounds)
                 };
                 self.set_local(
                     dest_local,
@@ -1631,7 +1631,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let src_in_bounds = self
                     .locals
                     .get(&place.local)
-                    .map_or(false, |v| v.invariants.in_bounds);
+                    .is_some_and(|v| v.invariants.in_bounds);
                 self.set_local(
                     dest_local,
                     VmValue {
@@ -2167,7 +2167,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     } else {
                         self.locals
                             .get(&place.local)
-                            .map_or(false, |v| v.invariants.in_bounds)
+                            .is_some_and(|v| v.invariants.in_bounds)
                     };
                     // An empty slice (`&[]` from `align_to`'s `offset > len` /
                     // ZST branch) is built as `&*dangling`: the dangling raw
@@ -2245,7 +2245,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let source_in_bounds = self
                         .locals
                         .get(&place.local)
-                        .map_or(false, |v| v.invariants.in_bounds);
+                        .is_some_and(|v| v.invariants.in_bounds);
                     let val = VmValue {
                         term: addr.term,
                         ty: dest_ty,
@@ -2330,7 +2330,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     self.path_conditions.push(rem.ge(&zero));
                     // Remainder and quotient bounds help prove length constraints
                     // involving % and / in the SMT solver.
-                    if rhs.term.as_u64().map_or(true, |r| r >= 1) {
+                    if rhs.term.as_u64().is_none_or(|r| r >= 1) {
                         self.path_conditions.push(rem.lt(&rhs.term));
                     }
                     self.path_conditions.push(rem.le(&lhs.term));
@@ -2339,14 +2339,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     self.path_conditions.push(mul_term.le(&lhs.term));
                     // Quotient strict bound: for rhs >= 2 and lhs >= 2,
                     // quot + 1 <= lhs (hence quot < lhs). E.g. X/2 < X for X>1.
-                    if rhs.term.as_u64().map_or(false, |r| r >= 2) {
+                    if rhs.term.as_u64().is_some_and(|r| r >= 2) {
                         let one = Int::from_u64(self.ctx, 1);
                         let qp1 = Int::add(self.ctx, &[quot, &one]);
                         // qp1 <= lhs is equivalent to quot < lhs for integers
                         self.path_conditions.push(qp1.le(&lhs.term));
                     } else {
                         // For rhs >= 1: quot <= lhs
-                        if rhs.term.as_u64().map_or(false, |r| r >= 1) {
+                        if rhs.term.as_u64().is_some_and(|r| r >= 1) {
                             self.path_conditions.push(quot.le(&lhs.term));
                         }
                     }
@@ -2724,8 +2724,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     VmValue::new(term, dest_ty)
                 }
             }
-            Rvalue::Repeat(operand, _count) => {
-                let _val = self.value_of_operand(operand);
+            Rvalue::Repeat(..) => {
                 let term = self.fresh_int("repeat");
                 VmValue::new(term, dest_ty)
             }
@@ -3149,7 +3148,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     (Some(a), None) => match a.simplify().as_u64() {
                         Some(au) => {
                             let c = rhs.term.as_u64().unwrap_or(1);
-                            if c % au == 0 { Some(a.clone()) } else { None }
+                            if c.is_multiple_of(au) { Some(a.clone()) } else { None }
                         }
                         // Symbolic alignment: only a zero RHS is a guaranteed
                         // multiple of `align_T`.
@@ -3331,7 +3330,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             self.path_conditions.push(cond.clone());
                         }
                     }
-                    return;
                 }
             }
         }
@@ -3525,7 +3523,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let is_guard = |d: &Box<Property<'tcx>>| {
                     matches!(d.as_ref(), Property::Atom(a) if a.kind == PropertyKind::Null || a.kind == PropertyKind::Size)
                 };
-                if !or.disjuncts.iter().any(|d| is_guard(d)) {
+                if !or.disjuncts.iter().any(&is_guard) {
                     return;
                 }
                 for disj in &or.disjuncts {
@@ -3738,7 +3736,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
             self.allocate_external(max_size, heap_align.clone(), Some(elem_ty))
         } else {
-            let elem_sz = Int::from_u64(self.ctx, elem_sz_raw as u64);
+            let elem_sz = Int::from_u64(self.ctx, elem_sz_raw);
             let count = count_term.unwrap_or_else(|| Int::from_u64(self.ctx, 1));
             let total = Int::mul(self.ctx, &[&count, &elem_sz]);
             self.allocate_external(total, heap_align, Some(elem_ty))
@@ -4236,7 +4234,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .and_then(|loc| self.locals.get(&loc))
             .and_then(|sl_val| sl_val.provenance_alloc_id())
             .and_then(|da_id| self.alloc(da_id).element_ty.as_ty())
-            .map(|ty| self.size_of_ty(ty) as u64)
+            .map(|ty| self.size_of_ty(ty))
             .unwrap_or(1)
             .max(1);
         let Some(data_size) = data_size else { return };
@@ -4670,11 +4668,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         match pointee_ty.kind() {
             rustc_middle::ty::TyKind::Array(elem_ty, _)
             | rustc_middle::ty::TyKind::Slice(elem_ty) => {
-                let is_byte = match elem_ty.kind() {
-                    rustc_middle::ty::TyKind::Uint(rustc_middle::ty::UintTy::U8) => true,
-                    rustc_middle::ty::TyKind::Int(rustc_middle::ty::IntTy::I8) => true,
-                    _ => false,
-                };
+                let is_byte = matches!(
+                    elem_ty.kind(),
+                    rustc_middle::ty::TyKind::Uint(rustc_middle::ty::UintTy::U8)
+                        | rustc_middle::ty::TyKind::Int(rustc_middle::ty::IntTy::I8)
+                );
                 if is_byte {
                     let bytes_opt =
                         crate::helpers::mir_utils::const_operand_bytes(self.tcx, operand)

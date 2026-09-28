@@ -22,7 +22,7 @@ impl<'tcx> rCanary<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, adt_owner: HeapOwnershipResultMap) -> Self {
         Self {
             tcx,
-            adt_owner: adt_owner,
+            adt_owner,
             mir_graph: HashMap::default(),
         }
     }

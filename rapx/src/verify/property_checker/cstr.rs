@@ -394,7 +394,7 @@ impl PropertyChecker {
                 };
                 if c.const_
                     .try_to_scalar_int()
-                    .map_or(false, |s| s.to_uint(s.size()) == 0)
+                    .is_some_and(|s| s.to_uint(s.size()) == 0)
                 {
                     nul_store_count += 1;
                 }

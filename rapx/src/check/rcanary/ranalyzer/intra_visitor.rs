@@ -588,7 +588,6 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         }
                     }
                     _ => {
-                        return;
                     }
                 }
             }
@@ -2467,7 +2466,6 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             }
             _ => {
                 self.handle_intra_var_unsupported(lu);
-                return;
             }
         }
     }
@@ -2680,12 +2678,11 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_intra_var_unsupported(&mut self, idx: usize) {
         match self.icx_slice_mut().var_mut()[idx] {
-            IntraVar::Unsupported => return,
+            IntraVar::Unsupported => (),
             IntraVar::Declared | IntraVar::Init(_) => {
                 // turns into the unsupported
                 self.icx_slice_mut().var_mut()[idx] = IntraVar::Unsupported;
                 self.icx_slice_mut().len_mut()[idx] = 0;
-                return;
             }
         }
     }
@@ -2955,7 +2952,7 @@ impl<'tcx> ProjectionSupport<'tcx> {
     }
 
     pub fn is_unsupported(&self) -> bool {
-        self.unsupport == true
+        self.unsupport
     }
 
     pub fn has_field(&self) -> bool {
@@ -2976,11 +2973,11 @@ impl<'tcx> ProjectionSupport<'tcx> {
 }
 
 fn has_projection(place: &Place) -> bool {
-    return if place.projection.len() > 0 {
+    if place.projection.len() > 0 {
         true
     } else {
         false
-    };
+    }
 }
 
 fn heap_layout_to_rustbv(layout: &Vec<HeapOwnership>) -> Vec<bool> {

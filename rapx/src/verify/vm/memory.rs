@@ -219,7 +219,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // would let `access_bytes` read it back as an unbounded access
                 // size, breaking `Allocated(&mut MaybeUninit<T>, T, 1)` against
                 // the iterator provenance (array_try_from_fn_ext).
-                let elem_size = self.size_of_ty(*elem).max(1) as u64;
+                let elem_size = self.size_of_ty(*elem).max(1);
                 let n_term = self.const_len_term(const_len);
                 let size = match n_term.as_u64() {
                     Some(n) => Int::from_u64(self.ctx, n.saturating_mul(elem_size)),

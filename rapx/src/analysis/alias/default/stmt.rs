@@ -266,7 +266,7 @@ impl<'tcx> AliasGraph<'tcx> {
                     && self
                         .pts_graph
                         .get_slot_idx(&Slot::new(ret_local))
-                        .map_or(false, |si| self.pts_graph.slot_is_ptr(si))
+                        .is_some_and(|si| self.pts_graph.slot_is_ptr(si))
                 {
                     let slot_args: Vec<usize> = merge_slots.iter().map(|&(_, s)| s).collect();
                     self.pts_graph.conservative_call_merge(&slot_args);

@@ -21,10 +21,10 @@ impl<'b, 'tcx> CallGraphVisitor<'b, 'tcx> {
         call_graph_info: &'b mut CallGraph<'tcx>,
     ) -> Self {
         Self {
-            tcx: tcx,
-            def_id: def_id,
-            body: body,
-            call_graph_info: call_graph_info,
+            tcx,
+            def_id,
+            body,
+            call_graph_info,
         }
     }
 

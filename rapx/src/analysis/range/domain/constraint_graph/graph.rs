@@ -754,7 +754,7 @@ where
             // This handles cases where the call is not a direct one,
             // such as calling a function pointer stored in a variable.
         }
-        let mut constant_count = 0 as usize;
+        let mut constant_count = 0_usize;
         let arg_count = args.len();
         let mut arg_operands: Vec<Operand<'tcx>> = Vec::new();
         let mut places = Vec::new();

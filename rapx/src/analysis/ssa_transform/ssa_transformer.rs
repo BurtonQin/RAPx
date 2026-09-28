@@ -56,7 +56,7 @@ impl<'tcx> SSATransformer<'tcx> {
             Self::map_locals_to_assign_blocks(&body);
         let local_defination_block: HashMap<Local, BasicBlock> =
             Self::map_locals_to_definition_block(&body);
-        let len = body.local_decls.len() as usize;
+        let len = body.local_decls.len();
         let mut skipped = HashSet::new();
         if len > 0 {
             skipped.extend(arg_count + 1..len + 1);
@@ -73,11 +73,11 @@ impl<'tcx> SSATransformer<'tcx> {
             local_assign_blocks,
             reaching_def: HashMap::default(),
             local_index: len,
-            local_defination_block: local_defination_block,
-            skipped: skipped,
+            local_defination_block,
+            skipped,
             phi_index: HashMap::default(),
             phi_def_id: ssa_def_id,
-            essa_def_id: essa_def_id,
+            essa_def_id,
             ref_local_map: HashMap::default(),
             places_map: HashMap::default(),
             ssa_locals_map: HashMap::default(),

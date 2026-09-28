@@ -255,7 +255,7 @@ impl<'tcx> HeapOwnershipAnalyzer<'tcx> {
         let mut v_res = self.adt_heap_mut().get_mut(&did).unwrap().clone();
 
         for (variant_index, variant) in adt_def.variants().iter().enumerate() {
-            let res = v_res[variant_index as usize].clone();
+            let res = v_res[variant_index ].clone();
 
             let mut raw_generic_prop = IsolatedParamPropagation::new(
                 self.tcx,
@@ -268,7 +268,7 @@ impl<'tcx> HeapOwnershipAnalyzer<'tcx> {
                 let field_ty = crate::helpers::mir_utils::field_ty(self.tcx, field, substs);
                 let _ = field_ty.visit_with(&mut raw_generic_prop);
             }
-            v_res[variant_index as usize] =
+            v_res[variant_index] =
                 (HeapOwnership::False, raw_generic_prop.record_mut().clone());
         }
 
@@ -325,7 +325,7 @@ impl<'tcx> HeapOwnershipAnalyzer<'tcx> {
                                                         break;
                                                     }
                                                 }
-                                                if has_ptr == false {
+                                                if !has_ptr {
                                                     return;
                                                 }
                                             }
@@ -363,7 +363,7 @@ impl<'tcx> HeapOwnershipAnalyzer<'tcx> {
         let mut v_res = self.adt_heap_mut().get_mut(&did).unwrap().clone();
 
         for (variant_index, variant) in adt_def.variants().iter().enumerate() {
-            let res = v_res[variant_index as usize].clone();
+            let res = v_res[variant_index ].clone();
 
             let mut heap_prop = HeapPropagation::new(self.tcx, res.0, self.adt_heap());
 
@@ -371,7 +371,7 @@ impl<'tcx> HeapOwnershipAnalyzer<'tcx> {
                 let field_ty = crate::helpers::mir_utils::field_ty(self.tcx, field, substs);
                 let _ = field_ty.visit_with(&mut heap_prop);
             }
-            v_res[variant_index as usize].0 = heap_prop.heap();
+            v_res[variant_index].0 = heap_prop.heap();
         }
 
         self.adt_heap_mut().insert(did, v_res);
@@ -443,7 +443,7 @@ impl<'tcx> Visitor<'tcx> for HeapOwnershipAnalyzer<'tcx> {
                     self.visit_ty(field, copy_ty_context(&ty_context));
                 }
             }
-            _ => return,
+            _ => (),
         }
     }
 
@@ -523,7 +523,7 @@ impl<'tcx, 'a> TypeVisitor<TyCtxt<'tcx>> for IsolatedParamPropagation<'tcx, 'a> 
                                 continue;
                             }
                             map_raw_generic_field_subst
-                                .insert(index as usize, raw_generic_field_subst);
+                                .insert(index, raw_generic_field_subst);
                         }
                     }
                 }
@@ -684,7 +684,7 @@ impl<'tcx, 'a> TypeVisitor<TyCtxt<'tcx>> for DefaultOwnership<'tcx, 'a> {
                     }
                     HeapOwnership::False => {
                         for (index, each_generic) in generic_list.iter().enumerate() {
-                            if *each_generic == false {
+                            if !*each_generic {
                                 continue;
                             } else {
                                 let subset_ty = substs[index].expect_ty();
@@ -1033,7 +1033,7 @@ impl<'tcx, 'a> DefaultOwnership<'tcx, 'a> {
     }
 
     pub fn is_param_true(&self) -> bool {
-        self.param == true
+        self.param
     }
 
     pub fn get_ptr(&self) -> bool {
@@ -1045,7 +1045,7 @@ impl<'tcx, 'a> DefaultOwnership<'tcx, 'a> {
     }
 
     pub fn is_ptr_true(&self) -> bool {
-        self.ptr == true
+        self.ptr
     }
 
     pub fn heap(&self) -> &'a HeapOwnershipResultMap {
@@ -1091,10 +1091,7 @@ impl<'tcx> FindPtr<'tcx> {
 }
 
 pub fn is_display_verbose() -> bool {
-    match env::var_os("ADT_DISPLAY") {
-        Some(_) => true,
-        _ => false,
-    }
+    env::var_os("ADT_DISPLAY").is_some()
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Default)]
@@ -1181,7 +1178,7 @@ impl OwnershipLayoutResult {
     }
 
     pub fn is_param_true(&self) -> bool {
-        self.param == true
+        self.param
     }
 
     pub fn get_requirement(&self) -> bool {
@@ -1193,7 +1190,7 @@ impl OwnershipLayoutResult {
     }
 
     pub fn is_requirement_true(&self) -> bool {
-        self.requirement == true
+        self.requirement
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1201,7 +1198,7 @@ impl OwnershipLayoutResult {
     }
 
     pub fn is_owned(&self) -> bool {
-        self.owned == true
+        self.owned
     }
 
     pub fn set_owned(&mut self, o: bool) {

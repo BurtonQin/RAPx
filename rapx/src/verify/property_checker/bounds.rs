@@ -67,7 +67,7 @@ impl PropertyChecker {
                 .args()
                 .get(2)
                 .and_then(|a| self.resolve_arg_term(vm_state, checkpoint, a))
-                .map_or(true, |c| c.simplify().as_u64() == Some(1));
+                .is_none_or(|c| c.simplify().as_u64() == Some(1));
             if count_one {
                 return CheckResult::ProvedByRule;
             }
@@ -163,7 +163,7 @@ impl PropertyChecker {
             .alloc(alloc_id)
             .element_ty
             .as_ty()
-            .map_or(false, |ty| matches!(ty.kind(), TyKind::Param(_)));
+            .is_some_and(|ty| matches!(ty.kind(), TyKind::Param(_)));
         let fallback_for_generic =
             alloc_elem_is_generic && !size.as_u64().is_some() && !access.as_u64().is_some();
 
@@ -475,8 +475,7 @@ impl PropertyChecker {
             let elem_size = vm_state
                 .pointee_elem_size(v1.ty)
                 .max(vm_state.pointee_elem_size(v2.ty))
-                .max(1) as u64;
-            let _elem_size_term = Int::from_u64(vm_state.ctx, elem_size);
+                .max(1);
             if let Some(count) = count_term.simplify().as_u64() {
                 let range = Int::from_u64(vm_state.ctx, elem_size * count.max(1));
                 let src_end = Int::add(vm_state.ctx, &[&v1.term, &range]);

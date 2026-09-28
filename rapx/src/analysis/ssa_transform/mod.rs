@@ -34,7 +34,7 @@ pub struct SSATrans<'tcx> {
 
 impl<'tcx> SSATrans<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, debug: bool) -> Self {
-        Self { tcx: tcx, debug }
+        Self { tcx, debug }
     }
 
     pub fn start(&mut self) {

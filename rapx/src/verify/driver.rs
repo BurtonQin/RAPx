@@ -820,11 +820,11 @@ impl<'tcx> Analysis for VerifyRun<'tcx> {
             if all_results.is_empty() {
                 let all_callees_skipped = !target.checkpoints.is_empty()
                     && target.checkpoints.iter().all(|ckpt| {
-                        ckpt.callee.map_or(false, |callee| {
+                        ckpt.callee.is_some_and(|callee| {
                             target
                                 .callee_requires
                                 .get(&callee)
-                                .map_or(true, |c| c.is_empty())
+                                .is_none_or(|c| c.is_empty())
                         })
                     });
                 if (target.checkpoints.is_empty() || all_callees_skipped)
