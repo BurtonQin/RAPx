@@ -53,6 +53,10 @@ static REGISTRY: &[Entry] = &[
     // `#[inline]` wrappers around the intrinsic and are matched for the same
     // reason.
     ED!(api_classify::is_layout_constant, eff_layout_const),
+    ED!(
+        api_classify::is_select_unpredictable,
+        eff_select_unpredictable
+    ),
     // ── MIR unavailable — non-#[inline] cross-crate ─────────────────
     // These std functions are not `#[inline]`, so precompiled std ships no MIR
     // for them (`tcx.is_mir_available` is false) and the effect is the only
@@ -202,6 +206,10 @@ pub(crate) fn lookup_effect<'tcx>(
 
 fn eff_none(_: &EffCtx<'_, '_>) -> Vec<CallEffect> {
     Vec::new()
+}
+
+fn eff_select_unpredictable(_: &EffCtx<'_, '_>) -> Vec<CallEffect> {
+    vec![CallEffect::SelectUnpredictable]
 }
 
 fn eff_alias_ptr(ctx: &EffCtx<'_, '_>) -> Vec<CallEffect> {

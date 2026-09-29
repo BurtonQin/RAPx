@@ -418,32 +418,17 @@ pub(crate) struct InlineCtx<'ctx, 'tcx> {
 }
 
 /// The operands a place was produced from, for guard inference (tracing a
-/// switch/assert guard back to the pointer it null-checks or alignment-checks).
+/// switch/assert guard back to the pointer it null-checks or alignment-checks)
+/// and division-axiom injection (following dataflow edges to reach `Div`/`Rem`
+/// results).
+///
+/// The operator kind lets guard inference tell null-check guards (`Ne`) from
+/// alignment/equality guards (`Eq`/`Rem`/`BitAnd`).
 #[derive(Clone, Debug)]
-pub(crate) enum OpSource {
-    /// A binary operation (comparison, arithmetic), with its operator kind so
-    /// null-check guards (`Ne`) can be told apart from alignment/equality guards
-    /// (`Eq`/`Rem`/`BitAnd`).
-    Binary {
-        lhs: Option<PlaceKey>,
-        rhs: Option<PlaceKey>,
-        op: rustc_middle::mir::BinOp,
-    },
-    /// A non-binary producer (`select_unpredictable`, etc.).  Guard inference
-    /// must not treat these as pointer comparisons.
-    Other {
-        lhs: Option<PlaceKey>,
-        rhs: Option<PlaceKey>,
-    },
-}
-
-impl OpSource {
-    /// The (lhs, rhs) operand place keys, ignoring the operator kind.
-    pub(crate) fn operands(&self) -> (&Option<PlaceKey>, &Option<PlaceKey>) {
-        match self {
-            OpSource::Binary { lhs, rhs, .. } | OpSource::Other { lhs, rhs } => (lhs, rhs),
-        }
-    }
+pub(crate) struct BinaryOpSource {
+    pub lhs: Option<PlaceKey>,
+    pub rhs: Option<PlaceKey>,
+    pub op: rustc_middle::mir::BinOp,
 }
 
 /// Per-frame analysis metadata keyed by `Local`/`PlaceKey`.
@@ -455,9 +440,9 @@ impl OpSource {
 #[derive(Default)]
 pub(crate) struct AnalysisCtx<'ctx> {
     /// Operand sources for guard inference: destination → (lhs, rhs) place
-    /// keys, with the operator kind for binary ops.  `Other` producers (e.g.
-    /// `select_unpredictable`) are not treated as pointer comparisons.
-    pub(crate) op_sources: FxHashMap<PlaceKey, OpSource>,
+    /// keys with the operator kind of the binary operation that produced the
+    /// destination.
+    pub(crate) op_sources: FxHashMap<PlaceKey, BinaryOpSource>,
 
     /// Cumulative ptr offset for Iter/IterMut field [0] (ptr).
     /// Key: (struct_local). When post_inc_start advances the ptr by `n`
@@ -609,7 +594,7 @@ pub(crate) struct FrameSnapshot<'ctx, 'tcx> {
     pub(crate) slots: FxHashMap<Local, AllocId>,
     pub(crate) local_fields: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
     pub(crate) move_sources: FxHashMap<Local, Local>,
-    pub(crate) op_sources: FxHashMap<PlaceKey, OpSource>,
+    pub(crate) op_sources: FxHashMap<PlaceKey, BinaryOpSource>,
     pub(crate) iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
 }
 

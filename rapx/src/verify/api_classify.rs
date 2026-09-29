@@ -494,6 +494,18 @@ pub fn is_nonnull_as_ref_as_mut(callee: Option<DefId>) -> bool {
     )
 }
 
+/// Whether `callee` is `select_unpredictable` (the intrinsic or its
+/// `hint::`/`intrinsics::` wrappers): returns one of two candidate values.
+pub(crate) fn is_select_unpredictable(callee: Option<DefId>) -> bool {
+    any_of(
+        callee,
+        &[
+            crate::def_id::select_unpredictable(),
+            crate::def_id::hint_select_unpredictable(),
+        ],
+    )
+}
+
 /// Whether `callee` is a `Vec` method that may reallocate (invalidating any
 /// outstanding raw pointers derived from it).
 pub fn is_vec_invalidating_method(callee: Option<DefId>) -> bool {

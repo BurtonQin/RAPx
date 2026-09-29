@@ -87,6 +87,10 @@ impl CallEffectSummary {
 pub(crate) enum CallEffect {
     /// The return value aliases or is a direct value flow from an argument.
     ReturnAliasArg { arg: usize },
+    /// `select_unpredictable(cond, x, y)` returns either `x` or `y`: the result
+    /// is one of the two candidate values (`args[1]`/`args[2]`), non-deterministic
+    /// since the boolean selector (`args[0]`) is unpredictable.
+    SelectUnpredictable,
     /// The return value is a pointer extracted from an aggregate/reference arg.
     ReturnPointerFromArg { arg: usize },
     /// The return value is `base + offset * stride`.

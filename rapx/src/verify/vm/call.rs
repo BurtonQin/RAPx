@@ -15,12 +15,9 @@ use rustc_middle::ty::{Ty, TyKind};
 use z3::ast::{Ast, Bool, Int};
 
 use crate::compat::{FxHashMap, FxHashSet, Spanned};
-use crate::helpers::mir_utils::operand_place;
 use crate::verify::api_classify;
 use crate::verify::call_summary::{self, CallEffect};
-use crate::verify::def_use::{PlaceBaseKey, PlaceKey};
-
-use super::state::{AllocId, ContentTy, OffsetKind, OpSource, Provenance, ValueInvariants, VmState, VmValue};
+use super::state::{AllocId, ContentTy, OffsetKind, Provenance, ValueInvariants, VmState, VmValue};
 
 /// Classification of a call site for dispatch prioritization.
 const MAX_INLINE_DEPTH: usize = 5;
@@ -52,11 +49,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .iter()
             .map(|a| a.node.place().map(|p| p.local))
             .collect();
-
-        // ── select_unpredictable: result ∈ {x, y} ─────────────────────
-        if self.try_select_unpredictable(callee, &arg_values, args, destination) {
-            return;
-        }
 
         // Slice range indexing: `<[T]>::index(range)` / `::index_mut(range)`
         // returns a sub-slice whose length is the range's extent.
@@ -230,63 +222,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
 
         self.materialize_const_bytes_after_call(args, destination);
-    }
-
-    /// `select_unpredictable`: result ∈ {x, y}.
-    fn try_select_unpredictable(
-        &mut self,
-        callee: Option<DefId>,
-        arg_values: &[VmValue<'ctx, 'tcx>],
-        args: &[Spanned<Operand<'tcx>>],
-        destination: Local,
-    ) -> bool {
-        let is_select_unpredictable = callee
-            .map(|c| {
-                crate::def_id::contains(
-                    &[
-                        crate::def_id::select_unpredictable(),
-                        crate::def_id::hint_select_unpredictable(),
-                    ],
-                    c,
-                )
-            })
-            .unwrap_or(false);
-        if !is_select_unpredictable || arg_values.len() < 3 {
-            return false;
-        }
-        let term = self.fresh_int(&format!("selunpred_{}", destination.as_usize()));
-        let dest_ty = self.body.local_decls[destination].ty;
-        let eq1 = term._eq(&arg_values[1].term);
-        let eq2 = term._eq(&arg_values[2].term);
-        self.solver.constraints.push(Bool::or(self.ctx, &[&eq1, &eq2]));
-        let prov = arg_values[1]
-            .provenance
-            .clone()
-            .or_else(|| arg_values[2].provenance.clone());
-        // Track operand chain for inject_div_axioms_for_term so that
-        // division axioms reachable through select_unpredictable
-        // can be found even across Use / Cast chains.
-        let dest_pk = PlaceKey {
-            base: PlaceBaseKey::Local(destination.as_usize()),
-            fields: vec![],
-        };
-        let lhs_pk = args.get(1).and_then(|a| operand_place(&a.node));
-        let rhs_pk = args.get(2).and_then(|a| operand_place(&a.node));
-        self.analysis.op_sources
-            .insert(dest_pk, OpSource::Other { lhs: lhs_pk, rhs: rhs_pk });
-        self.set_local(
-            destination,
-            VmValue {
-                term,
-                ty: dest_ty,
-                provenance: prov,
-                invariants: ValueInvariants::default(),
-                field_offset: false,
-                discriminant: None,
-                bool_cond: None,
-            },
-        );
-        true
     }
 
     /// Slice range indexing `<[T]>::index(range)` / `::index_mut(range)`:
@@ -1374,6 +1309,31 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             CallEffect::ReturnAliasArg { arg } => {
                 if let Some(arg_val) = args.get(*arg) {
                     self.set_dest_as_heap_ptr(arg_val, dest);
+                }
+            }
+            CallEffect::SelectUnpredictable => {
+                if args.len() >= 3 {
+                    let term = self.fresh_int(&format!("selunpred_{}", dest.as_usize()));
+                    let dest_ty = self.body.local_decls[dest].ty;
+                    let eq1 = term._eq(&args[1].term);
+                    let eq2 = term._eq(&args[2].term);
+                    self.solver.constraints.push(Bool::or(self.ctx, &[&eq1, &eq2]));
+                    let prov = args[1]
+                        .provenance
+                        .clone()
+                        .or_else(|| args[2].provenance.clone());
+                    self.set_local(
+                        dest,
+                        VmValue {
+                            term,
+                            ty: dest_ty,
+                            provenance: prov,
+                            invariants: ValueInvariants::default(),
+                            field_offset: false,
+                            discriminant: None,
+                            bool_cond: None,
+                        },
+                    );
                 }
             }
             CallEffect::ReturnDerefArg { arg } => {

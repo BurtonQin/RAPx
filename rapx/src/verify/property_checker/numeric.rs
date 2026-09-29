@@ -11,7 +11,7 @@ use crate::verify::contract::{
 };
 use crate::verify::def_use::PlaceKey;
 use crate::verify::report::CheckResult;
-use crate::verify::vm::state::{OpSource, VmState};
+use crate::verify::vm::state::{BinaryOpSource, VmState};
 use rustc_hash::FxHashSet;
 use rustc_middle::mir::Operand;
 use rustc_middle::ty::TyKind;
@@ -282,12 +282,12 @@ impl PropertyChecker {
             return;
         }
 
-        // Walk analysis.op_sources (binary and non-binary producers) for destinations
+        // Walk analysis.op_sources (binary producers) for destinations
         // whose term matches target.
         let op_sources: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = {
             let mut src: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = Vec::new();
             for (pk, src_ops) in vm_state.analysis.op_sources.iter() {
-                let (lhs, rhs) = src_ops.operands();
+                let (lhs, rhs) = (&src_ops.lhs, &src_ops.rhs);
                 if pk
                     .local()
                     .and_then(|l| vm_state.local_value(l))
@@ -303,7 +303,7 @@ impl PropertyChecker {
         let mut already_seen = FxHashSet::default();
 
         // ── Also recurse through Use / Cast chains: search ALL locals
-        // whose term equals target, and for each binary/other-op entry
+        // whose term equals target, and for each binary-op entry
         // that *consumes* that local as an operand, walk the destination.
         for local_idx in 0..vm_state.body.local_decls.len() {
             let local = rustc_middle::mir::Local::from_usize(local_idx);
@@ -315,7 +315,7 @@ impl PropertyChecker {
             }
 
             for (pk, src_ops) in vm_state.analysis.op_sources.iter() {
-                let (lhs, rhs) = src_ops.operands();
+                let (lhs, rhs) = (&src_ops.lhs, &src_ops.rhs);
                 if let Some(dest_local) = pk.local() {
                     if let Some(dest_val) = vm_state.local_value(dest_local) {
                         let lhs_local = lhs.as_ref().and_then(|pk| pk.local());
@@ -336,7 +336,7 @@ impl PropertyChecker {
             }
         }
 
-        // ── Process direct matches (both binary and other sources) ──
+        // ── Process direct matches ──
         for (lhs_pk, rhs_pk) in &op_sources {
             let (Some(lhs_pk), Some(rhs_pk)) = (lhs_pk, rhs_pk) else {
                 continue;
@@ -352,7 +352,7 @@ impl PropertyChecker {
             };
 
             // Check if lhs is itself a Div / Rem result
-            if let Some(OpSource::Binary {
+            if let Some(BinaryOpSource {
                 lhs: div_lhs_pk,
                 rhs: div_rhs_pk,
                 op: _,

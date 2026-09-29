@@ -25,7 +25,7 @@ use crate::{
 };
 
 use super::state::{
-    AllocId, ContentTy, Liveness, OpSource, Provenance, ValueInvariants, VmState, VmValue,
+    AllocId, ContentTy, Liveness, BinaryOpSource, Provenance, ValueInvariants, VmState, VmValue,
 };
 
 use crate::verify::api_classify;
@@ -2280,7 +2280,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let rhs_pk = crate::helpers::mir_utils::operand_place(rhs_op);
                 self.analysis.op_sources.insert(
                     dest_pk,
-                    OpSource::Binary {
+                    BinaryOpSource {
                         lhs: lhs_pk,
                         rhs: rhs_pk,
                         op: *op,
@@ -3354,7 +3354,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let cond_pk = PlaceKey::from_mir_place(place);
 
         // Check if cond is a Ne/Eq comparison of (x % n) or (x & (align-1)) against 0
-        if let Some(OpSource::Binary { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
+        if let Some(BinaryOpSource { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
             self.analysis.op_sources.get(&cond_pk).cloned()
         {
             // The lhs is (x % n) / (x & (align-1)), rhs is constant 0
@@ -3363,7 +3363,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 (None, Some(pk)) => pk.clone(),
                 _ => return,
             };
-            if let Some(OpSource::Binary {
+            if let Some(BinaryOpSource {
                 lhs: div_lhs,
                 rhs: div_rhs,
                 op: inner_op,
@@ -3421,7 +3421,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // mark the non-constant side as non-null.  Only `Ne` guards imply
         // non-nullness; an `Eq` guard (`assert (addr & mask) == 0`, the
         // alignment check) means the value *is* zero, not non-null.
-        if let Some(OpSource::Binary { lhs: lhs_pk, rhs: rhs_pk, op }) =
+        if let Some(BinaryOpSource { lhs: lhs_pk, rhs: rhs_pk, op }) =
             self.analysis.op_sources.get(&cond_pk).cloned()
         {
             if op != rustc_middle::mir::BinOp::Ne {
@@ -3443,7 +3443,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             _ => return,
         };
         let pk = PlaceKey::from_mir_place(place);
-        if let Some(OpSource::Binary { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
+        if let Some(BinaryOpSource { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
             self.analysis.op_sources.get(&pk).cloned()
         {
             self.mark_guard_pointer(&lhs_pk, &rhs_pk);
