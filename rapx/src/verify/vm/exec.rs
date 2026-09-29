@@ -3531,6 +3531,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(val) = self.contract_target_value(property) {
                     self.set_align_for_value(property, val);
                 }
+                self.record_for_each_align(property);
             }
             PropertyKind::Init => {
                 if let Some(val) = self.contract_target_value(property) {
@@ -3541,6 +3542,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(val) = self.contract_target_value(property) {
                     self.set_owning_for_value(val);
                 }
+                self.record_for_each_owning(property);
             }
             PropertyKind::Alive => {
                 if let Some(id) = self.contract_alloc_id_field_aware(property) {
@@ -3573,6 +3575,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             PropertyKind::Allocated => {
                 self.assert_allocated_fact(property);
+                self.record_for_each_allocated(property);
             }
             PropertyKind::Typed => {
                 if let Some(val) = self.contract_target_value(property) {
@@ -3591,7 +3594,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             // discharge `Typed(ptr, T)` soundly (the fact comes
                             // from the invariant, not from the pointer type).
                             if property.for_each().is_some() {
-                                self.alloc_mut(alloc_id).for_each_target_ty = Some(expected_ty);
+                                self.alloc_mut(alloc_id).for_each.target_ty = Some(expected_ty);
                             }
                             // Only record the type invariant when the allocation
                             // has no element type yet.  `Init ⇒ Typed` (and other
@@ -4461,6 +4464,64 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if let Some(prov) = &val.provenance {
             self.alloc_mut(prov.alloc_id).initialized = true;
         }
+    }
+
+    /// Record the `Align(container.iter(), T)` for_each fact: every element
+    /// pointer is aligned to `align_of(T)`.  Anchored to the container
+    /// allocation so a pointer loaded from it can discharge `Align(cur, T)`.
+    fn record_for_each_align(&mut self, property: &Property<'tcx>) {
+        if property.for_each().is_none() {
+            return;
+        }
+        let Some(ty) = property.args().get(1).and_then(|a| match a {
+            PropertyArg::Ty(ty) => Some(*ty),
+            _ => None,
+        }) else {
+            return;
+        };
+        let Some(alloc_id) = self.contract_target_value(property).and_then(|v| v.provenance_alloc_id())
+        else {
+            return;
+        };
+        self.alloc_mut(alloc_id).for_each.aligned_ty = Some(ty);
+    }
+
+    /// Record the `Allocated(container.iter(), T, n)` for_each fact: every
+    /// element pointer backs `>= n` `T` elements (`n` may be symbolic).
+    fn record_for_each_allocated(&mut self, property: &Property<'tcx>) {
+        if property.for_each().is_none() {
+            return;
+        }
+        let Some(ty) = property.args().get(1).and_then(|a| match a {
+            PropertyArg::Ty(ty) => Some(*ty),
+            _ => None,
+        }) else {
+            return;
+        };
+        let count = property
+            .args()
+            .get(2)
+            .and_then(|a| self.resolve_contract_count(a))
+            .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
+        let Some(alloc_id) = self.contract_target_value(property).and_then(|v| v.provenance_alloc_id())
+        else {
+            return;
+        };
+        self.alloc_mut(alloc_id).for_each.allocated = Some((ty, count));
+    }
+
+    /// Record the `Owning(container.iter())` for_each fact: every element
+    /// pointer is the sole owner of its pointee.  Anchored to the container
+    /// allocation so a pointer loaded from it can discharge `Owning(cur)`.
+    fn record_for_each_owning(&mut self, property: &Property<'tcx>) {
+        if property.for_each().is_none() {
+            return;
+        }
+        let Some(alloc_id) = self.contract_target_value(property).and_then(|v| v.provenance_alloc_id())
+        else {
+            return;
+        };
+        self.alloc_mut(alloc_id).for_each.owning = true;
     }
 
     /// Extract the pointee type if `ty` is a `#[repr(transparent)]`

@@ -221,6 +221,30 @@ pub(crate) enum Liveness<'tcx> {
     AssumedFor(Region<'tcx>),
 }
 
+/// Uniform facts about the *pointer elements* of a container, established by
+/// `x.iter()` for_each invariants.
+///
+/// Each fact is a property every element pointer satisfies.  The facts are
+/// anchored to the container's allocation (not the container value) because a
+/// pointer loaded from the container resolves its provenance through this
+/// allocation, so the checker finds the fact via the loaded pointer's
+/// provenance.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ForEachFacts<'ctx, 'tcx> {
+    /// `Typed(iter(), T)`: every element pointer points at a valid `T`.
+    pub target_ty: Option<Ty<'tcx>>,
+    /// `Align(iter(), T)`: every element pointer is aligned to `align_of(T)`.
+    pub aligned_ty: Option<Ty<'tcx>>,
+    /// `Allocated(iter(), T, n)`: every element pointer backs `>= n` `T`
+    /// elements (`n` may be symbolic).
+    pub allocated: Option<(Ty<'tcx>, Int<'ctx>)>,
+    /// `Owning(iter())`: every element pointer is the sole owner of its
+    /// pointee (mutually non-aliasing).  Established by the trusted invariant;
+    /// the aliasing *check* of the invariant itself is done by the alias
+    /// analysis, not by this flag.
+    pub owning: bool,
+}
+
 /// A memory allocation: a stack local, a heap object (`Box`/`Vec`), or an
 /// external raw-pointer placeholder.
 ///
@@ -266,15 +290,9 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     /// invariant.
     pub nul_terminated: bool,
 
-    /// The target type declared by a `Typed(container.iter(), T)` *for_each*
-    /// invariant: every pointer element of the container points at a valid `T`,
-    /// so a single pointer loaded from it (`let cur = buckets[i]`) discharges
-    /// `Typed(cur, T)` — without trusting the pointer type alone, which would
-    /// also bless dangling pointers in containers carrying no such invariant.
-    /// Anchored to the allocation (rather than the container value) because a
-    /// pointer loaded from the container resolves its provenance through this
-    /// allocation, not through the container value.
-    pub for_each_target_ty: Option<Ty<'tcx>>,
+    /// Uniform facts about this allocation's pointer elements, established by
+    /// `x.iter()` for_each invariants (`Typed`/`Align`/`Allocated`).
+    pub for_each: ForEachFacts<'ctx, 'tcx>,
 
     /// The allocation a sub-view was derived from: a slice view created by
     /// `s[i..j]` / `s.get(range)`, `split_at` / `align_to` / `as_chunks`, or
@@ -314,7 +332,7 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
             initialized: false,
             liveness: Liveness::Unassumed,
             nul_terminated: false,
-            for_each_target_ty: None,
+            for_each: ForEachFacts::default(),
             parent: None,
             slice_data: None,
         }

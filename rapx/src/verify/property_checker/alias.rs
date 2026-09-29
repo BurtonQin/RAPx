@@ -45,6 +45,12 @@ impl PropertyChecker {
         let Some(alloc_id) = alloc_id else {
             return CheckResult::ProvedByRule;
         };
+        // `Owning(container.iter())` for_each: every element pointer is the
+        // sole owner of its pointee, so a pointer loaded from the container
+        // (whose provenance names the container allocation) is a valid owner.
+        if vm_state.alloc(alloc_id).for_each.owning {
+            return CheckResult::ProvedByRule;
+        }
         // A loop-unrolled path repeats the same block (the SCC body), so its
         // second `DropMemory` is an unrolled iteration rather than a genuine
         // same-iteration double free. Only the non-unrolled path distinguishes

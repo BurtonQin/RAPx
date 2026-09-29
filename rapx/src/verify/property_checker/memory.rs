@@ -121,6 +121,21 @@ impl PropertyChecker {
                 return CheckResult::ProvedBySmt;
             }
         }
+        // `Align(container.iter(), T)` for_each: every element pointer is
+        // aligned to `align_of(T)`, so a pointer loaded from the container
+        // (whose provenance names the container allocation) is T-aligned.
+        if let Some(prov) = &value.provenance {
+            if let Some(aligned_ty) = vm_state.alloc(prov.alloc_id).for_each.aligned_ty {
+                let fa = vm_state.align_sym_read(aligned_ty);
+                if let (Some(fa_u64), Some(align_u64)) =
+                    (fa.simplify().as_u64(), align.simplify().as_u64())
+                {
+                    if fa_u64 >= align_u64 {
+                        return CheckResult::ProvedByRule;
+                    }
+                }
+            }
+        }
         // Check allocation base alignment with concrete offset
         if let Some(ref prov) = value.provenance {
             let alloc = vm_state.alloc(prov.alloc_id);
@@ -428,6 +443,30 @@ impl PropertyChecker {
                 }
             })
             .map(|ty| self.instantiate_callsite_ty(vm_state, checkpoint, ty));
+
+        // `Allocated(container.iter(), T, n)` for_each: every element pointer
+        // backs `>= n` `T` elements, so a pointer loaded from the container
+        // (whose provenance names the container allocation) satisfies
+        // `Allocated(cur, T, n)`.
+        if let Some((t, n)) = &vm_state.alloc(alloc_id).for_each.allocated {
+            let resolved_t = self.instantiate_callsite_ty(vm_state, checkpoint, *t);
+            if Some(resolved_t) == required_ty {
+                let req_count = property
+                    .args()
+                    .get(2)
+                    .and_then(|a| self.resolve_arg_term(vm_state, checkpoint, a));
+                let count_ok = match (
+                    n.simplify().as_u64(),
+                    req_count.as_ref().and_then(|c| c.simplify().as_u64()),
+                ) {
+                    (Some(fact_n), Some(req_n)) => fact_n >= req_n,
+                    _ => false,
+                };
+                if count_ok {
+                    return CheckResult::ProvedByRule;
+                }
+            }
+        }
 
         let alloc = vm_state.alloc(alloc_id);
         if let (Some(alloc_elem_ty), Some(req_ty)) = (alloc.element_ty.as_ty(), required_ty) {
