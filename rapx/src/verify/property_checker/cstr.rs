@@ -325,7 +325,7 @@ impl PropertyChecker {
         checkpoint: &Checkpoint<'tcx>,
     ) -> Option<CheckResult> {
         let target_local = first_arg_local(checkpoint)?;
-        let body = vm_state.body;
+        let body = vm_state.body();
 
         // Build parent map (same as legacy)
         let parents = body_parents(body);
@@ -420,7 +420,7 @@ impl PropertyChecker {
     ) -> Option<CheckResult> {
         let target_local = first_arg_local(checkpoint)?;
 
-        let body = vm_state.body;
+        let body = vm_state.body();
         let tcx = vm_state.tcx;
 
         // 1. Use worklist-based analysis for as_ptr() chains and branch cases

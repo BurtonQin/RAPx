@@ -46,10 +46,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 } => {
                     let body = self.tcx.optimized_mir(*def_id);
                     let statement = &body.basic_blocks[*block].statements[*statement_index];
-                    let saved = self.body;
-                    self.body = body;
                     self.exec_statement(statement);
-                    self.body = saved;
                 }
                 RelevantItem::Terminator { def_id, block } => {
                     let body = self.tcx.optimized_mir(*def_id);
@@ -61,10 +58,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .unwrap_or(1);
                     self.exec.block_occurrences.insert(*block, occ);
                     let terminator = body.basic_blocks[*block].terminator();
-                    let saved = self.body;
-                    self.body = body;
                     self.exec_terminator(*block, terminator, occ);
-                    self.body = saved;
                 }
                 RelevantItem::CalleeEntry { callee, args } => {
                     self.handle_callee_entry(*callee, args);
@@ -108,7 +102,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         }
 
-        self.body = self.tcx.optimized_mir(callee);
         self.caller_def_id = callee;
 
         for (i, arg) in arg_locals.iter().enumerate() {
@@ -138,7 +131,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.restore_frame(snapshot);
         }
         if let Some(mut v) = ret {
-            let dest_ty = self.body.local_decls[Local::from_usize(dest)].ty;
+            let dest_ty = self.body().local_decls[Local::from_usize(dest)].ty;
             v.ty = dest_ty;
             // Infer invariants: a non-null provenance with offset 0 means the
             // return value is valid and initialized.
@@ -165,8 +158,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     // ── Initialization ──────────────────────────────────────────
 
     fn init_parameters(&mut self) {
-        let arg_count = self.body.arg_count;
-        let local_count = self.body.local_decls.len();
+        let arg_count = self.body().arg_count;
+        let local_count = self.body().local_decls.len();
 
         // Pre-allocate ALL locals and set initial values
         for local_idx in 1..local_count {
@@ -174,7 +167,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             if self.locals.values.contains_key(&local) {
                 continue;
             }
-            let decl = &self.body.local_decls[local];
+            let decl = &self.body().local_decls[local];
             let ty = decl.ty;
 
             self.ensure_local_allocation(local);
@@ -845,7 +838,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // helps when the backward slicer omits same-block definitions
         // (e.g. `_tmp = _1 as *const T`).  Limiting to the entry block
         // ensures only unconditionally-executed assignments are covered.
-        if let Some(entry_bb) = self.body.basic_blocks.iter().next() {
+        if let Some(entry_bb) = self.body().basic_blocks.iter().next() {
             for stmt in &entry_bb.statements {
                 if let StatementKind::Assign(assign) = &stmt.kind {
                     let (dest, rvalue) = &**assign;
@@ -878,7 +871,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     dest_local,
                                     VmValue {
                                         term: src_val.term.clone(),
-                                        ty: dest.ty(self.body, self.tcx).ty,
+                                        ty: dest.ty(self.body(), self.tcx).ty,
                                         provenance: src_val.provenance.clone(),
                                         invariants: src_val.invariants.clone(),
                                         field_offset: false,
@@ -1295,23 +1288,20 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// provenance and invariants through Use/Cast/RawPtr/CopyForDeref chains.
     /// Uses the current path to avoid cross-branch contamination.
     pub(crate) fn propagate_from_checkpoint(&mut self, checkpoint_block: BasicBlock) {
-        let path_blocks: FxHashSet<BasicBlock> = self
-            .exec
-            .path
-            .as_ref()
-            .map(|p| {
-                let mut blocks: FxHashSet<BasicBlock> = p
-                    .steps
-                    .iter()
-                    .filter_map(|s| match s {
-                        crate::verify::path_extractor::PathStep::Block(b) => Some(*b),
-                        _ => None,
-                    })
-                    .collect();
-                blocks.insert(checkpoint_block);
-                blocks
-            })
-            .unwrap_or_default();
+        let path_blocks: FxHashSet<BasicBlock> = {
+            let mut blocks: FxHashSet<BasicBlock> = self
+                .exec
+                .path
+                .steps
+                .iter()
+                .filter_map(|s| match s {
+                    crate::verify::path_extractor::PathStep::Block(b) => Some(*b),
+                    _ => None,
+                })
+                .collect();
+            blocks.insert(checkpoint_block);
+            blocks
+        };
 
         if path_blocks.is_empty() {
             self.propagate_pass(checkpoint_block, None, false);
@@ -1324,17 +1314,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let block_steps: Vec<BasicBlock> = self
             .exec
             .path
-            .as_ref()
-            .map(|p| {
-                p.steps
-                    .iter()
-                    .filter_map(|s| match s {
-                        crate::verify::path_extractor::PathStep::Block(b) => Some(*b),
-                        _ => None,
-                    })
-                    .collect()
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                crate::verify::path_extractor::PathStep::Block(b) => Some(*b),
+                _ => None,
             })
-            .unwrap_or_default();
+            .collect();
         let has_duplicates = {
             let mut seen = FxHashSet::default();
             block_steps.iter().any(|b| !seen.insert(*b))
@@ -1373,12 +1359,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     continue;
                 }
             }
-            for pred in self.body.basic_blocks.predecessors()[block].to_vec() {
+            for pred in self.body().basic_blocks.predecessors()[block].to_vec() {
                 if path_blocks.is_none_or(|b| b.contains(&pred)) {
                     worklist.push(pred);
                 }
             }
-            for stmt in &self.body.basic_blocks[block].statements {
+            for stmt in &self.body().basic_blocks[block].statements {
                 if let StatementKind::Assign(assign) = &stmt.kind {
                     let (dest, rvalue) = &**assign;
                     if dest.projection.is_empty() {
@@ -1396,7 +1382,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             // Also try to materialize constant bytes from call terminators
             // (e.g. as_ptr() on a constant byte array). The backward slicer
             // may prune these calls, so we fill them in here.
-            let terminator = self.body.basic_blocks[block].terminator();
+            let terminator = self.body().basic_blocks[block].terminator();
             if let TerminatorKind::Call {
                 destination,
                 args,
@@ -1488,7 +1474,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
         if let Some(src) = src_local {
             if let Some(src_val) = self.locals.values.get(&src).cloned() {
-                let dest_ty = self.body.local_decls[dest_local].ty;
+                let dest_ty = self.body().local_decls[dest_local].ty;
                 let is_cast = matches!(rvalue, Rvalue::Cast(..));
                 let is_ptr_arith = matches!(
                     rvalue,
@@ -1542,7 +1528,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if let Some(place) = src_place {
             if !place.projection.is_empty() {
                 if let Some(val) = self.value_of_place(place) {
-                    let dest_ty = self.body.local_decls[dest_local].ty;
+                    let dest_ty = self.body().local_decls[dest_local].ty;
                     self.set_local(
                         dest_local,
                         VmValue {
@@ -1563,7 +1549,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Ref: &place → propagate address + provenance
         if let Rvalue::Ref(_, _, place) = rvalue {
             if let Some(addr) = self.address_of_place(place) {
-                let dest_ty = self.body.local_decls[dest_local].ty;
+                let dest_ty = self.body().local_decls[dest_local].ty;
                 let alloc_align = addr
                     .provenance
                     .as_ref()
@@ -1573,7 +1559,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .projection
                     .iter()
                     .any(|p| matches!(p.kind(), rustc_middle::mir::ProjectionElem::Deref));
-                let src_ty = self.body.local_decls[place.local].ty;
+                let src_ty = self.body().local_decls[place.local].ty;
                 let is_from_raw_parts_like =
                     matches!(src_ty.kind(), rustc_middle::ty::TyKind::RawPtr(_, _));
                 let is_slice_ref =
@@ -1613,7 +1599,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // RawPtr: &raw place → propagate address + provenance
         if let Rvalue::RawPtr(_, place) = rvalue {
             if let Some(addr) = self.address_of_place(place) {
-                let dest_ty = self.body.local_decls[dest_local].ty;
+                let dest_ty = self.body().local_decls[dest_local].ty;
                 let alloc_align = addr
                     .provenance
                     .as_ref()
@@ -1666,7 +1652,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             .map(|v| VmValue::new(v.term.clone(), v.ty))
                             .unwrap_or(VmValue {
                                 term: Int::from_u64(self.ctx, 0),
-                                ty: self.body.local_decls[dest_local].ty,
+                                ty: self.body().local_decls[dest_local].ty,
                                 provenance: None,
                                 invariants: ValueInvariants::default(),
                                 field_offset: false,
@@ -1674,7 +1660,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 bool_cond: None,
                             });
                         let prov = self.provenance_for_binary_op(*op, &src_val, &rhs_val);
-                        let dest_ty = self.body.local_decls[dest_local].ty;
+                        let dest_ty = self.body().local_decls[dest_local].ty;
                         self.set_local(
                             dest_local,
                             VmValue {
@@ -1937,7 +1923,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let mut byte_offset: usize = 0;
         let mut concrete = true;
 
-        let base_ty = self.body.local_decls[place.local].ty;
+        let base_ty = self.body().local_decls[place.local].ty;
         let mut cur_ty = base_ty;
 
         for proj in place.projection.iter() {
@@ -2112,7 +2098,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         dest_place: &Place<'tcx>,
         rvalue: &Rvalue<'tcx>,
     ) -> VmValue<'ctx, 'tcx> {
-        let dest_ty = dest_place.ty(self.body, self.tcx).ty;
+        let dest_ty = dest_place.ty(self.body(), self.tcx).ty;
 
         match rvalue {
             #[cfg(rapx_rvalue_use_with_retag)]
@@ -2145,7 +2131,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .projection
                         .iter()
                         .any(|p| matches!(p.kind(), rustc_middle::mir::ProjectionElem::Deref));
-                    let src_ty = self.body.local_decls[place.local].ty;
+                    let src_ty = self.body().local_decls[place.local].ty;
                     let is_from_raw_parts_like =
                         matches!(src_ty.kind(), rustc_middle::ty::TyKind::RawPtr(_, _));
                     let is_slice_ref =
@@ -3008,7 +2994,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Resolve the type of a place (`local` + field path) by walking the ADT
     /// field definitions.
     pub(crate) fn field_type_at(&self, local: Local, field_path: &[usize]) -> Option<Ty<'tcx>> {
-        let mut ty = self.body.local_decls[local].ty;
+        let mut ty = self.body().local_decls[local].ty;
         for &idx in field_path {
             let rustc_middle::ty::TyKind::Adt(adt_def, substs) = ty.kind() else {
                 return None;
@@ -3276,39 +3262,38 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let cmp_cond = discr_val.bool_cond().cloned();
 
         // Determine which target block is taken along the path.
-        if let Some(ref path) = self.exec.path {
-            if let Some(chosen) = chosen_successor(path, block, occurrence) {
-                for (value, target) in targets.iter() {
-                    if target == chosen {
-                        let val_term = Int::from_u64(self.ctx, value as u64);
-                        self.solver.constraints.push(discr_val.term._eq(&val_term));
-                        if let Some(ref cond) = cmp_cond {
-                            if value != 0 {
-                                self.solver.constraints.push(cond.clone());
-                            } else {
-                                self.solver.constraints.push(cond.not());
-                            }
-                        }
-                        if value != 0 {
-                            self.infer_switch_guard(discr);
-                        }
-                        return;
-                    }
-                }
-                // Otherwise branch: the discrim is NOT any of the explicit values.
-                if targets.otherwise() == chosen {
-                    // Negate every explicit target value.
-                    for (value, _) in targets.iter() {
-                        let val_term = Int::from_u64(self.ctx, value as u64);
-                        self.solver.constraints
-                            .push(discr_val.term._eq(&val_term).not());
-                    }
+        let path = &self.exec.path;
+        if let Some(chosen) = chosen_successor(path, block, occurrence) {
+            for (value, target) in targets.iter() {
+                if target == chosen {
+                    let val_term = Int::from_u64(self.ctx, value as u64);
+                    self.solver.constraints.push(discr_val.term._eq(&val_term));
                     if let Some(ref cond) = cmp_cond {
-                        // For a boolean discriminator, `otherwise` means
-                        // `discr != 0`, i.e. the comparison is true.
-                        if targets.iter().any(|(v, _)| v == 0) {
+                        if value != 0 {
                             self.solver.constraints.push(cond.clone());
+                        } else {
+                            self.solver.constraints.push(cond.not());
                         }
+                    }
+                    if value != 0 {
+                        self.infer_switch_guard(discr);
+                    }
+                    return;
+                }
+            }
+            // Otherwise branch: the discrim is NOT any of the explicit values.
+            if targets.otherwise() == chosen {
+                // Negate every explicit target value.
+                for (value, _) in targets.iter() {
+                    let val_term = Int::from_u64(self.ctx, value as u64);
+                    self.solver.constraints
+                        .push(discr_val.term._eq(&val_term).not());
+                }
+                if let Some(ref cond) = cmp_cond {
+                    // For a boolean discriminator, `otherwise` means
+                    // `discr != 0`, i.e. the comparison is true.
+                    if targets.iter().any(|(v, _)| v == 0) {
+                        self.solver.constraints.push(cond.clone());
                     }
                 }
             }
@@ -4221,7 +4206,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if let ContractExpr::Place(index_place) = index.as_ref() {
             let index_local = index_place.base.to_local();
             if let rustc_middle::ty::TyKind::Adt(adt_def, _) =
-                self.body.local_decls[index_local].ty.kind()
+                self.body().local_decls[index_local].ty.kind()
             {
                 if crate::helpers::mir_utils::is_range_type(self.tcx, adt_def.did()) {
                     return;
@@ -4592,7 +4577,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if !api_classify::is_as_ptr(crate::helpers::mir_utils::dep_callee_def_id(func)) {
             return false;
         }
-        let dest_ty = self.body.local_decls[dest].ty;
+        let dest_ty = self.body().local_decls[dest].ty;
         // An owned receiver (`Box`/`Vec`/`Arc`…) exposes its allocation through
         // a field (e.g. `Box.0.0`), not its whole-provenance. Prefer the tracked
         // field so `into_raw` chains keep the real allocation — and its term,
@@ -4739,7 +4724,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         } else {
             return None;
         };
-        for block in self.body.basic_blocks.iter() {
+        for block in self.body().basic_blocks.iter() {
             for stmt in &block.statements {
                 if let StatementKind::Assign(assign) = &stmt.kind {
                     let (dest, rvalue) = &**assign;

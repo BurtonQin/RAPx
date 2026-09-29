@@ -63,7 +63,7 @@ impl PropertyChecker {
         // really some unaligned offset) is not mistaken for a stack borrow.
         if value.is_pointer() {
             if let Some(local) = vm_state.find_local_by_address(&value.term) {
-                let local_ty = vm_state.body.local_decls[local].ty;
+                let local_ty = vm_state.body().local_decls[local].ty;
                 let local_align = vm_state.align_sym_read(local_ty);
                 if let Some(local_align_u64) = local_align.simplify().as_u64() {
                     if local_align_u64 != 1 {
@@ -406,13 +406,7 @@ impl PropertyChecker {
         };
 
         if vm_state.alloc(alloc_id).dead {
-            let unrolled = vm_state.exec.path.as_ref().is_some_and(|p| {
-                let mut seen = FxHashSet::default();
-                p.steps.iter().any(|s| match s {
-                    crate::verify::path_extractor::PathStep::Block(b) => !seen.insert(b.as_usize()),
-                    _ => false,
-                })
-            });
+            let unrolled = vm_state.exec.path.is_unrolled();
             // A `ManuallyDrop::drop` frees the slot's allocation at *this*
             // checkpoint, so its `ValidPtr`/`Allocated` precondition concerns
             // the pre-drop (still-live) state.  A double free — an
@@ -423,7 +417,7 @@ impl PropertyChecker {
                 crate::verify::api_classify::is_manually_drop_drop(checkpoint.callee) && unrolled;
             if !dropped_here && !Self::is_maybe_uninit_ptr(vm_state, &value, alloc_id) {
                 let is_param_ref = vm_state.resolve_origin(&value).is_some_and(|origin| {
-                    origin.local.as_usize() <= vm_state.body.arg_count
+                    origin.local.as_usize() <= vm_state.body().arg_count
                         && origin.local != Local::from_usize(0)
                 });
                 if !is_param_ref {
@@ -853,7 +847,7 @@ impl PropertyChecker {
         let mut visited = FxHashSet::default();
         visited.insert(local);
         while let Some(cur) = worklist.pop() {
-            for block in vm_state.body.basic_blocks.iter() {
+            for block in vm_state.body().basic_blocks.iter() {
                 for stmt in &block.statements {
                     if let StatementKind::Assign(assign) = &stmt.kind {
                         let (dest, rvalue) = &**assign;
@@ -916,7 +910,7 @@ impl PropertyChecker {
 
         if vm_state.alloc(id).dead {
             if let Some(origin) = vm_state.resolve_origin(&value) {
-                let is_param = origin.local.as_usize() <= vm_state.body.arg_count
+                let is_param = origin.local.as_usize() <= vm_state.body().arg_count
                     && origin.local != Local::from_usize(0);
                 if is_param {
                     return CheckResult::ProvedByRule;
@@ -1008,7 +1002,7 @@ impl PropertyChecker {
             }
             // A raw pointer derived from a live reference or owned (Box/Vec)
             // parameter is alive: the reference / ownership guarantees liveness.
-            let body = vm_state.body;
+            let body = vm_state.body();
             let matches_live_param = (1..=body.arg_count).any(|i| {
                 let param_local = Local::from_usize(i);
                 let param_ty = body.local_decls[param_local].ty;

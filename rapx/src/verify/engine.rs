@@ -20,14 +20,17 @@ use super::{
 };
 use crate::helpers::mir_scan::{Checkpoint, CheckpointLocation};
 
-use super::{property_checker::PropertyChecker, vm::SymbolicVm};
+use super::{
+    property_checker::PropertyChecker,
+    vm::SymbolicVm,
+};
 
 /// The three verification stages: a backward [`BackwardSlicer`], a
 /// [`SymbolicVm`], and a [`PropertyChecker`].
 pub(crate) struct VerifyEngine<'tcx> {
     tcx: TyCtxt<'tcx>,
     slicer: BackwardSlicer<'tcx>,
-    vm: SymbolicVm<'tcx>,
+    vm: SymbolicVm,
     checker: PropertyChecker,
 }
 
@@ -37,7 +40,7 @@ impl<'tcx> VerifyEngine<'tcx> {
         Self {
             tcx,
             slicer: BackwardSlicer::new(tcx),
-            vm: SymbolicVm::new(tcx),
+            vm: SymbolicVm::new(),
             checker: PropertyChecker,
         }
     }
@@ -117,7 +120,7 @@ impl<'tcx> VerifyEngine<'tcx> {
                 block_fn: backward.block_fn,
             };
 
-            let vm_state = self.vm.execute(&ctx, &wrapped);
+            let vm_state = self.vm.run(&ctx, self.tcx, wrapped);
 
             // Accumulate checked bounds/disjointness facts across
             // checkpoints so that a validator called in one checkpoint
@@ -550,7 +553,7 @@ impl<'tcx> VerifyEngine<'tcx> {
                 backward.items = items;
             }
 
-            let vm_state = self.vm.execute(&ctx, &backward);
+            let vm_state = self.vm.run(&ctx, self.tcx, backward);
 
             let fake_checkpoint = Checkpoint {
                 caller: def_id,

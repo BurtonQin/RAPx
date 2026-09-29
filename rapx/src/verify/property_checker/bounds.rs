@@ -362,7 +362,7 @@ impl PropertyChecker {
             return None;
         }
         let range_local = place.local;
-        let ty = vm_state.body.local_decls[range_local].ty;
+        let ty = vm_state.body().local_decls[range_local].ty;
         let adt_def = match ty.kind() {
             TyKind::Adt(adt_def, _) => *adt_def,
             _ => return None,
@@ -392,7 +392,7 @@ impl PropertyChecker {
             _ => None,
         };
         let Some(end_idx) = end_idx else { return None };
-        for block in vm_state.body.basic_blocks.iter() {
+        for block in vm_state.body().basic_blocks.iter() {
             for stmt in &block.statements {
                 if let StatementKind::Assign(assign) = &stmt.kind {
                     let (dest, rvalue) = &**assign;
@@ -583,7 +583,7 @@ impl PropertyChecker {
             return false;
         }
         // Check caller has a matching slice reference parameter.
-        let body = vm_state.body;
+        let body = vm_state.body();
         let has_slice_param = (1..=body.arg_count).any(|i| {
             let param_ty = body.local_decls[Local::from_usize(i)].ty;
             self.is_slice_ref_with_elem(param_ty, elem_ty, vm_state, checkpoint)

@@ -20,37 +20,37 @@ use z3::Context;
 
 use crate::verify::slicer::ProofGoal;
 
-use self::state::VmState;
+pub(crate) use self::state::VmState;
 
 /// Entry point for symbolic MIR execution.
 ///
-/// Stateless wrapper around a `TyCtxt`; creates `VmState` instances
-/// for each path by executing retained MIR items.
-pub(crate) struct SymbolicVm<'tcx> {
-    tcx: TyCtxt<'tcx>,
-}
+/// Stateless: the inputs to a run (the Z3 context, compiler type context, and
+/// the sliced program) are passed to [`run`], so this struct carries no state
+/// of its own.
+pub(crate) struct SymbolicVm;
 
-impl<'tcx> SymbolicVm<'tcx> {
-    /// Create a symbolic VM for the given compiler context.
-    pub(crate) fn new(tcx: TyCtxt<'tcx>) -> Self {
-        Self { tcx }
+impl SymbolicVm {
+    /// Create a symbolic VM.
+    pub(crate) fn new() -> Self {
+        Self
     }
 
-    /// Execute retained MIR items and produce a symbolic VM state.
+    /// Run the sliced program `goal` (the path and its retained MIR items) and
+    /// produce the resulting symbolic state.
     ///
-    /// The `ctx` parameter provides a shared Z3 context; the resulting
-    /// `VmState` borrows it so that a single context can be reused
-    /// across property checks.
-    pub(crate) fn execute<'ctx>(
+    /// The Z3 context is borrowed (not owned) so a single context can be reused
+    /// across property checks; `run` is a pure `input -> state` mapping — the
+    /// program to execute (`goal`) is consumed here and is never stored in the
+    /// returned [`VmState`].
+    pub(crate) fn run<'ctx, 'tcx>(
         &self,
         ctx: &'ctx Context,
-        items: &ProofGoal<'tcx>,
+        tcx: TyCtxt<'tcx>,
+        goal: ProofGoal<'tcx>,
     ) -> VmState<'ctx, 'tcx> {
-        let body = self.tcx.optimized_mir(items.path.target.caller);
-        let mut state = VmState::new(ctx, self.tcx, body, items.path.target.caller);
-        state.exec.path = Some(items.path.clone());
-        state.execute_items(&items.items);
-        state.propagate_from_checkpoint(items.path.target.block);
+        let mut state = VmState::new(ctx, tcx, goal.path.clone(), goal.path.target.caller);
+        state.execute_items(&goal.items);
+        state.propagate_from_checkpoint(goal.path.target.block);
         state
     }
 }

@@ -208,6 +208,16 @@ impl Path {
         }
         format!("{:?}", indices)
     }
+
+    /// Whether this path re-enters a block it already visited (a loop-unrolled
+    /// iteration, not a genuinely distinct step).
+    pub(crate) fn is_unrolled(&self) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        self.steps.iter().any(|s| match s {
+            PathStep::Block(b) => !seen.insert(b.as_usize()),
+            _ => false,
+        })
+    }
 }
 
 /// One step in a finite verification path.

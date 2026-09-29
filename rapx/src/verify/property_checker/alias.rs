@@ -55,13 +55,7 @@ impl PropertyChecker {
         // second `DropMemory` is an unrolled iteration rather than a genuine
         // same-iteration double free. Only the non-unrolled path distinguishes
         // them (uaf_10 drops twice in one iteration; uaf_false_2 drops once).
-        if vm_state.exec.path.as_ref().is_some_and(|p| {
-            let mut seen = std::collections::HashSet::new();
-            p.steps.iter().any(|s| match s {
-                crate::verify::path_extractor::PathStep::Block(b) => !seen.insert(b.as_usize()),
-                _ => false,
-            })
-        }) {
+        if vm_state.exec.path.is_unrolled() {
             return CheckResult::ProvedByRule;
         }
         // Owning(p): p is the sole carrier of *p's ownership. A live `needs_drop`
@@ -111,7 +105,7 @@ impl PropertyChecker {
                 && Some(owner) != raw_local
                 && !traces_to_dest(vm_state, owner, dest_local)
             {
-                let oty = vm_state.body.local_decls[owner].ty;
+                let oty = vm_state.body().local_decls[owner].ty;
                 if oty.needs_drop(vm_state.tcx, typing_env) {
                     return CheckResult::Failed;
                 }
@@ -124,7 +118,7 @@ impl PropertyChecker {
             if !live.contains(local) {
                 continue;
             }
-            let ty = vm_state.body.local_decls[*local].ty;
+            let ty = vm_state.body().local_decls[*local].ty;
             if !ty.needs_drop(vm_state.tcx, typing_env) {
                 continue;
             }

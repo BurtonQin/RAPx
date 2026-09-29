@@ -87,14 +87,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
             // Prefer parameter locals and owned origins (Box/Vec), then the
             // lower local index.
-            let is_param = local.as_usize() >= 1 && local.as_usize() <= self.body.arg_count;
+            let is_param = local.as_usize() >= 1 && local.as_usize() <= self.body().arg_count;
             let is_owned = candidate.is_owned();
 
             match &best {
                 None => best = Some(candidate),
                 Some(existing) => {
                     let ex_is_param = existing.local.as_usize() >= 1
-                        && existing.local.as_usize() <= self.body.arg_count;
+                        && existing.local.as_usize() <= self.body().arg_count;
                     let ex_is_owned = existing.is_owned();
                     let rank = |p: bool, o: bool| {
                         if p {
@@ -121,7 +121,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Classify a local by its type.
     fn classify_local(&self, local: &Local) -> VmOriginKind {
-        let ty = self.body.local_decls[*local].ty;
+        let ty = self.body().local_decls[*local].ty;
         match ty.kind() {
             rustc_middle::ty::TyKind::Ref(_, _, rustc_middle::ty::Mutability::Mut) => {
                 VmOriginKind::MutRef
@@ -191,7 +191,7 @@ fn flow_xor_violation<'ctx, 'tcx>(
         false,
         false,
     );
-    let body = vm_state.body;
+    let body = vm_state.body();
     for (local, val) in &vm_state.locals.values {
         if *local == origin_local {
             continue;
@@ -292,8 +292,8 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                             checkpoint.caller,
                         )
                         .resolve_local_to_root(mir_place.local);
-                        if !fields.is_empty() && root >= 1 && root <= vm_state.body.arg_count {
-                            let root_ty = vm_state.body.local_decls
+                        if !fields.is_empty() && root >= 1 && root <= vm_state.body().arg_count {
+                            let root_ty = vm_state.body().local_decls
                                 [rustc_middle::mir::Local::from_usize(root)]
                             .ty;
                             if let rustc_middle::ty::TyKind::Ref(
@@ -338,7 +338,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                             checkpoint.caller,
                         )
                         .resolve_local_to_root(mir_place.local);
-                        if !fields.is_empty() && root >= 1 && root <= vm_state.body.arg_count {
+                        if !fields.is_empty() && root >= 1 && root <= vm_state.body().arg_count {
                             let resolved = PlaceKey::from_origin(root, fields);
                             if let Some(sfo) = alias_hazard::self_field_origin(
                                 vm_state.tcx,
@@ -358,7 +358,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                                     );
                                 }
                             }
-                        } else if root >= 1 && root <= vm_state.body.arg_count {
+                        } else if root >= 1 && root <= vm_state.body().arg_count {
                             // A direct shared-reference parameter whose view
                             // escapes to the return must not claim a region that
                             // outlives its own (e.g. returning a `&'b str` as
@@ -388,7 +388,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                 // above `arg_count`, derived from a borrow field — it falls
                 // through to the field-type-aware check below.
                 if matches!(origin.kind, VmOriginKind::RawPtr)
-                    && origin.local.as_usize() <= vm_state.body.arg_count
+                    && origin.local.as_usize() <= vm_state.body().arg_count
                 {
                     if fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
                         return VmAliasResult::Proved;
@@ -411,8 +411,8 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
             // safe (`NonNull::as_ref`/`as_mut`): the reference carries the borrow
             // (shared or exclusive) over the `NonNull`, whose pointer is the only
             // source of the deref.
-            if vm_state.body.arg_count >= 1 {
-                let self_ty = vm_state.body.local_decls[Local::from_usize(1)].ty;
+            if vm_state.body().arg_count >= 1 {
+                let self_ty = vm_state.body().local_decls[Local::from_usize(1)].ty;
                 let nonnull_adt = match self_ty.kind() {
                     rustc_middle::ty::TyKind::Adt(adt_def, _) => Some(*adt_def),
                     rustc_middle::ty::TyKind::Ref(_, pointee, _) => match pointee.kind() {
@@ -432,7 +432,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                     return VmAliasResult::Proved;
                 }
                 // External provenance: safe for shared ref, unsafe for mut ref.
-                let has_shared_ref = vm_state.body.local_decls.iter().any(|d| {
+                let has_shared_ref = vm_state.body().local_decls.iter().any(|d| {
                     matches!(
                         d.ty.kind(),
                         rustc_middle::ty::TyKind::Ref(_, _, rustc_middle::ty::Mutability::Not)
@@ -444,7 +444,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
             }
             // Without provenance: fall back to any reference parameter.
             if origin_val.provenance.is_none() {
-                for decl in &vm_state.body.local_decls {
+                for decl in &vm_state.body().local_decls {
                     if matches!(decl.ty.kind(), rustc_middle::ty::TyKind::Ref(..)) {
                         return VmAliasResult::Proved;
                     }
@@ -471,7 +471,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                     // must not be treated as exclusive. A `&`/`&mut self` is
                     // handled by the shared/mut-ref origin paths above.
                     let root_ty =
-                        vm_state.body.local_decls[rustc_middle::mir::Local::from_usize(root)].ty;
+                        vm_state.body().local_decls[rustc_middle::mir::Local::from_usize(root)].ty;
                     if !matches!(root_ty.kind(), rustc_middle::ty::TyKind::Ref(..)) {
                         let typing_env =
                             rustc_middle::ty::TypingEnv::post_analysis(tcx, caller);
@@ -500,7 +500,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
     // When the enclosing function returns a reference, the result may escape
     // (hazard for struct-field Owning invariants) → Unknown; otherwise safe.
     if api_classify::is_nonnull_as_ref_as_mut(Some(callee)) {
-        let ret_ty = vm_state.body.local_decls[rustc_middle::mir::RETURN_PLACE].ty;
+        let ret_ty = vm_state.body().local_decls[rustc_middle::mir::RETURN_PLACE].ty;
         if crate::helpers::mir_utils::type_contains_reference(ret_ty) {
             return VmAliasResult::Unknown;
         }

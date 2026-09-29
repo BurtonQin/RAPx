@@ -305,7 +305,7 @@ impl PropertyChecker {
         // ── Also recurse through Use / Cast chains: search ALL locals
         // whose term equals target, and for each binary-op entry
         // that *consumes* that local as an operand, walk the destination.
-        for local_idx in 0..vm_state.body.local_decls.len() {
+        for local_idx in 0..vm_state.body().local_decls.len() {
             let local = rustc_middle::mir::Local::from_usize(local_idx);
             let Some(val) = vm_state.local_value(local) else {
                 continue;

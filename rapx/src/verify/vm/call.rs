@@ -198,7 +198,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 self.apply_call_effect(effect, &arg_values, &caller_arg_locals, destination);
             }
         } else {
-            let dest_ty = self.body.local_decls[destination].ty;
+            let dest_ty = self.body().local_decls[destination].ty;
             let term = self.fresh_int(&format!("callret_{}", destination.as_usize()));
             if let TyKind::Adt(adt_def, _) = dest_ty.kind() {
                 if api_classify::is_std_ordering(adt_def.did()) {
@@ -242,7 +242,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if !is_index || arg_values.len() < 2 {
             return false;
         }
-        let dest_ty = self.body.local_decls[destination].ty;
+        let dest_ty = self.body().local_decls[destination].ty;
         let is_slice = matches!(dest_ty.kind(), TyKind::Ref(_, inner, _)
             if matches!(inner.kind(), TyKind::Slice(_)));
         if !is_slice {
@@ -370,7 +370,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if !matches!(assoc.name().as_str(), "get" | "get_mut") || arg_values.len() < 2 {
             return false;
         }
-        let dest_ty = self.body.local_decls[destination].ty;
+        let dest_ty = self.body().local_decls[destination].ty;
         let TyKind::Adt(adt, substs) = dest_ty.kind() else {
             return false;
         };
@@ -519,7 +519,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if pp.alloc_id != ep.alloc_id {
             return false;
         }
-        let dest_ty = self.body.local_decls[destination].ty;
+        let dest_ty = self.body().local_decls[destination].ty;
         if name.ends_with("::len") {
             let diff = Int::sub(self.ctx, &[&ep.offset, &pp.offset]);
             let sz = self.iter_elem_size(ptr);
@@ -563,7 +563,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let Some(ptr) = arg_values.first() else {
             return false;
         };
-        let dest_ty = self.body.local_decls[destination].ty;
+        let dest_ty = self.body().local_decls[destination].ty;
         let definitely_non_null = ptr.invariants.non_null
             || ptr.invariants.in_bounds
             || ptr
@@ -624,7 +624,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if pp.alloc_id != ep.alloc_id {
             return false;
         }
-        let dest_ty = self.body.local_decls[destination].ty;
+        let dest_ty = self.body().local_decls[destination].ty;
         // Compute is_empty from fields/tracked offset (same as is_empty()).
         let sz = self.iter_elem_size(ptr);
         let ep_offset = ep.offset.clone();
@@ -814,7 +814,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let saved_deferred_field_writes = std::mem::take(&mut self.exec.inline.deferred_field_writes);
 
         // ── Switch to callee context ──
-        self.body = callee_body;
         self.caller_def_id = callee_def_id;
 
         // Bind args to callee locals (local_1..local_N are function params)
@@ -890,7 +889,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.exec.inline.deferred_field_writes = saved_deferred_field_writes;
 
         // ── Write return value to caller destination ──
-        let dest_ty = self.body.local_decls[dest].ty;
+        let dest_ty = self.body().local_decls[dest].ty;
         match return_val {
             Some(mut val) => {
                 val.ty = dest_ty;
@@ -1103,7 +1102,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 continue;
             }
 
-            let bb_data = &self.body.basic_blocks[block];
+            let bb_data = &self.body().basic_blocks[block];
 
             // Execute statements
             for stmt in bb_data.statements.iter() {
@@ -1141,7 +1140,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 TerminatorKind::SwitchInt { discr, targets } => {
                     // A constant discriminant folds to a single live edge.
-                    if let Some(v) = Self::switch_discr_const(self.body, discr) {
+                    if let Some(v) = Self::switch_discr_const(self.body(), discr) {
                         let t = targets
                             .iter()
                             .find(|(val, _)| *val == v as u128)
@@ -1153,7 +1152,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // A `debug_assert!`/`assert!` switch or a drop-flag dispatch
                     // has its non-otherwise edges dead on the normal path, so
                     // follow only `otherwise`.
-                    let trivial = Self::switch_targets_unreachable(self.tcx, self.body, targets);
+                    let trivial = Self::switch_targets_unreachable(self.tcx, self.body(), targets);
                     if trivial {
                         queue.push(targets.otherwise());
                         continue;
@@ -1210,7 +1209,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// aligned, initialized pointer, and bind it to `dest`.
     fn set_dest_as_heap_ptr(&mut self, arg_val: &VmValue<'ctx, 'tcx>, dest: Local) {
         let mut val = arg_val.clone();
-        val.ty = self.body.local_decls[dest].ty;
+        val.ty = self.body().local_decls[dest].ty;
         val.invariants.non_null = true;
         val.invariants.init = true;
         self.set_local(dest, val);
@@ -1258,7 +1257,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         } else {
             self.align_sym(ty)
         };
-        let dest_ty = self.body.local_decls[destination].ty;
+        let dest_ty = self.body().local_decls[destination].ty;
         self.set_local(
             destination,
             VmValue::new(term, dest_ty),
@@ -1277,7 +1276,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         f: impl Fn(&Int<'ctx>, &Int<'ctx>) -> Int<'ctx>,
     ) {
         if let (Some(lhs), Some(rhs)) = (args.get(lhs_arg), args.get(rhs_arg)) {
-            let dest_ty = self.body.local_decls[dest].ty;
+            let dest_ty = self.body().local_decls[dest].ty;
             self.set_local(dest, VmValue::new(f(&lhs.term, &rhs.term), dest_ty));
         }
     }
@@ -1292,7 +1291,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         f: impl Fn(&Int<'ctx>) -> Int<'ctx>,
     ) {
         if let Some(a) = args.get(arg) {
-            let dest_ty = self.body.local_decls[dest].ty;
+            let dest_ty = self.body().local_decls[dest].ty;
             self.set_local(dest, VmValue::new(f(&a.term), dest_ty));
         }
     }
@@ -1314,7 +1313,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             CallEffect::SelectUnpredictable => {
                 if args.len() >= 3 {
                     let term = self.fresh_int(&format!("selunpred_{}", dest.as_usize()));
-                    let dest_ty = self.body.local_decls[dest].ty;
+                    let dest_ty = self.body().local_decls[dest].ty;
                     let eq1 = term._eq(&args[1].term);
                     let eq2 = term._eq(&args[2].term);
                     self.solver.constraints.push(Bool::or(self.ctx, &[&eq1, &eq2]));
@@ -1346,7 +1345,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // field value is recoverable, model the returned slice as a fresh
                 // external allocation so a downstream `Allocated`/`InBound` can
                 // still match `[T]` vs `T`.
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 let mut val = args.get(*arg).cloned().unwrap_or_else(|| VmValue::new(self.fresh_int("replaced"), dest_ty));
                 let arg_local = caller_arg_locals.get(*arg).copied().flatten();
                 let pointee =
@@ -1430,7 +1429,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let self_val = &args[0]; // &[T]
                 let mid_val = &args[1]; // usize
 
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 if let TyKind::Tuple(elem_tys) = dest_ty.kind() {
                     // Look up the source allocation from self's provenance.
                     let src_alloc_id = self_val.provenance.as_ref().map(|p| p.alloc_id);
@@ -1621,7 +1620,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let Some(self_val) = args.get(*receiver_arg).cloned() else {
                     return;
                 };
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 let TyKind::Tuple(elem_tys) = dest_ty.kind() else {
                     return;
                 };
@@ -1739,7 +1738,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             CallEffect::ReturnPointerFromArg { arg } => {
                 if let Some(arg_val) = args.get(*arg) {
                     let mut val = arg_val.clone();
-                    let dest_ty = self.body.local_decls[dest].ty;
+                    let dest_ty = self.body().local_decls[dest].ty;
                     val.ty = dest_ty;
                     // The returned pointer aliases `arg`, so it is non-null
                     // exactly when the source is. The source is non-null either
@@ -1794,7 +1793,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let stride_term = match stride {
                         Some(s) => Int::from_u64(self.ctx, s),
                         None => {
-                            let dest_ty = self.body.local_decls[dest].ty;
+                            let dest_ty = self.body().local_decls[dest].ty;
                             let pointee =
                                 crate::helpers::mir_utils::pointee_ty(dest_ty).unwrap_or(dest_ty);
                             self.size_sym(pointee)
@@ -1847,7 +1846,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     };
                     let val = VmValue {
                         term: new_term,
-                        ty: self.body.local_decls[dest].ty,
+                        ty: self.body().local_decls[dest].ty,
                         provenance: adjusted_provenance,
                         invariants: ValueInvariants {
                             non_null: base.invariants.non_null,
@@ -1872,7 +1871,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let stride_term = match stride {
                         Some(s) => Int::from_u64(self.ctx, s),
                         None => {
-                            let dest_ty = self.body.local_decls[dest].ty;
+                            let dest_ty = self.body().local_decls[dest].ty;
                             let pointee =
                                 crate::helpers::mir_utils::pointee_ty(dest_ty).unwrap_or(dest_ty);
                             self.size_sym(pointee)
@@ -1911,7 +1910,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     };
                     let val = VmValue {
                         term: new_term,
-                        ty: self.body.local_decls[dest].ty,
+                        ty: self.body().local_decls[dest].ty,
                         provenance: adjusted_provenance,
                         invariants: ValueInvariants {
                             non_null: base.invariants.non_null,
@@ -1937,7 +1936,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     self.solver.constraints.push(existing.term._eq(&zero).not());
                     self.set_local(dest, existing);
                 } else {
-                    let dest_ty = self.body.local_decls[dest].ty;
+                    let dest_ty = self.body().local_decls[dest].ty;
                     let term = self.fresh_int(&format!("ret_nz_{}", dest.as_usize()));
                     self.solver.constraints.push(term._eq(&zero).not());
                     self.set_local(
@@ -1958,7 +1957,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             CallEffect::ReturnTupleFieldNonZero { field } => {
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 if let TyKind::Tuple(elem_tys) = dest_ty.kind() {
                     if let Some(field_ty) = elem_tys.get(*field) {
                         let zero = Int::from_u64(self.ctx, 0);
@@ -1991,7 +1990,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // the *pointee* type, so record the symbolic alignment for the
                     // downstream `raw-ptr-deref`/`from_raw_parts` `Align` check.
                     if existing.invariants.align_n.is_none() {
-                        let dest_ty = self.body.local_decls[dest].ty;
+                        let dest_ty = self.body().local_decls[dest].ty;
                         if let Some(pointee) = crate::helpers::mir_utils::pointee_ty(dest_ty) {
                             let a = self.align_sym(pointee);
                             if a.simplify().as_u64() != Some(1) {
@@ -2001,7 +2000,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }
                     self.set_local(dest, existing);
                 } else {
-                    let dest_ty = self.body.local_decls[dest].ty;
+                    let dest_ty = self.body().local_decls[dest].ty;
                     let term = self.fresh_int(&format!("ret_align_{}", dest.as_usize()));
                     self.set_local(
                         dest,
@@ -2036,7 +2035,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         return;
                     }
                 }
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 let term = self.fresh_int(&format!("len_{}", dest.as_usize()));
                 let val = VmValue::new(term, dest_ty);
                 self.set_local(dest, val);
@@ -2055,13 +2054,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 );
             }
             CallEffect::ReturnConst { value } => {
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 let term = Int::from_u64(self.ctx, *value);
                 let val = VmValue::new(term, dest_ty);
                 self.set_local(dest, val);
             }
             CallEffect::ReturnAlignOffset { ptr_arg, align_arg } => {
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 let offset = self.fresh_int(&format!("align_offset_{}", dest.as_usize()));
                 if let (Some(ptr_val), Some(align_val)) = (args.get(*ptr_arg), args.get(*align_arg))
                 {
@@ -2113,7 +2112,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let (Some(v), Some(mn), Some(mx)) =
                     (args.get(*value_arg), args.get(*min_arg), args.get(*max_arg))
                 {
-                    let dest_ty = self.body.local_decls[dest].ty;
+                    let dest_ty = self.body().local_decls[dest].ty;
                     // clamp(v, mn, mx) = max(mn, min(v, mx))
                     let upper = v.term.gt(&mx.term).ite(&mx.term, &v.term);
                     let term = v.term.lt(&mn.term).ite(&mn.term, &upper);
@@ -2196,7 +2195,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let len = Int::sub(self.ctx, &[&end, &ptr]);
                         let payload = self.fresh_int(&format!("scan_idx_{}", dest.as_usize()));
                         self.solver.constraints.push(payload.lt(&len));
-                        let dest_ty = self.body.local_decls[dest].ty;
+                        let dest_ty = self.body().local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
                             _ => dest_ty,
@@ -2234,7 +2233,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         self.solver.constraints.push(payload.lt(&len));
                         let zero = Int::from_u64(self.ctx, 0);
                         self.solver.constraints.push(payload.ge(&zero));
-                        let dest_ty = self.body.local_decls[dest].ty;
+                        let dest_ty = self.body().local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
                             _ => dest_ty,
@@ -2257,7 +2256,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let Some(arg_len) = self.slice_len_from_value(slice) {
                         let len = self.fresh_int(&format!("decode_len_{}", dest.as_usize()));
                         self.solver.constraints.push(len.le(&arg_len));
-                        let dest_ty = self.body.local_decls[dest].ty;
+                        let dest_ty = self.body().local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
                             _ => dest_ty,
@@ -2284,7 +2283,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let len = self.fresh_int(&format!("strlen_{}", dest.as_usize()));
                 let max = Int::from_i64(self.ctx, i64::MAX);
                 self.solver.constraints.push(len.lt(&max));
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 self.set_local(
                     dest,
                     VmValue::new(len, dest_ty),
@@ -2292,7 +2291,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             CallEffect::ReturnNonZeroIff { arg } => {
                 if let Some(a) = args.get(*arg) {
-                    let dest_ty = self.body.local_decls[dest].ty;
+                    let dest_ty = self.body().local_decls[dest].ty;
                     let zero = Int::from_u64(self.ctx, 0);
                     let term = self.fresh_int(&format!("ret_nz_iff_{}", dest.as_usize()));
                     // `result == 0` iff `arg == 0`, i.e. non-zero is preserved
@@ -2327,7 +2326,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let payload_ty = args
                     .first()
                     .map(|a| a.ty)
-                    .unwrap_or(self.body.local_decls[dest].ty);
+                    .unwrap_or(self.body().local_decls[dest].ty);
                 self.set_field_value(
                     dest,
                     vec![0],
@@ -2440,7 +2439,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let (Some(ptr_val), Some(size_val)) =
                     (args.get(*pointer_arg), args.get(*size_arg))
                 {
-                    let dest_ty = self.body.local_decls[dest].ty;
+                    let dest_ty = self.body().local_decls[dest].ty;
                     let elem_ty = crate::verify::call_summary::from_raw_parts_elem_ty(
                         self.tcx,
                         self.caller_def_id,
@@ -2542,7 +2541,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             CallEffect::ReturnBoxAllocation => {
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 // `pointee_ty` doesn't unwrap `Box`; extract its `T` from the
                 // first generic argument so the heap allocation is sized to the
                 // pointee and (below) the inner `Unique<T>.pointer` field can be
@@ -2623,7 +2622,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 elem_size,
             } => {
                 if let Some(size_val) = args.get(*size_arg) {
-                    let dest_ty = self.body.local_decls[dest].ty;
+                    let dest_ty = self.body().local_decls[dest].ty;
                     let elem_ty = crate::verify::call_summary::vec_elem_ty(self.tcx, dest_ty);
                     // A generic element type (`elem_size == 0`) uses the shared
                     // symbolic `sizeof_T` so the allocation size stays consistent
@@ -2696,7 +2695,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             CallEffect::ReturnNewAllocationFromCap { cap_arg, elem_size } => {
                 if let Some(cap_val) = args.get(*cap_arg) {
-                    let dest_ty = self.body.local_decls[dest].ty;
+                    let dest_ty = self.body().local_decls[dest].ty;
                     let elem_ty = crate::verify::call_summary::vec_elem_ty(self.tcx, dest_ty);
                     // A generic element type (`elem_size == 0`) uses the shared
                     // symbolic `sizeof_T` so the allocation size stays consistent
@@ -2770,7 +2769,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // Box→Vec conversion (into_vec, box_assume_init_into_vec_unsafe)
                 // and `slice::to_vec` (a fresh copy of a slice).
                 self.ensure_local_allocation(dest);
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 let elem_ty = crate::verify::call_summary::vec_elem_ty(self.tcx, dest_ty);
                 let heap_align = elem_ty
                     .map(|ty| self.align_sym(ty))
@@ -2843,7 +2842,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let Some(ref prov) = vec_val.provenance {
                         if let Some(heap_alloc_id) = self.alloc(prov.alloc_id).slice_data {
                             let heap_base = self.allocation_base(heap_alloc_id).clone();
-                            let dest_ty = self.body.local_decls[dest].ty;
+                            let dest_ty = self.body().local_decls[dest].ty;
                             self.set_local(
                                 dest,
                                 VmValue {
@@ -2875,7 +2874,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         self.alloc_mut(prov.alloc_id).initialized = true;
                     }
                     let mut val = arg_val.clone();
-                    val.ty = self.body.local_decls[dest].ty;
+                    val.ty = self.body().local_decls[dest].ty;
                     val.invariants.init = true;
                     val.invariants.non_null = true;
                     // `Box::from_raw`/`from_raw_in` reconstruct a Box whose
@@ -2925,7 +2924,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `from_size_align_unchecked` can discharge `align != 0` (its
                 // `(align & (align - 1)) == 0` check is otherwise vacuously
                 // proved, since contract-level `BitAnd` is unsupported).
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 let term = self.fresh_int(&format!("layout_align_{}", dest.as_usize()));
                 let zero = Int::from_u64(self.ctx, 0);
                 self.solver.constraints.push(term.gt(&zero));
@@ -2980,7 +2979,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         }
                     }
                 }
-                let dest_ty = self.body.local_decls[dest].ty;
+                let dest_ty = self.body().local_decls[dest].ty;
                 let term = self.fresh_int(&format!("ck_ok_{}", dest.as_usize()));
                 self.set_local(
                     dest,
@@ -3119,7 +3118,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let Some(len_term) = self.iter_remaining_len(l) else {
             return false;
         };
-        let dest_ty = self.body.local_decls[dest].ty;
+        let dest_ty = self.body().local_decls[dest].ty;
         self.set_local(dest, VmValue::new(len_term, dest_ty));
         true
     }
@@ -3176,7 +3175,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// would be wrong (BTreeMap's `NodeRef` handles).
     fn find_whole_reborrow_referent(&self, local: Local) -> Option<Local> {
         use rustc_middle::mir::{ProjectionElem, Rvalue, StatementKind};
-        for bb in self.body.basic_blocks.iter() {
+        for bb in self.body().basic_blocks.iter() {
             for stmt in &bb.statements {
                 if let StatementKind::Assign(assign) = &stmt.kind {
                     let (dest, rvalue) = &**assign;
@@ -3236,7 +3235,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let Some(alloc_id) = effective_alloc_id else {
             return false;
         };
-        let dest_ty = self.body.local_decls[dest].ty;
+        let dest_ty = self.body().local_decls[dest].ty;
         // Prefer the materialized slice length.
         if let Some(len) = self.alloc(alloc_id).slice_len().cloned() {
             let val = VmValue::new(len, dest_ty);
@@ -3322,7 +3321,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     });
                 }
             }
-            v.ty = self.body.local_decls[dest].ty;
+            v.ty = self.body().local_decls[dest].ty;
             self.set_local(dest, v);
             return;
         }
@@ -3330,7 +3329,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // receiver is often a reborrow temp whose referent carries no field
         // values; reconstruct the length from the backing allocation
         // (`size / elem_size`), as `ReturnLengthOfArg` does.
-        let dest_ty = self.body.local_decls[dest].ty;
+        let dest_ty = self.body().local_decls[dest].ty;
         if matches!(dest_ty.kind(), TyKind::Uint(_) | TyKind::Int(_)) {
             if let Some(arg_val) = args.get(arg) {
                 if self.set_len_from_alloc(arg_val, dest) {
@@ -3355,7 +3354,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         caller_arg_locals: &[Option<Local>],
         dest: Local,
     ) {
-        let dest_ty = self.body.local_decls[dest].ty;
+        let dest_ty = self.body().local_decls[dest].ty;
         let TyKind::Adt(adt, substs) = dest_ty.kind() else {
             return;
         };

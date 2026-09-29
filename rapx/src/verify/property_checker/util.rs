@@ -179,7 +179,7 @@ impl PropertyChecker {
         // Fallback: if the field value is not set (e.g. constructor return
         // value _0 whose Aggregate was not executed), resolve from MIR.
         if !field_path.is_empty() && base_local == Local::from_usize(0) {
-            for bb in vm_state.body.basic_blocks.iter() {
+            for bb in vm_state.body().basic_blocks.iter() {
                 for stmt in &bb.statements {
                     if let rustc_middle::mir::StatementKind::Assign(assign) = &stmt.kind {
                         let (ref place, ref rval) = **assign;
@@ -560,7 +560,7 @@ impl PropertyChecker {
             return ty;
         };
 
-        let body = vm_state.body;
+        let body = vm_state.body();
         let terminator = body.basic_blocks[checkpoint.block].terminator();
         let TerminatorKind::Call { func, .. } = &terminator.kind else {
             return ty;
@@ -586,7 +586,7 @@ impl PropertyChecker {
         checkpoint: &Checkpoint<'tcx>,
         index: u32,
     ) -> Option<u128> {
-        let body = vm_state.body;
+        let body = vm_state.body();
         let terminator = body.basic_blocks[checkpoint.block].terminator();
         let TerminatorKind::Call { func, .. } = &terminator.kind else {
             return None;
@@ -961,11 +961,11 @@ impl PropertyChecker {
         }
         let local = place.local;
         // If this local is a parameter (arg), use it directly
-        if local.as_usize() <= vm_state.body.arg_count {
+        if local.as_usize() <= vm_state.body().arg_count {
             return vm_state.value_of_operand(op);
         }
         // Trace through simple Use assignments
-        for block in vm_state.body.basic_blocks.iter() {
+        for block in vm_state.body().basic_blocks.iter() {
             for stmt in &block.statements {
                 if let StatementKind::Assign(assign) = &stmt.kind {
                     let (dest, rvalue) = &**assign;

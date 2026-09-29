@@ -397,14 +397,19 @@ pub(crate) struct ByteInfo<'ctx> {
     pub nul: Option<bool>,
 }
 
-/// State owned by the inlined-callee execution (`exec_inline_call`): the
-/// recursion depth, the caller-frame stack, and the temporary bindings that are
-/// swapped in on entry and restored on exit.
+/// State for the two inlined-callee execution mechanisms, which are orthogonal:
+///
+/// * path replay (`CalleeEntry`/`CalleeExit` items) is iterative and keeps its
+///   saved caller frames on `frames`;
+/// * recursive inlining (`exec_inline_call`) unwinds via the Rust call stack,
+///   is bounded by `depth`, and stashes its per-call scratch bindings in
+///   `arg_referents`/`deferred_field_writes`.
 #[derive(Default)]
 pub(crate) struct InlineCtx<'ctx, 'tcx> {
-    /// Current depth of the recursive `exec_inline_call` stack.  `exec_call`
-    /// re-enters inline execution with `depth = 0` on every nested call, so a
-    /// separate counter is needed to actually bound nested inlining.
+    /// Recursion depth of `exec_inline_call` (incremented on entry, decremented
+    /// on exit), to bound nested inlining.  Distinct from `frames`: recursive
+    /// inlining unwinds through the Rust call stack and does not push onto
+    /// `frames`.
     pub depth: usize,
     /// Stack of saved caller frames (a [`FrameSnapshot`] each) for inlined-callee
     /// path execution.
@@ -458,16 +463,14 @@ pub(crate) struct AnalysisCtx<'ctx> {
 
 /// Execution-scoped data, as opposed to program-state data.
 ///
-/// `path` is the input path currently being replayed (consumed by branch
-/// resolution), `inline` is the inlined-callee stack, and `last_call_callee`
-/// describes the *current step* rather than anything accumulated across the
-/// whole path. These are transient: they are reset or overwritten per step, so
-/// they are kept apart from [`Memory`]/[`Locals`] and the accumulated solver
-/// constraints.
-#[derive(Default)]
+/// Holds the state that *drives* the walk through a path rather than the state
+/// the walk produces: `path` + `block_occurrences` are the read-only path
+/// cursor, `inline` is the inlined-callee stack, and `last_call_callee` is the
+/// per-step call context.  Kept apart from [`Memory`]/[`Locals`] (program
+/// state) and the accumulated solver constraints (path facts).
 pub(crate) struct ExecCtx<'ctx, 'tcx> {
     /// The path being executed (for branch target resolution).
-    pub(crate) path: Option<Path>,
+    pub(crate) path: Path,
 
     /// Block occurrence cursor: how many times each block has been entered so
     /// far while walking `path`, used to disambiguate the `k`-th loop iteration
@@ -478,7 +481,8 @@ pub(crate) struct ExecCtx<'ctx, 'tcx> {
     /// temporary bindings swapped on entry / restored on exit).
     pub(crate) inline: InlineCtx<'ctx, 'tcx>,
 
-    /// `DefId` of the most recent call (for `DefId`-based API classification).
+    /// `DefId` of the call currently being processed (for `DefId`-based API
+    /// classification).
     pub(crate) last_call_callee: Option<DefId>,
 }
 
@@ -486,16 +490,14 @@ pub(crate) struct ExecCtx<'ctx, 'tcx> {
 /// keyed purely by `AllocId` (fields and byte state).
 ///
 /// This is the *address/place* layer — the memory that values live in — kept
-/// separate from [`Locals`], which binds MIR locals (names) to values. Grouping
-/// these maps keeps `next_alloc_id` consistent with `allocations.len()` and
-/// makes the `AllocId`-keyed field/byte tables evolve together.
+/// separate from [`Locals`], which binds MIR locals (names) to values. An
+/// `AllocId` doubles as the index into `allocations` (a fresh id is
+/// `allocations.len()`), so the `AllocId`-keyed field/byte tables stay
+/// consistent with the allocation vector.
 #[derive(Default)]
 pub(crate) struct Memory<'ctx, 'tcx> {
-    /// All known allocations.
+    /// All known allocations, indexed by `AllocId`.
     pub(crate) allocations: Vec<Allocation<'ctx, 'tcx>>,
-
-    /// The next allocation ID.
-    pub(crate) next_alloc_id: usize,
 
     /// Per-byte symbolic state: (alloc_id, concrete_byte_offset) → ByteInfo.
     /// Populated by aggregate initialisation, pointer stores, and write call
@@ -593,7 +595,6 @@ pub(crate) struct SolverState<'ctx, 'tcx> {
 /// `solver`, `path_facts`) is deliberately *not* captured: it accumulates
 /// across the whole path, including inlined frames.
 pub(crate) struct FrameSnapshot<'ctx, 'tcx> {
-    pub(crate) body: &'ctx Body<'tcx>,
     pub(crate) caller_def_id: DefId,
     pub(crate) values: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
     pub(crate) slots: FxHashMap<Local, AllocId>,
@@ -609,7 +610,8 @@ pub(crate) struct FrameSnapshot<'ctx, 'tcx> {
 /// as the VM steps through retained MIR items. The Z3 context is
 /// borrowed so a single context can be reused across property checks.
 pub(crate) struct VmState<'ctx, 'tcx> {
-    // ── Context (immutable)
+    // ── Shared handles (passed in at run start; not execution state, but
+    //    needed to create terms and query types during checking)
     /// Shared Z3 context.
     pub(crate) ctx: &'ctx Context,
 
@@ -617,11 +619,8 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     pub(crate) tcx: TyCtxt<'tcx>,
 
     // ── Current function frame (swapped on inline entry/exit)
-    /// The DefId of the function whose body we are executing.
+    /// The function whose body we execute (the MIR is derived via [`Self::body`]).
     pub(crate) caller_def_id: DefId,
-
-    /// The MIR body being executed.
-    pub(crate) body: &'ctx Body<'tcx>,
 
     // ── Memory + local bindings (the two-state layers)
     /// The object space: allocations, per-byte state, and per-allocation fields.
@@ -654,21 +653,30 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     pub(crate) fn new(
         ctx: &'ctx Context,
         tcx: TyCtxt<'tcx>,
-        body: &'ctx Body<'tcx>,
+        path: Path,
         caller_def_id: DefId,
     ) -> Self {
         Self {
             ctx,
             tcx,
-            body,
             caller_def_id,
             memory: Memory::default(),
             locals: Locals::default(),
-            exec: ExecCtx::default(),
+            exec: ExecCtx {
+                path,
+                block_occurrences: FxHashMap::default(),
+                inline: InlineCtx::default(),
+                last_call_callee: None,
+            },
             analysis: AnalysisCtx::default(),
             solver: SolverState::default(),
             path_facts: PathFacts::default(),
         }
+    }
+
+    /// The MIR body of the current function, derived from `caller_def_id`.
+    pub(crate) fn body(&self) -> &'tcx Body<'tcx> {
+        self.tcx.optimized_mir(self.caller_def_id)
     }
 
     /// Capture the frame-scoped state before switching to an inlined callee.
@@ -681,7 +689,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// so they can no longer drift apart.
     pub(crate) fn save_frame(&mut self) -> FrameSnapshot<'ctx, 'tcx> {
         FrameSnapshot {
-            body: self.body,
             caller_def_id: self.caller_def_id,
             values: std::mem::take(&mut self.locals.values),
             slots: std::mem::take(&mut self.locals.slots),
@@ -694,7 +701,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Restore the frame-scoped state after an inlined callee returns.
     pub(crate) fn restore_frame(&mut self, snapshot: FrameSnapshot<'ctx, 'tcx>) {
-        self.body = snapshot.body;
         self.caller_def_id = snapshot.caller_def_id;
         self.locals.values = snapshot.values;
         self.locals.slots = snapshot.slots;
@@ -767,8 +773,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         element_ty: Option<Ty<'tcx>>,
         kind: AllocKind<'ctx>,
     ) -> (AllocId, Int<'ctx>) {
-        let id = AllocId(self.memory.next_alloc_id);
-        self.memory.next_alloc_id += 1;
+        let id = AllocId(self.memory.allocations.len());
         let base = {
             let name = format!(
                 "{}_{}",
@@ -1108,7 +1113,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             #[cfg(rapx_ge_95)]
             Operand::RuntimeChecks(_) => VmValue::new(
                 self.fresh_int("runtime_checks"),
-                self.body.local_decls[Local::from_usize(0)].ty,
+                self.body().local_decls[Local::from_usize(0)].ty,
             ),
         }
     }
@@ -1157,7 +1162,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let Some(ref prov) = base_val.provenance {
                         return Some(VmValue {
                             term: base_val.term.clone(),
-                            ty: place.ty(self.body, self.tcx).ty,
+                            ty: place.ty(self.body(), self.tcx).ty,
                             provenance: Some(prov.clone()),
                             invariants: base_val.invariants.clone(),
                             field_offset: false,
@@ -1224,7 +1229,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         for proj in place.projection.iter() {
             match proj.kind() {
                 ProjectionElem::Deref => {
-                    base.ty = place.ty(self.body, self.tcx).ty;
+                    base.ty = place.ty(self.body(), self.tcx).ty;
                 }
                 ProjectionElem::Field(_field_idx, _) => {
                     // Try to get the field value from the VM's field tracking
@@ -1234,7 +1239,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         }
                     }
                     // Fallback: return the base with updated type info
-                    base.ty = place.ty(self.body, self.tcx).ty;
+                    base.ty = place.ty(self.body(), self.tcx).ty;
                 }
                 _ => {}
             }
@@ -1263,7 +1268,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         .unwrap_or_else(|| self.fresh_int("arr_elem"));
                                     return Some(VmValue {
                                         term,
-                                        ty: place.ty(self.body, self.tcx).ty,
+                                        ty: place.ty(self.body(), self.tcx).ty,
                                         provenance: None,
                                         invariants: ValueInvariants::default(),
                                         field_offset: false,
@@ -1280,7 +1285,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     }
                                     return Some(VmValue {
                                         term: chain,
-                                        ty: place.ty(self.body, self.tcx).ty,
+                                        ty: place.ty(self.body(), self.tcx).ty,
                                         provenance: None,
                                         invariants: ValueInvariants::default(),
                                         field_offset: false,
@@ -1303,7 +1308,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             return Some(v);
                         }
                         let mut val = base.clone();
-                        val.ty = place.ty(self.body, self.tcx).ty;
+                        val.ty = place.ty(self.body(), self.tcx).ty;
                         return Some(val);
                     }
                     ProjectionElem::Field(_field_idx, _field_ty) => {
@@ -1314,7 +1319,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         // Downcast or other unsupported projection: still return
                         // the base with updated type so provenance propagates.
                         let mut val = base.clone();
-                        val.ty = place.ty(self.body, self.tcx).ty;
+                        val.ty = place.ty(self.body(), self.tcx).ty;
                         return Some(val);
                     }
                 }
@@ -1332,7 +1337,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             })
         {
             let mut val = base;
-            val.ty = place.ty(self.body, self.tcx).ty;
+            val.ty = place.ty(self.body(), self.tcx).ty;
             return Some(val);
         }
 
@@ -1345,7 +1350,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// whose provenance was lost may still be null, so assuming non-null here
     /// would let `NonNull`/null-guard checks pass unsoundly.
     pub(crate) fn unknown_value_for_place(&self, place: &Place<'tcx>) -> VmValue<'ctx, 'tcx> {
-        let ty = place.ty(self.body, self.tcx).ty;
+        let ty = place.ty(self.body(), self.tcx).ty;
         VmValue::new(self.fresh_int("unknown"), ty)
     }
 }

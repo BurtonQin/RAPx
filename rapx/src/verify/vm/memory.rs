@@ -18,7 +18,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
         if place.projection.is_empty() {
             let base_addr = self.local_address(place.local);
-            let ty = self.body.local_decls[place.local].ty;
+            let ty = self.body().local_decls[place.local].ty;
             // Prefer the local's value provenance over the stack-allocation
             // provenance. For Box/Vec parameters, the value tracks the heap
             // allocation while slots tracks the stack location.
@@ -57,7 +57,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 offset: zero.clone(),
                 offset_kind: None,
             });
-        let mut current_ty = self.body.local_decls[place.local].ty;
+        let mut current_ty = self.body().local_decls[place.local].ty;
         let mut field_path: Vec<usize> = Vec::new();
         let mut view_ty = current_ty;
 
@@ -178,7 +178,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         }
 
-        let ty = place.ty(self.body, self.tcx).ty;
+        let ty = place.ty(self.body(), self.tcx).ty;
         Some(VmValue {
             term,
             ty,
@@ -195,14 +195,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if self.locals.slots.contains_key(&local) {
             return;
         }
-        let ty = self.body.local_decls[local].ty;
+        let ty = self.body().local_decls[local].ty;
         let align = self.align_sym(ty);
         // Generate the base address symbol directly (the address lives only in
         // `Allocation::base` now; `local_address` reads it back from there).
         let name = format!("addr__{}", local.as_usize());
         let base = Int::new_const(self.ctx, name.as_str());
-        let id = AllocId(self.memory.next_alloc_id);
-        self.memory.next_alloc_id += 1;
+        let id = AllocId(self.memory.allocations.len());
         // For arrays, track the element type (not the array type) so that
         // len() computes `size / elem_size` correctly.  When the element size
         // is unknown (a generic `T`), `size_of::<[T; N]>()` collapses to 0, so
