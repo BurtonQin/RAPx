@@ -221,6 +221,33 @@ pub(crate) enum Liveness<'tcx> {
     AssumedFor(Region<'tcx>),
 }
 
+/// Contract/invariant facts established *about* an allocation, kept apart from
+/// the allocation's intrinsic shape/state ([`Allocation`]'s `base`/`size`/
+/// `align`/`kind`/`dead`/`initialized`).  These describe what a verified
+/// contract or struct invariant tells us the allocation is, rather than what it
+/// structurally *is*, so the two layers don't blur together.
+#[derive(Clone, Debug)]
+pub(crate) struct ContractFacts<'tcx> {
+    /// How this allocation's liveness is established, and for which region.
+    /// Only consulted for external allocations, which carry no liveness
+    /// guarantee (their memory is owned by the caller); `AssumedFor('a)` records
+    /// the `Alive(p, 'a)` contract's region so the checker can reject a use that
+    /// demands a longer region.
+    pub liveness: Liveness<'tcx>,
+
+    /// Whether the allocation is known to be a null-terminated byte buffer (a
+    /// valid C string), asserted via a `ValidCStr` contract fact or struct
+    /// invariant.
+    pub nul_terminated: bool,
+
+    /// The target type declared by a `Typed(container.iter(), T)` *for_each*
+    /// invariant: every pointer element of the container points at a valid `T`,
+    /// so a single pointer loaded from it (`let cur = buckets[i]`) discharges
+    /// `Typed(cur, T)` — without trusting the pointer type alone, which would
+    /// also bless dangling pointers in containers carrying no such invariant.
+    pub for_each_target_ty: Option<Ty<'tcx>>,
+}
+
 /// A memory allocation: a stack local, a heap object (`Box`/`Vec`), or an
 /// external raw-pointer placeholder.
 ///
@@ -254,17 +281,9 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     /// `MaybeUninit::uninit`).
     pub initialized: bool,
 
-    /// How this allocation's liveness is established, and for which region.
-    /// Only consulted for external allocations, which carry no liveness
-    /// guarantee (their memory is owned by the caller); `AssumedFor('a)` records
-    /// the `Alive(p, 'a)` contract's region so the checker can reject a use that
-    /// demands a longer region.
-    pub liveness: Liveness<'tcx>,
-
-    /// Whether the allocation is known to be a null-terminated byte buffer (a
-    /// valid C string), asserted via a `ValidCStr` contract fact or struct
-    /// invariant.
-    pub nul_terminated: bool,
+    /// Contract/invariant facts established about this allocation (liveness,
+    /// NUL termination, `for_each` target type).
+    pub facts: ContractFacts<'tcx>,
 
     /// The allocation a sub-view was derived from: a slice view created by
     /// `s[i..j]` / `s.get(range)`, `split_at` / `align_to` / `as_chunks`, or
@@ -282,13 +301,6 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     /// to the buffer. A `&[T]` fat pointer's provenance already names the slice
     /// data, so this is redundant there.
     pub slice_data: Option<AllocId>,
-
-    /// The target type declared by a `Typed(container.iter(), T)` *for_each*
-    /// invariant: every pointer element of the container points at a valid `T`,
-    /// so a single pointer loaded from it (`let cur = buckets[i]`) discharges
-    /// `Typed(cur, T)` — without trusting the pointer type alone, which would
-    /// also bless dangling pointers in containers carrying no such invariant.
-    pub for_each_target_ty: Option<Ty<'tcx>>,
 }
 
 impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
@@ -309,11 +321,13 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
             kind,
             dead: false,
             initialized: false,
-            liveness: Liveness::Unassumed,
-            nul_terminated: false,
+            facts: ContractFacts {
+                liveness: Liveness::Unassumed,
+                nul_terminated: false,
+                for_each_target_ty: None,
+            },
             parent: None,
             slice_data: None,
-            for_each_target_ty: None,
         }
     }
 
@@ -516,8 +530,10 @@ pub(crate) struct Memory<'ctx, 'tcx> {
 ///
 /// This is the *value* layer: `values` is the rvalue each local holds, `slots`
 /// is the stack allocation backing each local's place (lvalue identity), and
-/// `local_fields` is a local-keyed cache of field values (mirrors
-/// [`Memory::fields`]'s alloc-keyed entries for pointee decomposition).
+/// `local_fields` is a local-keyed map of field values.  `local_fields` answers
+/// "what value does the aggregate *bound to* `local` hold at field `path`?",
+/// which is distinct from [`Memory::fields`], which answers "what value sits at
+/// an address *within* an allocation viewed as a type?" (memory contents).
 #[derive(Default)]
 pub(crate) struct Locals<'ctx, 'tcx> {
     /// Current value bound to each MIR local (rvalue).
@@ -528,6 +544,8 @@ pub(crate) struct Locals<'ctx, 'tcx> {
 
     /// Field-level value tracking for aggregates: (local, field_indices) → value.
     /// Example: `(local_3, [0])` is `local_3.0`, `(local_3, [0, 1])` is `local_3.0.1`.
+    /// This is the binding-value layer; see [`Memory::fields`] for the
+    /// alloc-keyed memory-contents layer (pointee decomposition).
     pub(crate) local_fields: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
 
     /// Move-alias chain: `local → source` for a whole-place move (`_3 = move _4`).
@@ -820,6 +838,24 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.locals.local_fields.insert((local, path), value);
     }
 
+    /// The value at a field offset *within an allocation* viewed as `view_ty`.
+    ///
+    /// This is the memory-contents layer ([`Memory::fields`]), the counterpart
+    /// to [`Self::field_value`]'s binding-value layer ([`Locals::local_fields`]):
+    /// `field_value` asks "what value does the aggregate bound to `local` hold
+    /// at field `path`?", while `load_field` asks "what value sits at
+    /// `base(alloc_id) + offset(path)` interpreted as `view_ty`?".  The viewed
+    /// type is part of the key so reinterpret casts (`LeafNode` ↔
+    /// `InternalNode`) resolve to the right field view.
+    pub(crate) fn load_field(
+        &self,
+        alloc_id: AllocId,
+        view_ty: Ty<'tcx>,
+        path: &[usize],
+    ) -> Option<&VmValue<'ctx, 'tcx>> {
+        self.memory.fields.get(&(alloc_id, view_ty, path.to_vec()))
+    }
+
     /// Record a per-byte symbolic value at a concrete offset in an allocation.
     pub(crate) fn record_byte_value(&mut self, alloc_id: AllocId, offset: usize, term: Int<'ctx>) {
         let byte = self.memory.bytes.entry((alloc_id, offset)).or_default();
@@ -1099,12 +1135,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .iter()
             .any(|p| matches!(p.kind(), ProjectionElem::Downcast(..)));
         if !field_path.is_empty() && is_pure_field {
-            if let Some(val) = self
-                .locals
-                .local_fields
-                .get(&(place.local, field_path.clone()))
-                .cloned()
-            {
+            if let Some(val) = self.field_value(place.local, &field_path).cloned() {
                 return Some(val);
             }
             if !has_downcast {
@@ -1155,12 +1186,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 )
             });
             if non_field_deref {
-                if let Some(val) = self
-                    .locals
-                    .local_fields
-                    .get(&(place.local, field_path.clone()))
-                    .cloned()
-                {
+                if let Some(val) = self.field_value(place.local, &field_path).cloned() {
                     return Some(val);
                 }
                 // Resolve a Deref+Field access through the pointee allocation's
@@ -1173,11 +1199,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let Some(alloc_id) = base_val.provenance_alloc_id() {
                         let view_ty = crate::helpers::mir_utils::pointee_ty(base_val.ty)
                             .unwrap_or(base_val.ty);
-                        if let Some(val) = self
-                            .memory.fields
-                            .get(&(alloc_id, view_ty, field_path.clone()))
-                            .cloned()
-                        {
+                        if let Some(val) = self.load_field(alloc_id, view_ty, &field_path).cloned() {
                             return Some(val);
                         }
                     }
@@ -1197,12 +1219,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 ProjectionElem::Field(_field_idx, _) => {
                     // Try to get the field value from the VM's field tracking
                     if !field_path.is_empty() {
-                        if let Some(val) = self
-                            .locals
-                            .local_fields
-                            .get(&(place.local, field_path.clone()))
-                            .cloned()
-                        {
+                        if let Some(val) = self.field_value(place.local, &field_path).cloned() {
                             return Some(val);
                         }
                     }
@@ -1272,12 +1289,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         // (`let r = &mut self.v`) should yield the field's
                         // *value* (materialized by `propagate_field_values_to_ref`
                         // at the empty field path), not the field's address.
-                        if let Some(v) = self
-                            .locals
-                            .local_fields
-                            .get(&(place.local, Vec::new()))
-                            .cloned()
-                        {
+                        if let Some(v) = self.field_value(place.local, &[]).cloned() {
                             return Some(v);
                         }
                         let mut val = base.clone();

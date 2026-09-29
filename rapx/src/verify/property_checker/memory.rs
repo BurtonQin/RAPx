@@ -913,7 +913,7 @@ impl PropertyChecker {
             // guarantee; it is alive only if explicitly assumed (`Alive`
             // precondition / struct invariant), or grounded in a live reference.
             if !vm_state.alloc(root_id).dead {
-                match &vm_state.alloc(root_id).liveness {
+                match &vm_state.alloc(root_id).facts.liveness {
                     Liveness::AssumedFor(src_region) => {
                         // The `Alive(p, 'r)` check demands the memory alive for
                         // `'r`, while the assumption only guarantees `'a`; the

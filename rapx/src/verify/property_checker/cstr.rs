@@ -112,7 +112,7 @@ impl PropertyChecker {
             while let Some(parent_id) = vm_state.alloc(root_id).parent {
                 root_id = parent_id;
             }
-            if vm_state.alloc(alloc_id).nul_terminated || vm_state.alloc(root_id).nul_terminated {
+            if vm_state.alloc(alloc_id).facts.nul_terminated || vm_state.alloc(root_id).facts.nul_terminated {
                 return CheckResult::ProvedByRule;
             }
 

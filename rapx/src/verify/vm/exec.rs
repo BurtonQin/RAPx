@@ -936,7 +936,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let (alloc_id, base) = self.allocate_external(max_size, align, Some(elem_ty));
         self.alloc_mut(alloc_id).initialized = true;
         if let Some(region) = alive_region {
-            self.alloc_mut(alloc_id).liveness = Liveness::AssumedFor(region);
+            self.alloc_mut(alloc_id).facts.liveness = Liveness::AssumedFor(region);
         }
         self.set_field_value(
             local,
@@ -3548,7 +3548,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // struct invariants against the struct, function `requires`
                     // against the function.
                     if let Some(PropertyArg::Region(region)) = property.args().get(1) {
-                        self.alloc_mut(id).liveness = Liveness::AssumedFor(*region);
+                        self.alloc_mut(id).facts.liveness = Liveness::AssumedFor(*region);
                     }
                 }
             }
@@ -3591,7 +3591,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             // discharge `Typed(ptr, T)` soundly (the fact comes
                             // from the invariant, not from the pointer type).
                             if property.for_each().is_some() {
-                                self.alloc_mut(alloc_id).for_each_target_ty = Some(expected_ty);
+                                self.alloc_mut(alloc_id).facts.for_each_target_ty = Some(expected_ty);
                             }
                             // Only record the type invariant when the allocation
                             // has no element type yet.  `Init ⇒ Typed` (and other
@@ -3627,9 +3627,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 });
                 if let Some(id) = id {
                     self.alloc_mut(id).dead = false;
-                    self.alloc_mut(id).liveness = Liveness::AssumedFor(self.tcx.lifetimes.re_static);
+                    self.alloc_mut(id).facts.liveness = Liveness::AssumedFor(self.tcx.lifetimes.re_static);
                     self.alloc_mut(id).initialized = true;
-                    self.alloc_mut(id).nul_terminated = true;
+                    self.alloc_mut(id).facts.nul_terminated = true;
                     // `ValidCStr(p, n)` carries the byte length of the
                     // nul-terminated buffer.  Assert the allocation covers `n`
                     // bytes so downstream `from_raw_parts(p, n)` / InBound
@@ -3685,7 +3685,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // caller guarantees the memory is allocated and outlives the call, so
         // it is alive for the function's execution region.
         if self.alloc(alloc_id).is_external() {
-            self.alloc_mut(alloc_id).liveness = Liveness::AssumedFor(self.tcx.lifetimes.re_static);
+            self.alloc_mut(alloc_id).facts.liveness = Liveness::AssumedFor(self.tcx.lifetimes.re_static);
         }
         if self.alloc(alloc_id).element_ty.is_generic() {
             self.alloc_mut(alloc_id).element_ty = ContentTy::Typed(elem_ty);
@@ -4629,7 +4629,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         self.alloc_mut(alloc_id).initialized = true;
                         // A const/static byte materialization lives for the
                         // whole program (`'static`), so it is always alive.
-                        self.alloc_mut(alloc_id).liveness =
+                        self.alloc_mut(alloc_id).facts.liveness =
                             Liveness::AssumedFor(self.tcx.lifetimes.re_static);
                         for (i, &b) in bytes.iter().enumerate() {
                             self.record_byte_value(
