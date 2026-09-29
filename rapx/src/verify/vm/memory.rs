@@ -296,13 +296,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if size > 0 || !crate::helpers::mir_utils::ty_has_type_param(ty) {
             return Int::from_u64(self.ctx, size);
         }
-        if let Some(s) = self.layout.sizes.get(&ty) {
+        if let Some(s) = self.solver.layout.sizes.get(&ty) {
             return s.clone();
         }
         let s = self.fresh_int(&format!("sizeof_{ty}"));
-        self.layout.sizes.insert(ty, s.clone());
+        self.solver.layout.sizes.insert(ty, s.clone());
         let zero = Int::from_u64(self.ctx, 0);
-        self.constraints.push(s.ge(&zero));
+        self.solver.constraints.push(s.ge(&zero));
         s
     }
 
@@ -332,7 +332,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if size > 0 {
             return Int::from_u64(self.ctx, size);
         }
-        self.layout.sizes
+        self.solver.layout.sizes
             .get(&ty)
             .cloned()
             .unwrap_or_else(|| Int::from_u64(self.ctx, 1))
@@ -372,20 +372,20 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if align > 1 || !crate::helpers::mir_utils::ty_has_type_param(ty) {
             return Int::from_u64(self.ctx, align);
         }
-        if let Some(a) = self.layout.aligns.get(&ty) {
+        if let Some(a) = self.solver.layout.aligns.get(&ty) {
             return a.clone();
         }
         let a = self.fresh_int(&format!("align_{ty}"));
-        self.layout.aligns.insert(ty, a.clone());
+        self.solver.layout.aligns.insert(ty, a.clone());
         let one = Int::from_u64(self.ctx, 1);
         let zero = Int::from_u64(self.ctx, 0);
-        self.constraints.push(a.ge(&one));
+        self.solver.constraints.push(a.ge(&one));
         // Lower bound from the trait bounds (0 for an unconstrained `T`): any
         // implementor is at least this aligned.
         let min_a =
             crate::helpers::mir_utils::min_align_of_generic_param(self.tcx, self.caller_def_id, ty);
         if min_a > 1 {
-            self.constraints
+            self.solver.constraints
                 .push(a.ge(&Int::from_u64(self.ctx, min_a)));
         }
         // Upper bound from the trait bounds (0 for an unconstrained `T`): any
@@ -394,7 +394,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let max_a =
             crate::helpers::mir_utils::max_align_of_generic_param(self.tcx, self.caller_def_id, ty);
         if max_a > 0 {
-            self.constraints
+            self.solver.constraints
                 .push(a.le(&Int::from_u64(self.ctx, max_a)));
         }
         // A struct's alignment is a multiple of each field's alignment (both
@@ -406,7 +406,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 for field in variant.fields.iter() {
                     let field_ty = crate::helpers::mir_utils::field_ty(self.tcx, field, substs);
                     let field_align = self.align_sym(field_ty);
-                    self.constraints.push(a.rem(&field_align)._eq(&zero));
+                    self.solver.constraints.push(a.rem(&field_align)._eq(&zero));
                 }
                 // A struct's size is at least the sum of its fields (padding may
                 // add more).  This relates the symbolic `sizeof_Struct` constant
@@ -416,13 +416,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // allocation size.
                 if let Some(sum) = self.struct_size_sym(ty) {
                     let size = self.size_sym(ty);
-                    self.constraints.push(size.ge(&sum));
+                    self.solver.constraints.push(size.ge(&sum));
                 }
             }
         }
         // Layout invariant: a type's size is a multiple of its alignment.
         let size = self.size_sym(ty);
-        self.constraints.push(size.rem(&a)._eq(&zero));
+        self.solver.constraints.push(size.rem(&a)._eq(&zero));
         a
     }
 
@@ -441,7 +441,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if align > 1 {
             return Int::from_u64(self.ctx, align);
         }
-        if let Some(a) = self.layout.aligns.get(&ty) {
+        if let Some(a) = self.solver.layout.aligns.get(&ty) {
             return a.clone();
         }
         let min_a =

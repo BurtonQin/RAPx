@@ -212,16 +212,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if api_classify::is_std_ordering(adt_def.did()) {
                     let minus_one = Int::from_i64(self.ctx, -1);
                     let one = Int::from_i64(self.ctx, 1);
-                    self.constraints.push(term.ge(&minus_one));
-                    self.constraints.push(term.le(&one));
+                    self.solver.constraints.push(term.ge(&minus_one));
+                    self.solver.constraints.push(term.le(&one));
                 }
             }
             // bool return (bool, Result::ok/err, etc.) — constrain to {0, 1}
             if dest_ty.is_bool() {
                 let zero = Int::from_u64(self.ctx, 0);
                 let one = Int::from_u64(self.ctx, 1);
-                self.constraints.push(term.ge(&zero));
-                self.constraints.push(term.le(&one));
+                self.solver.constraints.push(term.ge(&zero));
+                self.solver.constraints.push(term.le(&one));
             }
             self.set_local(
                 destination,
@@ -258,7 +258,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let dest_ty = self.body.local_decls[destination].ty;
         let eq1 = term._eq(&arg_values[1].term);
         let eq2 = term._eq(&arg_values[2].term);
-        self.constraints.push(Bool::or(self.ctx, &[&eq1, &eq2]));
+        self.solver.constraints.push(Bool::or(self.ctx, &[&eq1, &eq2]));
         let prov = arg_values[1]
             .provenance
             .clone()
@@ -641,7 +641,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             val.ty = dest_ty;
             val.invariants.non_null = true;
             let zero = Int::from_u64(self.ctx, 0);
-            self.constraints.push(ptr.term._eq(&zero).not());
+            self.solver.constraints.push(ptr.term._eq(&zero).not());
             self.set_local(destination, val);
         } else {
             // ptr may be null, so the Option may be None — keep it symbolic.
@@ -735,10 +735,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             None => one_term.clone(),
         };
         // Assert !is_empty as path condition (remaining > 0)
-        self.constraints.push(remaining.gt(&zero));
+        self.solver.constraints.push(remaining.gt(&zero));
         // Push: base_len >= tracked_offset
         let base_len = ep_offset.div(&sz);
-        self.constraints.push(new_offset.le(&base_len));
+        self.solver.constraints.push(new_offset.le(&base_len));
         self.analysis.iter_ptr_offset.insert(local, new_offset);
         // Return None or old ptr
         let result_val = VmValue {
@@ -1194,10 +1194,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let cond_val = self.value_of_operand(cond);
                     if *expected {
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.constraints.push(cond_val.term._eq(&zero).not());
+                        self.solver.constraints.push(cond_val.term._eq(&zero).not());
                     } else {
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.constraints.push(cond_val.term._eq(&zero));
+                        self.solver.constraints.push(cond_val.term._eq(&zero));
                     }
                     // Guard inference for inline callee
                     self.infer_guard_non_null(cond, *expected);
@@ -1229,7 +1229,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     for (value, target) in targets.iter() {
                         let discr_val = self.value_of_operand(discr);
                         let val_term = Int::from_u64(self.ctx, value as u64);
-                        self.constraints.push(discr_val.term._eq(&val_term));
+                        self.solver.constraints.push(discr_val.term._eq(&val_term));
                         queue.push(target);
                     }
                     let otherwise = targets.otherwise();
@@ -1497,8 +1497,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .unwrap_or_else(|| alloc_size.div(&elem_sz_term)); // self.len()
 
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.constraints.push(mid_val.term.ge(&zero));
-                    self.constraints.push(mid_val.term.le(&total_len));
+                    self.solver.constraints.push(mid_val.term.ge(&zero));
+                    self.solver.constraints.push(mid_val.term.le(&total_len));
 
                     // mid (field 0 length)
                     let mid = mid_val.term.clone();
@@ -1531,10 +1531,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         );
                         let src_bytes = Int::mul(self.ctx, &[&total_len, &elem_sz_term]);
                         if f == 0 {
-                            self.constraints.push(field_size._eq(&mid_bytes));
+                            self.solver.constraints.push(field_size._eq(&mid_bytes));
                         } else {
                             let remaining = Int::sub(self.ctx, &[&src_bytes, &mid_bytes]);
-                            self.constraints.push(field_size._eq(&remaining));
+                            self.solver.constraints.push(field_size._eq(&remaining));
                         }
                         self.alloc_mut(alloc_id).initialized = true;
                         if let Some(ref source_prov) = self_val.provenance {
@@ -1698,10 +1698,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let offset = self.fresh_int(&format!("align_to_offset_{}", dest.as_usize()));
                 let zero = Int::from_u64(self.ctx, 0);
                 let ptr_plus_offset = Int::add(self.ctx, &[&self_val.term, &offset]);
-                self.constraints
+                self.solver.constraints
                     .push(ptr_plus_offset.rem(&align_u)._eq(&zero));
-                self.constraints.push(offset.ge(&zero));
-                self.constraints.push(offset.lt(&align_u));
+                self.solver.constraints.push(offset.ge(&zero));
+                self.solver.constraints.push(offset.lt(&align_u));
 
                 // body = len_bytes - offset bytes split into size_u chunks; the
                 // remainder is the suffix. Record the Euclidean identity so that
@@ -1712,9 +1712,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let suffix_bytes = body_bytes.rem(&size_u_term);
                 let mul_term = Int::mul(self.ctx, &[&body_len, &size_u_term]);
                 let sum_term = Int::add(self.ctx, &[&mul_term, &suffix_bytes]);
-                self.constraints.push(body_bytes._eq(&sum_term));
-                self.constraints.push(suffix_bytes.ge(&zero));
-                self.constraints.push(suffix_bytes.lt(&size_u_term));
+                self.solver.constraints.push(body_bytes._eq(&sum_term));
+                self.solver.constraints.push(suffix_bytes.ge(&zero));
+                self.solver.constraints.push(suffix_bytes.lt(&size_u_term));
 
                 // Field lengths in elements.
                 let prefix_len = offset.div(&elem_sz_term);
@@ -1818,7 +1818,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }
                     if src_non_null {
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.constraints.push(val.term._eq(&zero).not());
+                        self.solver.constraints.push(val.term._eq(&zero).not());
                     }
                     self.set_local(dest, val);
                 }
@@ -1974,12 +1974,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // downstream `ValidNum(result != 0)` obligation (e.g.
                     // `NonZero::new_unchecked` after a bit-preserving operation)
                     // discharges against it.
-                    self.constraints.push(existing.term._eq(&zero).not());
+                    self.solver.constraints.push(existing.term._eq(&zero).not());
                     self.set_local(dest, existing);
                 } else {
                     let dest_ty = self.body.local_decls[dest].ty;
                     let term = self.fresh_int(&format!("ret_nz_{}", dest.as_usize()));
-                    self.constraints.push(term._eq(&zero).not());
+                    self.solver.constraints.push(term._eq(&zero).not());
                     self.set_local(
                         dest,
                         VmValue {
@@ -2004,7 +2004,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let zero = Int::from_u64(self.ctx, 0);
                         let term =
                             self.fresh_int(&format!("ret_tup_nz_{}_{}", dest.as_usize(), field));
-                        self.constraints.push(term._eq(&zero).not());
+                        self.solver.constraints.push(term._eq(&zero).not());
                         self.set_field_value(
                             dest,
                             vec![*field],
@@ -2117,10 +2117,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let byte_off = Int::mul(self.ctx, &[&offset, &elem]);
                     let ptr_plus_off = Int::add(self.ctx, &[&ptr_val.term, &byte_off]);
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.constraints
+                    self.solver.constraints
                         .push(ptr_plus_off.rem(&align_val.term)._eq(&zero));
-                    self.constraints.push(offset.ge(&zero));
-                    self.constraints.push(offset.lt(&align_val.term));
+                    self.solver.constraints.push(offset.ge(&zero));
+                    self.solver.constraints.push(offset.lt(&align_val.term));
                 }
                 let val = VmValue::new(offset, dest_ty);
                 self.set_local(dest, val);
@@ -2235,7 +2235,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let (Some(ptr), Some(end)) = (ptr_term, end_term) {
                         let len = Int::sub(self.ctx, &[&end, &ptr]);
                         let payload = self.fresh_int(&format!("scan_idx_{}", dest.as_usize()));
-                        self.constraints.push(payload.lt(&len));
+                        self.solver.constraints.push(payload.lt(&len));
                         let dest_ty = self.body.local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
@@ -2271,9 +2271,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(slice) = args.get(*arg) {
                     if let Some(len) = self.slice_len_from_value(slice) {
                         let payload = self.fresh_int(&format!("scan_idx_{}", dest.as_usize()));
-                        self.constraints.push(payload.lt(&len));
+                        self.solver.constraints.push(payload.lt(&len));
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.constraints.push(payload.ge(&zero));
+                        self.solver.constraints.push(payload.ge(&zero));
                         let dest_ty = self.body.local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
@@ -2296,7 +2296,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(slice) = args.get(*arg) {
                     if let Some(arg_len) = self.slice_len_from_value(slice) {
                         let len = self.fresh_int(&format!("decode_len_{}", dest.as_usize()));
-                        self.constraints.push(len.le(&arg_len));
+                        self.solver.constraints.push(len.le(&arg_len));
                         let dest_ty = self.body.local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
@@ -2323,7 +2323,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `ValidNum(size_of(T)*(len+1) <= isize::MAX)`.
                 let len = self.fresh_int(&format!("strlen_{}", dest.as_usize()));
                 let max = Int::from_i64(self.ctx, i64::MAX);
-                self.constraints.push(len.lt(&max));
+                self.solver.constraints.push(len.lt(&max));
                 let dest_ty = self.body.local_decls[dest].ty;
                 self.set_local(
                     dest,
@@ -2337,7 +2337,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let term = self.fresh_int(&format!("ret_nz_iff_{}", dest.as_usize()));
                     // `result == 0` iff `arg == 0`, i.e. non-zero is preserved
                     // exactly (bit-preserving ops map 0 -> 0, non-zero -> non-zero).
-                    self.constraints
+                    self.solver.constraints
                         .push(term._eq(&zero)._eq(&a.term._eq(&zero)));
                     self.set_local(
                         dest,
@@ -2349,7 +2349,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(a) = args.get(*arg) {
                     let zero = Int::from_u64(self.ctx, 0);
                     let term = self.fresh_int(&format!("ret_opt_nz_iff_{}", dest.as_usize()));
-                    self.constraints
+                    self.solver.constraints
                         .push(term._eq(&zero)._eq(&a.term._eq(&zero)));
                     self.set_field_value(
                         dest,
@@ -2363,7 +2363,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `checked_next_power_of_two`).
                 let zero = Int::from_u64(self.ctx, 0);
                 let term = self.fresh_int(&format!("ret_opt_nz_{}", dest.as_usize()));
-                self.constraints.push(term._eq(&zero).not());
+                self.solver.constraints.push(term._eq(&zero).not());
                 let payload_ty = args
                     .first()
                     .map(|a| a.ty)
@@ -2968,7 +2968,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let dest_ty = self.body.local_decls[dest].ty;
                 let term = self.fresh_int(&format!("layout_align_{}", dest.as_usize()));
                 let zero = Int::from_u64(self.ctx, 0);
-                self.constraints.push(term.gt(&zero));
+                self.solver.constraints.push(term.gt(&zero));
                 self.set_local(
                     dest,
                     VmValue::new(term, dest_ty),
@@ -2998,7 +2998,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             })
                         });
                         if let Some(alloc_id) = alloc_id {
-                            self.exec.contract_flags.has_checked_bounds = true;
+                            self.contract_flags.has_checked_bounds = true;
                             let zero = Int::from_u64(self.ctx, 0);
                             let mut byte_offsets: Vec<(usize, Int)> = self
                                 .alloc_byte_values(alloc_id)
@@ -3007,14 +3007,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 .collect();
                             byte_offsets.sort_by_key(|(off, _)| *off);
                             for (_, term) in &byte_offsets {
-                                self.constraints.push(term.ge(&zero));
-                                self.constraints.push(term.lt(&len_val.term));
+                                self.solver.constraints.push(term.ge(&zero));
+                                self.solver.constraints.push(term.lt(&len_val.term));
                             }
                             for i in 0..byte_offsets.len() {
                                 for j in (i + 1)..byte_offsets.len() {
                                     let ti = &byte_offsets[i].1;
                                     let tj = &byte_offsets[j].1;
-                                    self.constraints.push(ti._eq(tj).not());
+                                    self.solver.constraints.push(ti._eq(tj).not());
                                 }
                             }
                         }
@@ -3426,9 +3426,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let start = self.fresh_int(&format!("range_start_{}", dest.as_usize()));
         let end = self.fresh_int(&format!("range_end_{}", dest.as_usize()));
         let zero = Int::from_u64(self.ctx, 0);
-        self.constraints.push(start.ge(&zero));
-        self.constraints.push(start.le(&end));
-        self.constraints.push(end.le(&len_term));
+        self.solver.constraints.push(start.ge(&zero));
+        self.solver.constraints.push(start.le(&end));
+        self.solver.constraints.push(end.le(&len_term));
 
         let start_val = VmValue::new(start, field_ty(0));
         let end_val = VmValue::new(end, field_ty(1));
@@ -3476,16 +3476,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.set_field_value(local, vec![0, 1], VmValue::new(cap.clone(), usize_ty));
         self.set_field_value(local, vec![1], VmValue::new(len.clone(), usize_ty));
         let zero = Int::from_u64(self.ctx, 0);
-        self.constraints.push(len.ge(&zero));
-        self.constraints.push(len.le(&cap));
-        self.constraints.push(cap.ge(&zero));
+        self.solver.constraints.push(len.ge(&zero));
+        self.solver.constraints.push(len.le(&cap));
+        self.solver.constraints.push(cap.ge(&zero));
         // Language invariant: a Vec's byte length fits in `isize::MAX`, so the
         // `from_raw_parts`/`from_raw_parts_mut` precondition
         // `size_of(T) * len <= isize::MAX` is provable from the materialized
         // fields (`len <= cap` and `cap * elem_size <= isize::MAX`).
         let isize_max = Int::from_u64(self.ctx, isize::MAX as u64);
         let elem_term = Int::from_u64(self.ctx, elem_size.max(1));
-        self.constraints
+        self.solver.constraints
             .push(Int::mul(self.ctx, &[&cap, &elem_term]).le(&isize_max));
     }
 }

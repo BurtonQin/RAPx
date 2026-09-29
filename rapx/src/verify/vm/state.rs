@@ -221,13 +221,15 @@ pub(crate) enum Liveness<'tcx> {
     AssumedFor(Region<'tcx>),
 }
 
-/// Contract/invariant facts established *about* an allocation, kept apart from
-/// the allocation's intrinsic shape/state ([`Allocation`]'s `base`/`size`/
-/// `align`/`kind`/`dead`/`initialized`).  These describe what a verified
-/// contract or struct invariant tells us the allocation is, rather than what it
-/// structurally *is*, so the two layers don't blur together.
+/// Facts established *about* an allocation, kept apart from the allocation's
+/// intrinsic shape/state ([`Allocation`]'s `base`/`size`/`align`/`kind`/`dead`/
+/// `initialized`).  These describe what the verifier has established the
+/// allocation is, rather than what it structurally *is*, so the two layers
+/// don't blur together.  The facts come from verified contracts, struct
+/// invariants, or the VM's own materialization (const/static byte data,
+/// external parameter fields).
 #[derive(Clone, Debug)]
-pub(crate) struct ContractFacts<'tcx> {
+pub(crate) struct AllocFacts<'tcx> {
     /// How this allocation's liveness is established, and for which region.
     /// Only consulted for external allocations, which carry no liveness
     /// guarantee (their memory is owned by the caller); `AssumedFor('a)` records
@@ -281,9 +283,10 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     /// `MaybeUninit::uninit`).
     pub initialized: bool,
 
-    /// Contract/invariant facts established about this allocation (liveness,
-    /// NUL termination, `for_each` target type).
-    pub facts: ContractFacts<'tcx>,
+    /// Facts established about this allocation (liveness, NUL termination,
+    /// `for_each` target type), from contracts, invariants, or VM
+    /// materialization.
+    pub facts: AllocFacts<'tcx>,
 
     /// The allocation a sub-view was derived from: a slice view created by
     /// `s[i..j]` / `s.get(range)`, `split_at` / `align_to` / `as_chunks`, or
@@ -321,7 +324,7 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
             kind,
             dead: false,
             initialized: false,
-            facts: ContractFacts {
+            facts: AllocFacts {
                 liveness: Liveness::Unassumed,
                 nul_terminated: false,
                 for_each_target_ty: None,
@@ -357,7 +360,13 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
     }
 }
 
-/// One-shot execution/contract flags accumulated while stepping a path.
+/// Contract/invariant facts latched while stepping a path.
+///
+/// Each flag is set at most once during path execution (a contract fact or a
+/// recognized discriminant) and read afterwards by the property checker.  They
+/// are per-path state, not per-step: once set they are never cleared within a
+/// path.  (`has_checked_bounds` is additionally accumulated *across checkpoints*
+/// by the engine, which reads it back into the next path's flags.)
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ContractFlags {
     /// Whether a SplitTransmute contract was asserted by the caller.
@@ -383,12 +392,6 @@ pub(crate) struct ByteInfo<'ctx> {
     pub nul: Option<bool>,
 }
 
-/// A saved caller context pushed when entering an inlined callee during path
-/// execution.
-pub(crate) struct InlineFrame<'ctx, 'tcx> {
-    pub snapshot: FrameSnapshot<'ctx, 'tcx>,
-}
-
 /// State owned by the inlined-callee execution (`exec_inline_call`): the
 /// recursion depth, the caller-frame stack, and the temporary bindings that are
 /// swapped in on entry and restored on exit.
@@ -398,8 +401,9 @@ pub(crate) struct InlineCtx<'ctx, 'tcx> {
     /// re-enters inline execution with `depth = 0` on every nested call, so a
     /// separate counter is needed to actually bound nested inlining.
     pub depth: usize,
-    /// Stack of saved caller contexts for inlined-callee path execution.
-    pub frames: Vec<InlineFrame<'ctx, 'tcx>>,
+    /// Stack of saved caller frames (a [`FrameSnapshot`] each) for inlined-callee
+    /// path execution.
+    pub frames: Vec<FrameSnapshot<'ctx, 'tcx>>,
     /// During `exec_inline_call`, maps each callee argument index to the
     /// *caller* local its value points at (resolved from the reference's
     /// address term before the caller's address map is saved away).  Used by
@@ -465,11 +469,11 @@ pub(crate) struct AnalysisCtx<'ctx> {
 /// Execution-scoped data, as opposed to program-state data.
 ///
 /// `path` is the input path currently being replayed (consumed by branch
-/// resolution), `inline` is the inlined-callee stack, and `contract_flags` /
-/// `last_call_callee` describe the *current step* rather than anything
-/// accumulated across the whole path. These are transient: they are reset or
-/// overwritten per step, so they are kept apart from [`Memory`]/[`Locals`] and
-/// the path conditions that describe the accumulated program state.
+/// resolution), `inline` is the inlined-callee stack, and `last_call_callee`
+/// describes the *current step* rather than anything accumulated across the
+/// whole path. These are transient: they are reset or overwritten per step, so
+/// they are kept apart from [`Memory`]/[`Locals`] and the accumulated solver
+/// constraints.
 #[derive(Default)]
 pub(crate) struct ExecCtx<'ctx, 'tcx> {
     /// The path being executed (for branch target resolution).
@@ -484,17 +488,8 @@ pub(crate) struct ExecCtx<'ctx, 'tcx> {
     /// temporary bindings swapped on entry / restored on exit).
     pub(crate) inline: InlineCtx<'ctx, 'tcx>,
 
-    /// One-shot execution/contract flags accumulated while stepping a path.
-    pub(crate) contract_flags: ContractFlags,
-
     /// `DefId` of the most recent call (for `DefId`-based API classification).
     pub(crate) last_call_callee: Option<DefId>,
-
-    /// Terms that are the result of a bitwise `Not` (two's-complement mask).
-    /// Used to recognize `x & !(align-1)` alignment patterns in BitAnd so we
-    /// can derive `align = -mask` and emit linear bounds for the result.
-    /// Transient recognition set, not accumulated program state.
-    pub(crate) not_mask_terms: FxHashSet<Int<'ctx>>,
 }
 
 /// The object space: every allocation plus the per-allocation contents that are
@@ -572,13 +567,40 @@ pub(crate) struct LayoutCache<'ctx, 'tcx> {
     pub(crate) aligns: FxHashMap<Ty<'tcx>, Int<'ctx>>,
 }
 
+/// Accumulated solver state for the current path.
+///
+/// `constraints` is the assertion stream fed to Z3; `layout` and
+/// `not_mask_terms` are term caches that keep generic-layout constants and
+/// alignment-mask terms shared across the path (so Z3 expressions stay compact
+/// and the `S` factor cancels in `InBound`).  All three are path-scoped and
+/// monotonic: they accumulate as the VM steps and are never reset within a
+/// path (or across inlined frames).
+#[derive(Default)]
+pub(crate) struct SolverState<'ctx, 'tcx> {
+    /// Accumulated solver constraints along the current path: branch/guard
+    /// constraints (`SwitchInt`/`Assert`), API preconditions, and symbolic
+    /// layout facts (`sizeof_T`, `align_T`).  Asserted into the solver by
+    /// [`VmState::assert_all`] and by the property checker's feasibility
+    /// queries.
+    pub(crate) constraints: Vec<Bool<'ctx>>,
+
+    /// The shared symbolic layout constants (`sizeof_T`, `align_T`) for generic
+    /// types whose concrete layout is unknown at verification time.
+    pub(crate) layout: LayoutCache<'ctx, 'tcx>,
+
+    /// Terms that are the result of a bitwise `Not` (two's-complement mask).
+    /// Used to recognize `x & !(align-1)` alignment patterns in BitAnd so we
+    /// can derive `align = -mask` and emit linear bounds for the result.
+    pub(crate) not_mask_terms: FxHashSet<Int<'ctx>>,
+}
+
 /// The frame-scoped subset of [`VmState`] captured when entering an inlined
 /// callee and restored on exit.
 ///
 /// Everything here is keyed by MIR `Local` (the callee reuses the caller's
 /// local indices), so it must be swapped out for the duration of the callee's
 /// execution and swapped back afterwards.  The path-scoped state (`memory`,
-/// `constraints`, `layout`) is deliberately *not* captured: it accumulates
+/// `solver`, `contract_flags`) is deliberately *not* captured: it accumulates
 /// across the whole path, including inlined frames.
 pub(crate) struct FrameSnapshot<'ctx, 'tcx> {
     pub(crate) body: &'ctx Body<'tcx>,
@@ -597,13 +619,14 @@ pub(crate) struct FrameSnapshot<'ctx, 'tcx> {
 /// as the VM steps through retained MIR items. The Z3 context is
 /// borrowed so a single context can be reused across property checks.
 pub(crate) struct VmState<'ctx, 'tcx> {
-    // ── Context (read-only)
+    // ── Context (immutable)
     /// Shared Z3 context.
     pub(crate) ctx: &'ctx Context,
 
     /// Compiler type context.
     pub(crate) tcx: TyCtxt<'tcx>,
 
+    // ── Current function frame (swapped on inline entry/exit)
     /// The DefId of the function whose body we are executing.
     pub(crate) caller_def_id: DefId,
 
@@ -619,7 +642,7 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     pub(crate) locals: Locals<'ctx, 'tcx>,
 
     // ── Execution-scoped data
-    /// Transient per-step data (input path, inline stack, one-shot flags).
+    /// Transient per-step data (input path, inline stack, last call).
     pub(crate) exec: ExecCtx<'ctx, 'tcx>,
 
     // ── Per-frame analysis metadata
@@ -627,16 +650,14 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// checkpointed together around a call.
     pub(crate) analysis: AnalysisCtx<'ctx>,
 
-    // ── Solver constraints (accumulated program state)
-    /// Accumulated solver constraints along the current path: branch/guard
-    /// constraints (`SwitchInt`/`Assert`), API preconditions, and symbolic
-    /// layout facts (`sizeof_T`, `align_T`).  Asserted into the solver by
-    /// [`Self::assert_all`] and by the property checker's feasibility queries.
-    pub(crate) constraints: Vec<Bool<'ctx>>,
+    // ── Accumulated solver state
+    /// Solver constraints and term caches accumulated along the current path.
+    pub(crate) solver: SolverState<'ctx, 'tcx>,
 
-    /// The shared symbolic layout constants (`sizeof_T`, `align_T`) for generic
-    /// types whose concrete layout is unknown at verification time.
-    pub(crate) layout: LayoutCache<'ctx, 'tcx>,
+    // ── Per-path contract facts
+    /// Contract/invariant facts latched while stepping this path, read by the
+    /// property checker.
+    pub(crate) contract_flags: ContractFlags,
 }
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
@@ -656,8 +677,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             locals: Locals::default(),
             exec: ExecCtx::default(),
             analysis: AnalysisCtx::default(),
-            constraints: Vec::new(),
-            layout: LayoutCache::default(),
+            solver: SolverState::default(),
+            contract_flags: ContractFlags::default(),
         }
     }
 
@@ -971,7 +992,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Assert path conditions and invariant constraints into a solver.
     pub(crate) fn assert_all(&self, solver: &z3::Solver<'ctx>) {
-        for cond in &self.constraints {
+        for cond in &self.solver.constraints {
             solver.assert(cond);
         }
         let zero = Int::from_u64(self.ctx, 0);
@@ -1028,7 +1049,7 @@ impl std::fmt::Debug for VmState<'_, '_> {
         f.debug_struct("VmState")
             .field("locals_count", &self.locals.values.len())
             .field("allocations_count", &self.memory.allocations.len())
-            .field("constraints", &self.constraints.len())
+            .field("constraints", &self.solver.constraints.len())
             .finish()
     }
 }

@@ -25,8 +25,7 @@ use crate::{
 };
 
 use super::state::{
-    AllocId, ContentTy, InlineFrame, Liveness, OpSource, Provenance, ValueInvariants, VmState,
-    VmValue,
+    AllocId, ContentTy, Liveness, OpSource, Provenance, ValueInvariants, VmState, VmValue,
 };
 
 use crate::verify::api_classify;
@@ -121,7 +120,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.set_field_value(Local::from_usize(callee_param), fields, fv);
         }
 
-        self.exec.inline.frames.push(InlineFrame { snapshot });
+        self.exec.inline.frames.push(snapshot);
     }
 
     /// Exit an inlined callee: capture the callee's return value, restore the
@@ -135,8 +134,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .filter(|((l, _), _)| *l == Local::from_usize(0))
             .map(|((_, f), v)| (f.clone(), v.clone()))
             .collect();
-        if let Some(frame) = self.exec.inline.frames.pop() {
-            self.restore_frame(frame.snapshot);
+        if let Some(snapshot) = self.exec.inline.frames.pop() {
+            self.restore_frame(snapshot);
         }
         if let Some(mut v) = ret {
             let dest_ty = self.body.local_decls[Local::from_usize(dest)].ty;
@@ -465,7 +464,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let elem_size = self.size_of_ty(*elem_ty);
                         let len = self.fresh_int(&format!("slice_len_{}", local_idx));
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.constraints.push(len.ge(&zero));
+                        self.solver.constraints.push(len.ge(&zero));
                         let isize_max = Int::from_i64(self.ctx, i64::MAX);
                         let elem_sz = if elem_size > 0 {
                             elem_size
@@ -478,7 +477,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             .max(1)
                         };
                         let elem_sz_term = Int::from_u64(self.ctx, elem_sz);
-                        self.constraints
+                        self.solver.constraints
                             .push(Int::mul(self.ctx, &[&len, &elem_sz_term]).le(&isize_max));
                         // The data allocation's byte size uses the shared
                         // symbolic `sizeof_T` so `InBound` can cancel the factor
@@ -1007,7 +1006,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let elem_align = self.align_sym(pointee);
             let elem_size = self.size_sym(pointee);
             let len_term = self.fresh_int(&format!("field_len_{}_{}", local_idx, idx));
-            self.constraints
+            self.solver.constraints
                 .push(len_term.ge(&Int::from_u64(self.ctx, 0)));
             let prost_offset = Int::mul(self.ctx, &[&len_term, &elem_size]);
             let field_term = Int::add(self.ctx, &[base, &prost_offset]);
@@ -1045,7 +1044,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             };
             let max_size = if is_raw_ptr {
                 let s = self.fresh_int("raw_target_size");
-                self.constraints.push(s.ge(&Int::from_u64(self.ctx, 0)));
+                self.solver.constraints.push(s.ge(&Int::from_u64(self.ctx, 0)));
                 s
             } else {
                 Int::from_u64(self.ctx, i64::MAX as u64)
@@ -2046,7 +2045,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let is_align_or_size = text.starts_with("AlignOf(") || text.starts_with("SizeOf(");
                 if is_align_or_size {
                     let one = Int::from_u64(self.ctx, 1);
-                    self.constraints.push(val.term.ge(&one));
+                    self.solver.constraints.push(val.term.ge(&one));
                 }
             }
         }
@@ -2093,8 +2092,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let zero = Int::from_u64(self.ctx, 0);
         // `g = gcd(a, b)`:
         // 1. g divides both a and b.
-        self.constraints.push(a.rem(g)._eq(&zero));
-        self.constraints.push(b.rem(g)._eq(&zero));
+        self.solver.constraints.push(a.rem(g)._eq(&zero));
+        self.solver.constraints.push(b.rem(g)._eq(&zero));
         // 2. the lcm identity `(a / g) * b == (b / g) * a`. Emitting it directly
         //    (rather than letting Z3 derive it from the divisibility, which its
         //    incomplete nonlinear-integer solver cannot do reliably) is what
@@ -2104,7 +2103,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let b_div_g = b.div(g);
         let lhs = Int::mul(self.ctx, &[&a_div_g, &b]);
         let rhs = Int::mul(self.ctx, &[&b_div_g, &a]);
-        self.constraints.push(lhs._eq(&rhs));
+        self.solver.constraints.push(lhs._eq(&rhs));
     }
 
     /// Evaluate an Rvalue into a VmValue.
@@ -2317,29 +2316,29 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let rem = lhs.term.rem(&rhs.term);
                     let mul_term = Int::mul(self.ctx, &[quot, &rhs.term]);
                     let sum_term = Int::add(self.ctx, &[&mul_term, &rem]);
-                    self.constraints.push(lhs.term._eq(&sum_term));
+                    self.solver.constraints.push(lhs.term._eq(&sum_term));
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.constraints.push(rem.ge(&zero));
+                    self.solver.constraints.push(rem.ge(&zero));
                     // Remainder and quotient bounds help prove length constraints
                     // involving % and / in the SMT solver.
                     if rhs.term.as_u64().is_none_or(|r| r >= 1) {
-                        self.constraints.push(rem.lt(&rhs.term));
+                        self.solver.constraints.push(rem.lt(&rhs.term));
                     }
-                    self.constraints.push(rem.le(&lhs.term));
-                    self.constraints.push(quot.ge(&zero));
+                    self.solver.constraints.push(rem.le(&lhs.term));
+                    self.solver.constraints.push(quot.ge(&zero));
                     // Direct inequality: (lhs/rhs)*rhs <= lhs
-                    self.constraints.push(mul_term.le(&lhs.term));
+                    self.solver.constraints.push(mul_term.le(&lhs.term));
                     // Quotient strict bound: for rhs >= 2 and lhs >= 2,
                     // quot + 1 <= lhs (hence quot < lhs). E.g. X/2 < X for X>1.
                     if rhs.term.as_u64().is_some_and(|r| r >= 2) {
                         let one = Int::from_u64(self.ctx, 1);
                         let qp1 = Int::add(self.ctx, &[quot, &one]);
                         // qp1 <= lhs is equivalent to quot < lhs for integers
-                        self.constraints.push(qp1.le(&lhs.term));
+                        self.solver.constraints.push(qp1.le(&lhs.term));
                     } else {
                         // For rhs >= 1: quot <= lhs
                         if rhs.term.as_u64().is_some_and(|r| r >= 1) {
-                            self.constraints.push(quot.le(&lhs.term));
+                            self.solver.constraints.push(quot.le(&lhs.term));
                         }
                     }
                 }
@@ -2444,9 +2443,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 );
                 if src_is_ptr && dest_is_int {
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.constraints.push(term.ge(&zero));
+                    self.solver.constraints.push(term.ge(&zero));
                     if src_val.invariants.non_null {
-                        self.constraints.push(term._eq(&zero).not());
+                        self.solver.constraints.push(term._eq(&zero).not());
                     }
                 }
                 VmValue {
@@ -2671,7 +2670,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .map(|v| v.discriminant().is_some())
                     .unwrap_or(false)
                 {
-                    self.exec.contract_flags.saw_next_discriminant = true;
+                    self.contract_flags.saw_next_discriminant = true;
                 }
                 // For Ordering (repr i8, values: Less=-1 Equal=0 Greater=1),
                 // the discriminant index equals the repr value + 1.
@@ -2682,12 +2681,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         if api_classify::is_std_ordering(adt_def.did()) && adt_def.is_enum() {
                             let one = Int::from_u64(self.ctx, 1);
                             let discr_minus_one = Int::sub(self.ctx, &[&term, &one]);
-                            self.constraints.push(pv.term._eq(&discr_minus_one));
+                            self.solver.constraints.push(pv.term._eq(&discr_minus_one));
                             // Also bound the discriminant to {0, 1, 2}
                             let zero = Int::from_u64(self.ctx, 0);
                             let two = Int::from_u64(self.ctx, 2);
-                            self.constraints.push(term.ge(&zero));
-                            self.constraints.push(term.le(&two));
+                            self.solver.constraints.push(term.ge(&zero));
+                            self.solver.constraints.push(term.le(&two));
                         }
                     }
                 }
@@ -2730,7 +2729,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let is_size_of = op_debug.contains("SizeOf");
                 if is_align_of || is_size_of {
                     let one = Int::from_u64(self.ctx, 1);
-                    self.constraints.push(term.ge(&one));
+                    self.solver.constraints.push(term.ge(&one));
                 }
                 VmValue::new(term, dest_ty)
             }
@@ -2793,6 +2792,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // per-function effect.
                 let zero = Int::from_u64(self.ctx, 0);
                 let exact = self
+                    .solver
                     .constraints
                     .iter()
                     .any(|c| *c == lhs.rem(rhs)._eq(&zero));
@@ -2814,26 +2814,26 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let result = self.fresh_int("binop");
                 // BitAnd only clears bits, so it never increases a non-negative
                 // value: result <= lhs.
-                self.constraints.push(result.le(lhs));
+                self.solver.constraints.push(result.le(lhs));
                 // When the mask (rhs) is a non-negative constant, the result is
                 // also bounded by it: `x & c <= c` (e.g. `rhs & 31 <= 31`).
                 // This lets `(rhs & (BITS - 1)) < BITS` be discharged. The
                 // mask may be a folded expression (`SubWithOverflow(BITS, 1)`),
                 // so `simplify()` is used to recover its constant value.
                 if rhs.simplify().as_u64().is_some() {
-                    self.constraints.push(result.le(rhs));
+                    self.solver.constraints.push(result.le(rhs));
                 }
-                if self.exec.not_mask_terms.contains(rhs) {
+                if self.solver.not_mask_terms.contains(rhs) {
                     // rhs is a two's-complement mask `!(align-1) == -align`,
                     // so `align = -rhs`. The result of `x & !(align-1)` is
                     // `x` rounded down to a multiple of `align` (i.e. align_up
                     // of the pre-incremented value).
                     let zero = Int::from_u64(self.ctx, 0);
                     let align = Int::sub(self.ctx, &[&zero, rhs]);
-                    self.constraints.push(result.rem(&align)._eq(&zero));
+                    self.solver.constraints.push(result.rem(&align)._eq(&zero));
                     let one = Int::from_u64(self.ctx, 1);
                     let addr = Int::add(self.ctx, &[lhs, rhs, &one]);
-                    self.constraints.push(result.ge(&addr));
+                    self.solver.constraints.push(result.ge(&addr));
                 }
                 result
             }
@@ -2845,9 +2845,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `result >= lhs`, which is only valid for non-negative values)
                 // so `NonZero` bit-or methods discharge their `!= 0` obligation
                 // for both signed and unsigned instantiations.
-                self.constraints
+                self.solver.constraints
                     .push(lhs._eq(&zero).not().implies(&result._eq(&zero).not()));
-                self.constraints
+                self.solver.constraints
                     .push(rhs._eq(&zero).not().implies(&result._eq(&zero).not()));
                 result
             }
@@ -2866,7 +2866,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // Two's-complement bitwise NOT: !x == -x - 1.
                     let one = Int::from_u64(self.ctx, 1);
                     let result = Int::sub(self.ctx, &[&self.negate(val), &one]);
-                    self.exec.not_mask_terms.insert(result.clone());
+                    self.solver.not_mask_terms.insert(result.clone());
                     result
                 }
             }
@@ -3281,12 +3281,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 for (value, target) in targets.iter() {
                     if target == chosen {
                         let val_term = Int::from_u64(self.ctx, value as u64);
-                        self.constraints.push(discr_val.term._eq(&val_term));
+                        self.solver.constraints.push(discr_val.term._eq(&val_term));
                         if let Some(ref cond) = cmp_cond {
                             if value != 0 {
-                                self.constraints.push(cond.clone());
+                                self.solver.constraints.push(cond.clone());
                             } else {
-                                self.constraints.push(cond.not());
+                                self.solver.constraints.push(cond.not());
                             }
                         }
                         if value != 0 {
@@ -3300,14 +3300,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // Negate every explicit target value.
                     for (value, _) in targets.iter() {
                         let val_term = Int::from_u64(self.ctx, value as u64);
-                        self.constraints
+                        self.solver.constraints
                             .push(discr_val.term._eq(&val_term).not());
                     }
                     if let Some(ref cond) = cmp_cond {
                         // For a boolean discriminator, `otherwise` means
                         // `discr != 0`, i.e. the comparison is true.
                         if targets.iter().any(|(v, _)| v == 0) {
-                            self.constraints.push(cond.clone());
+                            self.solver.constraints.push(cond.clone());
                         }
                     }
                 }
@@ -3324,15 +3324,15 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let cmp_cond = cond_val.bool_cond().cloned();
         if expected {
             let zero = Int::from_u64(self.ctx, 0);
-            self.constraints.push(cond_val.term._eq(&zero).not());
+            self.solver.constraints.push(cond_val.term._eq(&zero).not());
             if let Some(c) = &cmp_cond {
-                self.constraints.push(c.clone());
+                self.solver.constraints.push(c.clone());
             }
         } else {
             let zero = Int::from_u64(self.ctx, 0);
-            self.constraints.push(cond_val.term._eq(&zero));
+            self.solver.constraints.push(cond_val.term._eq(&zero));
             if let Some(c) = &cmp_cond {
-                self.constraints.push(c.not());
+                self.solver.constraints.push(c.not());
             }
         }
 
@@ -3469,7 +3469,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // structurally aliases the source are then treated as the accepted
         // hazard rather than a hard failure.
         if contains_hazard(property) {
-            self.exec.contract_flags.alias_hazard_accepted = true;
+            self.contract_flags.alias_hazard_accepted = true;
         }
         match property {
             Property::Atom(atom) => {
@@ -3558,7 +3558,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 if let Some(fe_place) = property.for_each() {
                     self.assert_in_bound_for_each(property, fe_place);
-                    self.exec.contract_flags.has_checked_bounds = true;
+                    self.contract_flags.has_checked_bounds = true;
                 } else {
                     self.assert_in_bound_single(property);
                 }
@@ -3608,7 +3608,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             PropertyKind::SplitTransmute => {
-                self.exec.contract_flags.split_transmute_asserted = true;
+                self.contract_flags.split_transmute_asserted = true;
             }
             PropertyKind::ValidCStr => {
                 // A `ValidCStr(p, n)` fact guarantees `p` points to a live,
@@ -3640,7 +3640,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .get(1)
                         .and_then(|a| self.resolve_contract_count(a))
                     {
-                        self.constraints.push(self.alloc(id).size.ge(&n));
+                        self.solver.constraints.push(self.alloc(id).size.ge(&n));
                     }
                 }
             }
@@ -3648,13 +3648,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(PropertyArg::Predicates(predicates)) = property.args().first() {
                     for pred in predicates {
                         if let Some(condition) = self.eval_predicate_as_bool(pred) {
-                            self.constraints.push(condition);
+                            self.solver.constraints.push(condition);
                             // For !self.is_empty() → self.len() != 0 on
                             // Iter/IterMut: also assert len >= 1 to help
                             // Z3 with integer division reasoning.
                             if let Some(len_term) = self.try_simple_iter_len_from_pred(pred) {
                                 let one = Int::from_u64(self.ctx, 1);
-                                self.constraints.push(len_term.ge(&one));
+                                self.solver.constraints.push(len_term.ge(&one));
                             }
                         }
                     }
@@ -4199,8 +4199,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .unwrap_or_else(|| data_size.div(&elem_sz_term));
         let zero = Int::from_u64(self.ctx, 0);
         for (_, term) in &byte_vals {
-            self.constraints.push(term.ge(&zero));
-            self.constraints.push(term.lt(&len));
+            self.solver.constraints.push(term.ge(&zero));
+            self.solver.constraints.push(term.lt(&len));
         }
     }
 
@@ -4256,7 +4256,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let Some(index_term) = self.eval_contract_expr_simple(index) else {
             return;
         };
-        self.constraints.push(index_term.lt(&len));
+        self.solver.constraints.push(index_term.lt(&len));
     }
 
     /// When a `&T`/`&mut T` reference is created (e.g. via `&*NonNull<T>`), assume
@@ -4313,7 +4313,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             for pred in preds {
                 if let Some(cond) = self.eval_pointee_predicate_as_bool(alloc_id, pointee_ty, pred)
                 {
-                    self.constraints.push(cond);
+                    self.solver.constraints.push(cond);
                 }
             }
         }
@@ -4403,7 +4403,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // non-linear `% align_T` is not decidable, so `align_n` alone is
                 // used for that case.)
                 if align.simplify().as_u64().is_some() {
-                    self.constraints.push(
+                    self.solver.constraints.push(
                         val.term
                             .rem(&align)
                             ._eq(&Int::from_u64(self.ctx, 0)),

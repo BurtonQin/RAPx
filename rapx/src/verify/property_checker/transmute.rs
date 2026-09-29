@@ -111,7 +111,7 @@ impl PropertyChecker {
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
-        if vm_state.exec.contract_flags.split_transmute_asserted {
+        if vm_state.contract_flags.split_transmute_asserted {
             return CheckResult::ProvedByRule;
         }
         let src = Self::ty_arg(property, 0);
