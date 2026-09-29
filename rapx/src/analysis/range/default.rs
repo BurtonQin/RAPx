@@ -191,8 +191,8 @@ where
                 passrunner.run_pass(body_mut_ref, ssa_def_id, essa_def_id);
                 // Print the MIR after SSA/ESSA passes
                 if self.debug {
-                    print_diff(self.tcx, body_mut_ref, def_id.into());
-                    print_mir_graph(self.tcx, body_mut_ref, def_id.into());
+                    print_diff(self.tcx, body_mut_ref, def_id);
+                    print_mir_graph(self.tcx, body_mut_ref, def_id);
                 }
 
                 self.ssa_places_mapping

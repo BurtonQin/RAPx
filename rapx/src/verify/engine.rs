@@ -410,25 +410,25 @@ impl<'tcx> VerifyEngine<'tcx> {
                 })
             }
             Property::And(and) => {
-                let conjuncts: Vec<Property<'tcx>> = and
-                    .conjuncts
-                    .iter()
-                    .map(|p| Self::bind_property_to_checkpoint(p, checkpoint))
-                    .collect();
                 Property::And(AndProperty {
-                    conjuncts: conjuncts.into_iter().map(Box::new).collect(),
+                    conjuncts: and
+                        .conjuncts
+                        .iter()
+                        .map(|p| Self::bind_property_to_checkpoint(p, checkpoint))
+                        .map(Box::new)
+                        .collect(),
                     contract_kind: and.contract_kind,
                     origin: None,
                 })
             }
             Property::Or(or) => {
-                let disjuncts: Vec<Property<'tcx>> = or
-                    .disjuncts
-                    .iter()
-                    .map(|p| Self::bind_property_to_checkpoint(p, checkpoint))
-                    .collect();
                 Property::Or(OrProperty {
-                    disjuncts: disjuncts.into_iter().map(Box::new).collect(),
+                    disjuncts: or
+                        .disjuncts
+                        .iter()
+                        .map(|p| Self::bind_property_to_checkpoint(p, checkpoint))
+                        .map(Box::new)
+                        .collect(),
                     contract_kind: or.contract_kind,
                     origin: None,
                 })

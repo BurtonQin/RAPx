@@ -254,8 +254,8 @@ impl<'tcx> Replacer<'tcx> {
                                     None,
                                     None,
                                 );
-                                let place1 = Place::from(p1);
-                                let place2 = Place::from(p2);
+                                let place1 = p1;
+                                let place2 = p2;
                                 let rvalue1;
                                 let rvalue2;
                                 let mut operand1: IndexVec<_, _> = IndexVec::with_capacity(4);
@@ -265,14 +265,14 @@ impl<'tcx> Replacer<'tcx> {
                                 if value == 0 {
                                     // False branch: Use flipped operators.
                                     // For p1: p1 (negated_op) p2
-                                    operand1.push(Operand::Copy(Place::from(p1)));
-                                    operand1.push(Operand::Copy(Place::from(p2)));
+                                    operand1.push(Operand::Copy(p1));
+                                    operand1.push(Operand::Copy(p2));
                                     operand1.push(flip_cmp_operand.clone());
                                     operand1.push(magic_number_operand.clone());
 
                                     // For p2: p2 (negated_reversed_op) p1
-                                    operand2.push(Operand::Copy(Place::from(p2)));
-                                    operand2.push(Operand::Copy(Place::from(p1)));
+                                    operand2.push(Operand::Copy(p2));
+                                    operand2.push(Operand::Copy(p1));
                                     operand2.push(flip_reverse_cmp_operand.clone());
                                     operand2.push(magic_number_operand.clone());
 
@@ -283,14 +283,14 @@ impl<'tcx> Replacer<'tcx> {
                                 } else {
                                     // True branch: Use original operators.
                                     // For p1: p1 (op) p2
-                                    operand1.push(Operand::Copy(Place::from(p1)));
-                                    operand1.push(Operand::Copy(Place::from(p2)));
+                                    operand1.push(Operand::Copy(p1));
+                                    operand1.push(Operand::Copy(p2));
                                     operand1.push(cmp_operand.clone());
                                     operand1.push(magic_number_operand.clone());
 
                                     // For p2: p2 (reversed_op) p1
-                                    operand2.push(Operand::Copy(Place::from(p2)));
-                                    operand2.push(Operand::Copy(Place::from(p1)));
+                                    operand2.push(Operand::Copy(p2));
+                                    operand2.push(Operand::Copy(p1));
                                     operand2.push(reverse_cmp_operand.clone());
                                     operand2.push(magic_number_operand.clone());
 
@@ -350,14 +350,14 @@ impl<'tcx> Replacer<'tcx> {
 
                         if op1.constant().is_none() {
                             place = match op1 {
-                                Operand::Copy(p) | Operand::Move(p) => Place::from(p),
+                                Operand::Copy(p) | Operand::Move(p) => p,
                                 _ => panic!("Expected a place"),
                             };
                             operand.push(op1.clone());
                             operand.push(op2.clone());
                         } else {
                             place = match op2 {
-                                Operand::Copy(p) | Operand::Move(p) => Place::from(p),
+                                Operand::Copy(p) | Operand::Move(p) => p,
                                 _ => panic!("Expected a place"),
                             };
                             operand.push(op2.clone());

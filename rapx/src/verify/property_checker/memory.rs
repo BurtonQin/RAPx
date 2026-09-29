@@ -38,13 +38,7 @@ impl PropertyChecker {
         if self.is_concrete_zst(vm_state, value.ty) {
             return CheckResult::ProvedByRule;
         }
-        let ty_arg = property.args().get(1).and_then(|a| {
-            if let PropertyArg::Ty(ty) = a {
-                Some(*ty)
-            } else {
-                None
-            }
-        });
+        let ty_arg = Self::ty_arg(property, 1);
         // Alignment term: the *symbolic* `align_T` for a generic `T` (bounded by
         // the trait bounds' min/max), the concrete constant alignment for a
         // concrete type, or `1` when the property carries no type.
@@ -660,13 +654,7 @@ impl PropertyChecker {
         // `ty_is_maybe_uninit` fast-path in `check_typed`; this is what lets a
         // `&[MaybeUninit<T>]` slice satisfy `Init` without its contents being
         // initialized.
-        if let Some(required_ty) = property.args().get(1).and_then(|a| {
-            if let PropertyArg::Ty(ty) = a {
-                Some(*ty)
-            } else {
-                None
-            }
-        }) {
+        if let Some(required_ty) = Self::ty_arg(property, 1) {
             if Self::ty_is_maybe_uninit(required_ty) {
                 return CheckResult::ProvedByRule;
             }

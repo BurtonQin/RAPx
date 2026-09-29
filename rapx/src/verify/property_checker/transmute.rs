@@ -19,20 +19,8 @@ impl PropertyChecker {
         vm_state: &VmState<'ctx, 'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
-        let src = property.args().get(0).and_then(|a| {
-            if let PropertyArg::Ty(ty) = a {
-                Some(*ty)
-            } else {
-                None
-            }
-        });
-        let dst = property.args().get(1).and_then(|a| {
-            if let PropertyArg::Ty(ty) = a {
-                Some(*ty)
-            } else {
-                None
-            }
-        });
+        let src = Self::ty_arg(property, 0);
+        let dst = Self::ty_arg(property, 1);
         match (src, dst) {
             (Some(s), Some(d)) if vm_state.size_of_ty(s) == vm_state.size_of_ty(d) => {
                 CheckResult::ProvedByRule
@@ -126,20 +114,8 @@ impl PropertyChecker {
         if vm_state.contract_flags.split_transmute_asserted {
             return CheckResult::ProvedByRule;
         }
-        let src = property.args().get(0).and_then(|a| {
-            if let PropertyArg::Ty(ty) = a {
-                Some(*ty)
-            } else {
-                None
-            }
-        });
-        let dst = property.args().get(1).and_then(|a| {
-            if let PropertyArg::Ty(ty) = a {
-                Some(*ty)
-            } else {
-                None
-            }
-        });
+        let src = Self::ty_arg(property, 0);
+        let dst = Self::ty_arg(property, 1);
         let src = src.map(|ty| self.instantiate_callsite_ty(vm_state, checkpoint, ty));
         let dst = dst.map(|ty| self.instantiate_callsite_ty(vm_state, checkpoint, ty));
         match (src, dst) {

@@ -65,10 +65,7 @@ impl PropertyChecker {
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
-        let Some(ty) = property.args().first().and_then(|a| match a {
-            PropertyArg::Ty(ty) => Some(*ty),
-            _ => None,
-        }) else {
+        let Some(ty) = Self::ty_arg(property, 0) else {
             return CheckResult::Unknown;
         };
         let negatives: Vec<String> = property.args()[1..]
@@ -91,10 +88,7 @@ impl PropertyChecker {
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
-        let Some(ty) = property.args().first().and_then(|a| match a {
-            PropertyArg::Ty(ty) => Some(*ty),
-            _ => None,
-        }) else {
+        let Some(ty) = Self::ty_arg(property, 0) else {
             return CheckResult::Unknown;
         };
         no_raw_ptr_check(vm_state.tcx, ty, checkpoint.caller, false)
@@ -106,10 +100,7 @@ impl PropertyChecker {
         vm_state: &VmState<'ctx, 'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
-        let Some(ty) = property.args().first().and_then(|a| match a {
-            PropertyArg::Ty(ty) => Some(*ty),
-            _ => None,
-        }) else {
+        let Some(ty) = Self::ty_arg(property, 0) else {
             return CheckResult::Unknown;
         };
         no_internal_mut_check(vm_state.tcx, ty)
@@ -122,10 +113,7 @@ impl PropertyChecker {
         vm_state: &VmState<'ctx, 'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
-        let Some(ty) = property.args().first().and_then(|a| match a {
-            PropertyArg::Ty(ty) => Some(*ty),
-            _ => None,
-        }) else {
+        let Some(ty) = Self::ty_arg(property, 0) else {
             return CheckResult::Unknown;
         };
         uni_internal_mut_check(vm_state.tcx, ty)
@@ -140,10 +128,7 @@ impl PropertyChecker {
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
-        let Some(ty) = property.args().first().and_then(|a| match a {
-            PropertyArg::Ty(ty) => Some(*ty),
-            _ => None,
-        }) else {
+        let Some(ty) = Self::ty_arg(property, 0) else {
             return CheckResult::Unknown;
         };
         atomic_update_check(vm_state.tcx, ty, checkpoint.caller, false)
@@ -157,10 +142,7 @@ impl PropertyChecker {
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
-        let Some(ty) = property.args().first().and_then(|a| match a {
-            PropertyArg::Ty(ty) => Some(*ty),
-            _ => None,
-        }) else {
+        let Some(ty) = Self::ty_arg(property, 0) else {
             return CheckResult::Unknown;
         };
         ref_send_check(vm_state.tcx, ty, checkpoint.caller, true)

@@ -48,13 +48,7 @@ impl PropertyChecker {
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::Unknown;
         };
-        let ty = property.args().get(1).and_then(|a| {
-            if let PropertyArg::Ty(ty) = a {
-                Some(*ty)
-            } else {
-                None
-            }
-        });
+        let ty = Self::ty_arg(property, 1);
         if let Some(ty) = ty {
             let size_bits = vm_state.size_of_ty(ty) * 8;
             if size_bits > 0 && size_bits < 128 {

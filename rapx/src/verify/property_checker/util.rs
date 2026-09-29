@@ -36,6 +36,13 @@ pub(super) fn local_param_operand<'a, 'ctx, 'tcx>(
 }
 
 impl PropertyChecker {
+    pub(super) fn ty_arg<'tcx>(property: &Property<'tcx>, idx: usize) -> Option<Ty<'tcx>> {
+        property.args().get(idx).and_then(|a| match a {
+            PropertyArg::Ty(ty) => Some(*ty),
+            _ => None,
+        })
+    }
+
     pub(super) fn target_value<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
@@ -493,13 +500,7 @@ impl PropertyChecker {
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> bool {
-        let required_ty = property.args().get(1).and_then(|a| {
-            if let PropertyArg::Ty(ty) = a {
-                Some(*ty)
-            } else {
-                None
-            }
-        });
+        let required_ty = Self::ty_arg(property, 1);
         self.is_zst_type(vm_state, checkpoint, required_ty)
     }
 

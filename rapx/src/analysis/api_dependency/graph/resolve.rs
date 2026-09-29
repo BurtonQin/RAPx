@@ -529,10 +529,10 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
     }
 }
 
-fn select_minimal_set_cover<'tcx, 'a>(
+fn select_minimal_set_cover<'tcx>(
     tcx: TyCtxt<'tcx>,
     fn_did: DefId,
-    monos: &'a mut Vec<(ty::GenericArgsRef<'tcx>, bool)>,
+    monos: &mut Vec<(ty::GenericArgsRef<'tcx>, bool)>,
     rng: &mut impl Rng,
 ) {
     rap_debug!("select minimal set for: {}", tcx.def_path_str(fn_did));

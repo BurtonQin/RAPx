@@ -29,13 +29,7 @@ impl PropertyChecker {
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::Unknown;
         };
-        let expected = property.args().get(1).and_then(|a| {
-            if let PropertyArg::Ty(ty) = a {
-                Some(*ty)
-            } else {
-                None
-            }
-        });
+        let expected = Self::ty_arg(property, 1);
         if let Some(expected_ty) = expected {
             let resolved = self.instantiate_callsite_ty(vm_state, checkpoint, expected_ty);
             let expected_ty = if resolved != expected_ty {

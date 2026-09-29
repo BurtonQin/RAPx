@@ -45,13 +45,7 @@ impl PropertyChecker {
             return self.check_in_bound_slice(vm_state, solver, checkpoint, property);
         }
 
-        let required_ty = property.args().get(1).and_then(|a| {
-            if let PropertyArg::Ty(ty) = a {
-                Some(*ty)
-            } else {
-                None
-            }
-        });
+        let required_ty = Self::ty_arg(property, 1);
         if self.zst_guard(vm_state, checkpoint, property) {
             return CheckResult::ProvedByRule;
         }

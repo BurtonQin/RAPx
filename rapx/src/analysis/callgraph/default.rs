@@ -83,7 +83,7 @@ impl<'tcx> CallGraphAnalyzer<'tcx> {
                 };
 
                 let mut call_graph_visitor =
-                    CallGraphVisitor::new(self.tcx, def_id.into(), body, &mut self.graph);
+                    CallGraphVisitor::new(self.tcx, def_id, body, &mut self.graph);
                 call_graph_visitor.visit();
             }
         }
