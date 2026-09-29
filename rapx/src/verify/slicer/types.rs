@@ -32,8 +32,16 @@ pub(crate) enum RelevantItem<'tcx> {
         block: BasicBlock,
         statement_index: usize,
     },
-    /// A MIR terminator retained from a basic block.
-    Terminator { def_id: DefId, block: BasicBlock },
+    /// A MIR terminator retained from a basic block.  For a `SwitchInt`, `block`
+    /// is the switch block and `switch_succ` is the successor taken along this
+    /// path (so the VM need not re-resolve it from the path); for any other
+    /// terminator — or when the path ends at the checkpoint — `switch_succ` is
+    /// `None`.
+    Terminator {
+        def_id: DefId,
+        block: BasicBlock,
+        switch_succ: Option<BasicBlock>,
+    },
     /// Enter an inlined callee: bind the caller's argument locals to the callee
     /// parameters. `args` holds the caller's argument local indices.
     CalleeEntry { callee: DefId, args: Vec<usize> },

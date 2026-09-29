@@ -19,7 +19,6 @@ use crate::{
     verify::{
         contract::{ContractExpr, ContractKind, PlaceBase, Property, PropertyArg, PropertyKind},
         def_use::PlaceKey,
-        path_extractor::{Path, PathStep},
         slicer::RelevantItem,
     },
 };
@@ -48,17 +47,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let statement = &body.basic_blocks[*block].statements[*statement_index];
                     self.exec_statement(statement);
                 }
-                RelevantItem::Terminator { def_id, block } => {
+                RelevantItem::Terminator { def_id, block, switch_succ } => {
                     let body = self.tcx.optimized_mir(*def_id);
-                    let occ = self
-                        .exec
-                        .block_occurrences
-                        .get(block)
-                        .map(|c| c + 1)
-                        .unwrap_or(1);
-                    self.exec.block_occurrences.insert(*block, occ);
                     let terminator = body.basic_blocks[*block].terminator();
-                    self.exec_terminator(*block, terminator, occ);
+                    self.exec_terminator(terminator, *switch_succ);
                 }
                 RelevantItem::CalleeEntry { callee, args } => {
                     self.handle_callee_entry(*callee, args);
@@ -113,7 +105,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.set_field_value(Local::from_usize(callee_param), fields, fv);
         }
 
-        self.exec.inline.frames.push(snapshot);
+        self.inline.frames.push(snapshot);
     }
 
     /// Exit an inlined callee: capture the callee's return value, restore the
@@ -127,7 +119,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .filter(|((l, _), _)| *l == Local::from_usize(0))
             .map(|((_, f), v)| (f.clone(), v.clone()))
             .collect();
-        if let Some(snapshot) = self.exec.inline.frames.pop() {
+        if let Some(snapshot) = self.inline.frames.pop() {
             self.restore_frame(snapshot);
         }
         if let Some(mut v) = ret {
@@ -1286,53 +1278,22 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Replay same-block assignment chains that the backward slicer may omit.
     /// Walks backwards through the CFG from the checkpoint block, propagating
     /// provenance and invariants through Use/Cast/RawPtr/CopyForDeref chains.
-    /// Uses the current path to avoid cross-branch contamination.
-    pub(crate) fn propagate_from_checkpoint(&mut self, checkpoint_block: BasicBlock) {
-        let path_blocks: FxHashSet<BasicBlock> = {
-            let mut blocks: FxHashSet<BasicBlock> = self
-                .exec
-                .path
-                .steps
-                .iter()
-                .filter_map(|s| match s {
-                    crate::verify::path_extractor::PathStep::Block(b) => Some(*b),
-                    _ => None,
-                })
-                .collect();
-            blocks.insert(checkpoint_block);
-            blocks
-        };
-
+    /// `path_blocks` (the current path's block set) avoids cross-branch
+    /// contamination.
+    pub(crate) fn propagate_from_checkpoint(
+        &mut self,
+        checkpoint_block: BasicBlock,
+        path_blocks: &FxHashSet<BasicBlock>,
+    ) {
         if path_blocks.is_empty() {
             self.propagate_pass(checkpoint_block, None, false);
             return;
         }
 
-        // Detect SCC (loop) paths: if any block appears more than once
-        // in the block steps, the path is unrolled and path-filtering
-        // may exclude needed blocks.
-        let block_steps: Vec<BasicBlock> = self
-            .exec
-            .path
-            .steps
-            .iter()
-            .filter_map(|s| match s {
-                crate::verify::path_extractor::PathStep::Block(b) => Some(*b),
-                _ => None,
-            })
-            .collect();
-        let has_duplicates = {
-            let mut seen = FxHashSet::default();
-            block_steps.iter().any(|b| !seen.insert(*b))
-        };
-
-        if has_duplicates {
-            self.propagate_pass(checkpoint_block, Some(&path_blocks), false);
-            return;
+        self.propagate_pass(checkpoint_block, Some(path_blocks), false);
+        if !self.path_facts.reenter {
+            self.propagate_pass(checkpoint_block, Some(path_blocks), true);
         }
-
-        self.propagate_pass(checkpoint_block, Some(&path_blocks), false);
-        self.propagate_pass(checkpoint_block, Some(&path_blocks), true);
     }
 
     fn propagate_pass(
@@ -1889,9 +1850,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             // `&mut self` referent and defer the write until the
                             // caller's `local_fields` is restored.
                             if let Some(referent) =
-                                self.exec.inline.arg_referents.get(arg_idx).copied().flatten()
+                                self.inline.arg_referents.get(arg_idx).copied().flatten()
                             {
-                                self.exec.inline.deferred_field_writes
+                                self.inline.deferred_field_writes
                                     .push((referent, field_indices, value));
                             }
                         }
@@ -3206,9 +3167,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     fn exec_terminator(
         &mut self,
-        block: BasicBlock,
         terminator: &Terminator<'tcx>,
-        occurrence: usize,
+        switch_succ: Option<BasicBlock>,
     ) {
         match &terminator.kind {
             TerminatorKind::Call {
@@ -3221,7 +3181,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 self.exec_call(func, args, destination.local, caller_id);
             }
             TerminatorKind::SwitchInt { discr, targets } => {
-                self.exec_switchint(block, discr, targets, occurrence);
+                self.exec_switchint(discr, targets, switch_succ);
             }
             TerminatorKind::Assert { cond, expected, .. } => {
                 self.exec_assert(cond, *expected);
@@ -3245,14 +3205,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Execute a SwitchInt terminator.
     ///
-    /// Uses the path to determine which branch is taken, then adds
-    /// a path condition asserting the discriminant equals that value.
+    /// Uses the successor resolved by the slicer (`switch_succ`) to determine
+    /// which branch is taken, then adds a path condition asserting the
+    /// discriminant equals that value.
     fn exec_switchint(
         &mut self,
-        block: BasicBlock,
         discr: &Operand<'tcx>,
         targets: &rustc_middle::mir::SwitchTargets,
-        occurrence: usize,
+        switch_succ: Option<BasicBlock>,
     ) {
         let discr_val = self.value_of_operand(discr);
 
@@ -3262,8 +3222,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let cmp_cond = discr_val.bool_cond().cloned();
 
         // Determine which target block is taken along the path.
-        let path = &self.exec.path;
-        if let Some(chosen) = chosen_successor(path, block, occurrence) {
+        if let Some(chosen) = switch_succ {
             for (value, target) in targets.iter() {
                 if target == chosen {
                     let val_term = Int::from_u64(self.ctx, value as u64);
@@ -4878,27 +4837,6 @@ fn contains_hazard<'tcx>(property: &Property<'tcx>) -> bool {
         Property::Or(or) => or.disjuncts.iter().any(|p| contains_hazard(p)),
         Property::Atom(_) => false,
     }
-}
-
-/// Return the next MIR block after `block` in a finite verification path.
-fn chosen_successor(path: &Path, block: BasicBlock, occurrence: usize) -> Option<BasicBlock> {
-    let mut count = 0;
-    let mut previous = None;
-    for step in path.steps.iter() {
-        match step {
-            PathStep::Block(current) => {
-                if previous == Some(block) {
-                    count += 1;
-                    if count == occurrence {
-                        return Some(*current);
-                    }
-                }
-                previous = Some(*current);
-            }
-            PathStep::Checkpoint(_) => return None,
-        }
-    }
-    None
 }
 
 /// Try to resolve a u64 constant from a PlaceKey's source in the VM state.

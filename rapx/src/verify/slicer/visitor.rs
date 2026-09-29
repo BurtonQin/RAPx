@@ -193,6 +193,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
             items.push(RelevantItem::Terminator {
                 def_id: caller,
                 block: checkpoint_block,
+                switch_succ: None,
             });
             // Pass 1: normal processing.
             for (si, stmt) in block_data.statements.iter().enumerate().rev() {
@@ -263,6 +264,14 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 // the callee's statements are already sliced via the path, so
                 // treating the call as atomic would double-count it.
                 if !tree.is_inlined_call(node.block) {
+                    // The successor this path takes out of `node` (only used for
+                    // `SwitchInt`, whose branch is resolved here rather than by
+                    // the forward VM). `child.block` is a global index; map back
+                    // to the local MIR block.
+                    let successor = tree
+                        .block_fn_of(child.block)
+                        .map(|(_, li)| BasicBlock::from(li))
+                        .or(Some(BasicBlock::from(child.block)));
                     visitor.visit_terminator(
                         def_id,
                         block,
@@ -273,6 +282,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                         &mut items,
                         keep_inv,
                         keep_owner,
+                        successor,
                     );
                 }
                 let block_stmt_count = block_data.statements.len();
@@ -536,10 +546,11 @@ impl<'tcx> BackwardSlicer<'tcx> {
         items: &mut Vec<RelevantItem<'tcx>>,
         keep_invalidations: bool,
         keep_owner: bool,
+        successor: Option<BasicBlock>,
     ) {
         if keep_invalidations {
             if matches!(terminator.kind, TerminatorKind::Drop { .. }) {
-                items.push(RelevantItem::Terminator { def_id, block });
+                items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
                 return;
             }
             // A manual drop (`std::mem::drop` / `ManuallyDrop::drop`) also frees
@@ -553,7 +564,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                             || crate::verify::api_classify::is_std_drop(Some(c))
                     });
                 if is_drop_call {
-                    items.push(RelevantItem::Terminator { def_id, block });
+                    items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
                     relevant.extend(call_args_uses_at(args, &[0]));
                     return;
                 }
@@ -575,7 +586,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 let typing_env = rustc_middle::ty::TypingEnv::non_body_analysis(self.tcx, def_id);
                 if dest_ty.needs_drop(self.tcx, typing_env) {
                     let use_def = terminator_use_def(terminator);
-                    items.push(RelevantItem::Terminator { def_id, block });
+                    items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
                     relevant.remove_all(&use_def.defs);
                     relevant.extend(use_def.uses);
                     return;
@@ -598,20 +609,24 @@ impl<'tcx> BackwardSlicer<'tcx> {
 
         let use_def = terminator_use_def(terminator);
         if terminator_is_path_condition(terminator) {
-            items.push(RelevantItem::Terminator { def_id, block });
+            let switch_succ = match terminator.kind {
+                TerminatorKind::SwitchInt { .. } => successor,
+                _ => None,
+            };
+            items.push(RelevantItem::Terminator { def_id, block, switch_succ });
             relevant.extend(use_def.uses.clone());
             return;
         }
 
         if use_def.defs.intersects(relevant) {
-            items.push(RelevantItem::Terminator { def_id, block });
+            items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
             relevant.remove_all(&use_def.defs);
             relevant.extend(use_def.uses);
             return;
         }
 
         if use_def.uses.intersects(relevant) {
-            items.push(RelevantItem::Terminator { def_id, block });
+            items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
         }
     }
 }

@@ -6,7 +6,7 @@
 
 use rustc_hir::def_id::DefId;
 use rustc_middle::{
-    mir::{BasicBlock, Body, Local, Operand, Place, ProjectionElem},
+    mir::{Body, Local, Operand, Place, ProjectionElem},
     ty::{Region, Ty, TyCtxt},
 };
 use z3::{
@@ -364,16 +364,19 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
     }
 }
 
-/// Facts latched while stepping a path, read afterwards by the property
-/// checker.
+/// Per-path facts, read afterwards by the property checker.
 ///
-/// Each flag is set at most once during path execution (a contract fact or a
-/// recognized discriminant / bounds check).  They are per-path state, not
+/// Most flags are latched at most once during path execution (a contract fact
+/// or a recognized discriminant / bounds check); `reenter` is instead derived
+/// from the input path in [`VmState::new`].  They are per-path state, not
 /// per-step: once set they are never cleared within a path.  (`has_checked_bounds`
 /// is additionally accumulated *across checkpoints* by the engine, which reads
 /// it back into the next path's flags.)
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct PathFacts {
+    /// Whether the current path re-enters a block (loop-unrolled), which lets
+    /// the checker exempt the unrolled iteration's "second drop".
+    pub reenter: bool,
     /// Whether a SplitTransmute contract was asserted by the caller.
     pub split_transmute_asserted: bool,
     /// Whether an `Alias` hazard was accepted via the caller's contract.
@@ -459,31 +462,6 @@ pub(crate) struct AnalysisCtx<'ctx> {
     /// elements, we increment this offset instead of nesting symbolic
     /// additions.  This keeps Z3 expressions compact.
     pub(crate) iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
-}
-
-/// Execution-scoped data, as opposed to program-state data.
-///
-/// Holds the state that *drives* the walk through a path rather than the state
-/// the walk produces: `path` + `block_occurrences` are the read-only path
-/// cursor, `inline` is the inlined-callee stack, and `last_call_callee` is the
-/// per-step call context.  Kept apart from [`Memory`]/[`Locals`] (program
-/// state) and the accumulated solver constraints (path facts).
-pub(crate) struct ExecCtx<'ctx, 'tcx> {
-    /// The path being executed (for branch target resolution).
-    pub(crate) path: Path,
-
-    /// Block occurrence cursor: how many times each block has been entered so
-    /// far while walking `path`, used to disambiguate the `k`-th loop iteration
-    /// when resolving a `SwitchInt` successor.
-    pub(crate) block_occurrences: FxHashMap<BasicBlock, usize>,
-
-    /// Inlined-callee execution state (depth, frame stack, and per-call
-    /// temporary bindings swapped on entry / restored on exit).
-    pub(crate) inline: InlineCtx<'ctx, 'tcx>,
-
-    /// `DefId` of the call currently being processed (for `DefId`-based API
-    /// classification).
-    pub(crate) last_call_callee: Option<DefId>,
 }
 
 /// The object space: every allocation plus the per-allocation contents that are
@@ -630,9 +608,10 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// sources.
     pub(crate) locals: Locals<'ctx, 'tcx>,
 
-    // ── Execution-scoped data
-    /// Transient per-step data (input path, inline stack, last call).
-    pub(crate) exec: ExecCtx<'ctx, 'tcx>,
+    // ── Inlined-callee execution state
+    /// Inlined-callee execution state (depth, frame stack, and per-call
+    /// temporary bindings swapped on entry / restored on exit).
+    pub(crate) inline: InlineCtx<'ctx, 'tcx>,
 
     // ── Per-frame analysis metadata
     /// Operand sources for guard inference and iterator pointer offsets,
@@ -653,24 +632,25 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     pub(crate) fn new(
         ctx: &'ctx Context,
         tcx: TyCtxt<'tcx>,
-        path: Path,
+        path: &Path,
         caller_def_id: DefId,
     ) -> Self {
+        // Derive the one path fact the checker needs after `run` (whether the
+        // path re-enters a block); the raw `Path` itself is not kept.
+        let reenter = path.reenters();
         Self {
             ctx,
             tcx,
             caller_def_id,
             memory: Memory::default(),
             locals: Locals::default(),
-            exec: ExecCtx {
-                path,
-                block_occurrences: FxHashMap::default(),
-                inline: InlineCtx::default(),
-                last_call_callee: None,
-            },
+            inline: InlineCtx::default(),
             analysis: AnalysisCtx::default(),
             solver: SolverState::default(),
-            path_facts: PathFacts::default(),
+            path_facts: PathFacts {
+                reenter,
+                ..PathFacts::default()
+            },
         }
     }
 
@@ -810,6 +790,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         while let Some(parent) = self.alloc(cur).parent {
             cur = parent;
             guard += 1;
+            // A parent chain longer than the total allocation count means a
+            // cycle; stop rather than loop forever.
             if guard > self.memory.allocations.len() {
                 break;
             }
@@ -1123,6 +1105,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if place.projection.is_empty() {
             return self.locals.values.get(&place.local).cloned();
         }
+        let place_ty = place.ty(self.body(), self.tcx).ty;
 
         // Collect field indices from projections
         let field_path: Vec<usize> = place
@@ -1162,7 +1145,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let Some(ref prov) = base_val.provenance {
                         return Some(VmValue {
                             term: base_val.term.clone(),
-                            ty: place.ty(self.body(), self.tcx).ty,
+                            ty: place_ty,
                             provenance: Some(prov.clone()),
                             invariants: base_val.invariants.clone(),
                             field_offset: false,
@@ -1229,7 +1212,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         for proj in place.projection.iter() {
             match proj.kind() {
                 ProjectionElem::Deref => {
-                    base.ty = place.ty(self.body(), self.tcx).ty;
+                    base.ty = place_ty;
                 }
                 ProjectionElem::Field(_field_idx, _) => {
                     // Try to get the field value from the VM's field tracking
@@ -1239,7 +1222,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         }
                     }
                     // Fallback: return the base with updated type info
-                    base.ty = place.ty(self.body(), self.tcx).ty;
+                    base.ty = place_ty;
                 }
                 _ => {}
             }
@@ -1268,7 +1251,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         .unwrap_or_else(|| self.fresh_int("arr_elem"));
                                     return Some(VmValue {
                                         term,
-                                        ty: place.ty(self.body(), self.tcx).ty,
+                                        ty: place_ty,
                                         provenance: None,
                                         invariants: ValueInvariants::default(),
                                         field_offset: false,
@@ -1285,7 +1268,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     }
                                     return Some(VmValue {
                                         term: chain,
-                                        ty: place.ty(self.body(), self.tcx).ty,
+                                        ty: place_ty,
                                         provenance: None,
                                         invariants: ValueInvariants::default(),
                                         field_offset: false,
@@ -1308,7 +1291,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             return Some(v);
                         }
                         let mut val = base.clone();
-                        val.ty = place.ty(self.body(), self.tcx).ty;
+                        val.ty = place_ty;
                         return Some(val);
                     }
                     ProjectionElem::Field(_field_idx, _field_ty) => {
@@ -1319,7 +1302,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         // Downcast or other unsupported projection: still return
                         // the base with updated type so provenance propagates.
                         let mut val = base.clone();
-                        val.ty = place.ty(self.body(), self.tcx).ty;
+                        val.ty = place_ty;
                         return Some(val);
                     }
                 }
@@ -1337,7 +1320,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             })
         {
             let mut val = base;
-            val.ty = place.ty(self.body(), self.tcx).ty;
+            val.ty = place_ty;
             return Some(val);
         }
 

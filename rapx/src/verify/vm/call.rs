@@ -104,8 +104,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(effect) =
                     crate::verify::call_summary::interprocedural::try_field_load_effect(self.tcx, c)
                 {
-                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
-                    self.exec.last_call_callee = callee;
+                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination, callee);
                     self.materialize_const_bytes_after_call(args, destination);
                     return;
                 }
@@ -114,16 +113,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         self.tcx, c,
                     )
                 {
-                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
-                    self.exec.last_call_callee = callee;
+                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination, callee);
                     self.materialize_const_bytes_after_call(args, destination);
                     return;
                 }
                 if let Some(effect) =
                     crate::verify::call_summary::interprocedural::try_branch_effect(self.tcx, c)
                 {
-                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
-                    self.exec.last_call_callee = callee;
+                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination, callee);
                     self.materialize_const_bytes_after_call(args, destination);
                     return;
                 }
@@ -132,8 +129,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         self.tcx, c,
                     )
                 {
-                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
-                    self.exec.last_call_callee = callee;
+                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination, callee);
                     self.materialize_const_bytes_after_call(args, destination);
                     return;
                 }
@@ -142,8 +138,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         self.tcx, c,
                     )
                 {
-                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
-                    self.exec.last_call_callee = callee;
+                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination, callee);
                     self.materialize_const_bytes_after_call(args, destination);
                     return;
                 }
@@ -186,16 +181,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // shared symbolic `sizeof_T` / `align_T` so it agrees with allocation
         // sizes and pointer strides.
         if self.try_size_align_effect(func, destination) {
-            self.exec.last_call_callee = callee;
             self.materialize_const_bytes_after_call(args, destination);
             return;
         }
 
-        self.exec.last_call_callee = callee;
-
         if !summary.unsupported {
             for effect in &summary.effects {
-                self.apply_call_effect(effect, &arg_values, &caller_arg_locals, destination);
+                self.apply_call_effect(effect, &arg_values, &caller_arg_locals, destination, callee);
             }
         } else {
             let dest_ty = self.body().local_decls[destination].ty;
@@ -745,10 +737,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         caller_arg_locals: &[Option<Local>],
         dest: Local,
     ) -> bool {
-        if self.exec.inline.depth >= MAX_INLINE_DEPTH {
+        if self.inline.depth >= MAX_INLINE_DEPTH {
             return false;
         }
-        self.exec.inline.depth += 1;
+        self.inline.depth += 1;
 
         // Only inline small, branch-free functions. `inline_execute_body`
         // follows every `SwitchInt` target without forking state, so a real
@@ -788,7 +780,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         });
         if arg_values.len() > 4 || callee_body.basic_blocks.len() > 16 || n_return > 1 || has_switch
         {
-            self.exec.inline.depth -= 1;
+            self.inline.depth -= 1;
             return false;
         }
 
@@ -810,8 +802,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .collect();
         let snapshot = self.save_frame();
         let saved_inline_arg_referents =
-            std::mem::replace(&mut self.exec.inline.arg_referents, inline_arg_referents);
-        let saved_deferred_field_writes = std::mem::take(&mut self.exec.inline.deferred_field_writes);
+            std::mem::replace(&mut self.inline.arg_referents, inline_arg_referents);
+        let saved_deferred_field_writes = std::mem::take(&mut self.inline.deferred_field_writes);
 
         // ── Switch to callee context ──
         self.caller_def_id = callee_def_id;
@@ -882,11 +874,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Apply deferred field writes (`(*self).field = val` through a
         // `&mut self` reborrow) collected during the callee's execution, now
         // that the caller's `local_fields` is live again.
-        for (local, path, value) in std::mem::take(&mut self.exec.inline.deferred_field_writes) {
+        for (local, path, value) in std::mem::take(&mut self.inline.deferred_field_writes) {
             self.set_field_value(local, path, value);
         }
-        self.exec.inline.arg_referents = saved_inline_arg_referents;
-        self.exec.inline.deferred_field_writes = saved_deferred_field_writes;
+        self.inline.arg_referents = saved_inline_arg_referents;
+        self.inline.deferred_field_writes = saved_deferred_field_writes;
 
         // ── Write return value to caller destination ──
         let dest_ty = self.body().local_decls[dest].ty;
@@ -919,12 +911,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             None => {
-                self.exec.inline.depth -= 1;
+                self.inline.depth -= 1;
                 return false;
             }
         }
 
-        self.exec.inline.depth -= 1;
+        self.inline.depth -= 1;
         true
     }
 
@@ -1303,6 +1295,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         args: &[VmValue<'ctx, 'tcx>],
         caller_arg_locals: &[Option<Local>],
         dest: Local,
+        callee: Option<DefId>,
     ) {
         match effect {
             CallEffect::ReturnAliasArg { arg } => {
@@ -2359,9 +2352,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         // For locally-created Vec-like types: create a heap data
                         // allocation on first mutation. (Param Vecs already have
                         // an external allocation set by init_parameters.)
-                        let is_vec = crate::verify::api_classify::is_vec_push_or_reserve(
-                            self.exec.last_call_callee,
-                        );
+                        let is_vec = crate::verify::api_classify::is_vec_push_or_reserve(callee);
                         let is_external = self.alloc(prov.alloc_id).is_external();
                         if is_vec && !is_external {
                             let elem_ty = match arg_val.ty.kind() {

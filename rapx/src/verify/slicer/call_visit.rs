@@ -50,7 +50,7 @@ pub(crate) fn visit<'tcx>(
         if summary.unsupported {
             items.push(RelevantItem::Forget);
         }
-        items.push(RelevantItem::Terminator { def_id, block });
+        items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
         relevant.remove_all(&defs);
         relevant.extend(call_args_uses_at(args, &summary.return_depends_on_args));
         return;
@@ -71,7 +71,7 @@ pub(crate) fn visit<'tcx>(
         if summary.unsupported {
             items.push(RelevantItem::Forget);
         }
-        items.push(RelevantItem::Terminator { def_id, block });
+        items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
         relevant.remove_all(&defs);
         relevant.extend(call_args_uses_at(args, &summary.return_depends_on_args));
         return;
@@ -89,7 +89,7 @@ pub(crate) fn visit<'tcx>(
         if summary.unsupported {
             items.push(RelevantItem::Forget);
         }
-        items.push(RelevantItem::Terminator { def_id, block });
+        items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
         relevant.extend(call_args_uses_at(args, &summary.must_write_args));
     }
 
@@ -116,7 +116,7 @@ pub(crate) fn visit<'tcx>(
                         if let Some(local) = dest_key.local() {
                             relevant.locals.insert(local);
                         }
-                        items.push(RelevantItem::Terminator { def_id, block });
+                        items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
                     }
                 }
             }

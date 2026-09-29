@@ -16,7 +16,7 @@
 //! (currently 1024) per search. Searches stop producing new paths once the limit
 //! is reached.
 
-use crate::compat::FxHashMap;
+use crate::compat::{FxHashMap, FxHashSet};
 use rustc_hir::def_id::DefId;
 use rustc_middle::{mir::BasicBlock, ty::TyCtxt};
 
@@ -211,12 +211,27 @@ impl Path {
 
     /// Whether this path re-enters a block it already visited (a loop-unrolled
     /// iteration, not a genuinely distinct step).
-    pub(crate) fn is_unrolled(&self) -> bool {
+    pub(crate) fn reenters(&self) -> bool {
         let mut seen = std::collections::HashSet::new();
         self.steps.iter().any(|s| match s {
             PathStep::Block(b) => !seen.insert(b.as_usize()),
             _ => false,
         })
+    }
+
+    /// The set of blocks this path passes through, including the checkpoint
+    /// block.  Used to restrict backward propagation to the current path.
+    pub(crate) fn block_set(&self) -> FxHashSet<BasicBlock> {
+        let mut blocks: FxHashSet<BasicBlock> = self
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                PathStep::Block(b) => Some(*b),
+                _ => None,
+            })
+            .collect();
+        blocks.insert(self.target.block);
+        blocks
     }
 }
 

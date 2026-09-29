@@ -48,9 +48,10 @@ impl SymbolicVm {
         tcx: TyCtxt<'tcx>,
         goal: ProofGoal<'tcx>,
     ) -> VmState<'ctx, 'tcx> {
-        let mut state = VmState::new(ctx, tcx, goal.path.clone(), goal.path.target.caller);
+        let mut state = VmState::new(ctx, tcx, &goal.path, goal.path.target.caller);
         state.execute_items(&goal.items);
-        state.propagate_from_checkpoint(goal.path.target.block);
+        let path_blocks = goal.path.block_set();
+        state.propagate_from_checkpoint(goal.path.target.block, &path_blocks);
         state
     }
 }

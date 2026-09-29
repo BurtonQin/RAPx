@@ -55,7 +55,7 @@ impl PropertyChecker {
         // second `DropMemory` is an unrolled iteration rather than a genuine
         // same-iteration double free. Only the non-unrolled path distinguishes
         // them (uaf_10 drops twice in one iteration; uaf_false_2 drops once).
-        if vm_state.exec.path.is_unrolled() {
+        if vm_state.path_facts.reenter {
             return CheckResult::ProvedByRule;
         }
         // Owning(p): p is the sole carrier of *p's ownership. A live `needs_drop`
