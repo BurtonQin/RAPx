@@ -1,8 +1,8 @@
 //! Symbolic VM state types.
 //!
-//! Core data structures that represent the symbolic execution state:
-//! `VmValue` (symbolic value with invariants), `Allocation` (memory object),
-//! and `VmState` (the full execution state at a program point).
+//! The data structures that represent the symbolic execution state: symbolic
+//! values and their invariants, memory allocations, and the full execution
+//! state at a program point.
 
 use rustc_hir::def_id::DefId;
 use rustc_middle::{
@@ -248,7 +248,7 @@ pub(crate) struct ForEachFacts<'ctx, 'tcx> {
 /// A memory allocation: a stack local, a heap object (`Box`/`Vec`), or an
 /// external raw-pointer placeholder.
 ///
-/// The allocation is stored in `VmState::allocations` at index `AllocId.0`
+/// The allocation is stored in [`Memory::allocations`] at index `AllocId.0`
 /// (an `AllocId` is a monotonic counter that doubles as the vector index).
 #[derive(Clone, Debug)]
 pub(crate) struct Allocation<'ctx, 'tcx> {
@@ -448,8 +448,9 @@ pub(crate) struct BinaryOpSource {
 ///
 /// `op_sources` records operand sources for guard inference; `iter_ptr_offset`
 /// is the cumulative `Iter`/`IterMut` field-0 pointer offset that keeps Z3
-/// expressions compact.  Both are checkpointed together around a call (see
-/// `exec_inline_call`), so they share one struct and one lifecycle.
+/// expressions compact.  Both are checkpointed together around a call via
+/// [`VmState::save_frame`]/[`VmState::restore_frame`], so they share one struct
+/// and one lifecycle.
 #[derive(Default)]
 pub(crate) struct AnalysisCtx<'ctx> {
     /// Operand sources for guard inference: destination → (lhs, rhs) place
@@ -574,19 +575,15 @@ pub(crate) struct SolverState<'ctx, 'tcx> {
 /// across the whole path, including inlined frames.
 pub(crate) struct FrameSnapshot<'ctx, 'tcx> {
     pub(crate) caller_def_id: DefId,
-    pub(crate) values: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
-    pub(crate) slots: FxHashMap<Local, AllocId>,
-    pub(crate) local_fields: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
-    pub(crate) move_sources: FxHashMap<Local, Local>,
-    pub(crate) op_sources: FxHashMap<PlaceKey, BinaryOpSource>,
-    pub(crate) iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
+    pub(crate) locals: Locals<'ctx, 'tcx>,
+    pub(crate) analysis: AnalysisCtx<'ctx>,
 }
 
 /// The full symbolic execution state at a program point.
 ///
-/// Accumulates locals, allocations, path conditions, and definitions
-/// as the VM steps through retained MIR items. The Z3 context is
-/// borrowed so a single context can be reused across property checks.
+/// Accumulates locals, allocations, and solver constraints as the VM steps
+/// through retained MIR items. The Z3 context is borrowed so a single context
+/// can be reused across property checks.
 pub(crate) struct VmState<'ctx, 'tcx> {
     // ── Shared handles (passed in at run start; not execution state, but
     //    needed to create terms and query types during checking)
@@ -623,7 +620,8 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     pub(crate) solver: SolverState<'ctx, 'tcx>,
 
     // ── Per-path facts
-    /// Facts latched while stepping this path, read by the property checker.
+    /// Per-path facts (latched while stepping, or derived in [`Self::new`]),
+    /// read by the property checker.
     pub(crate) path_facts: PathFacts,
 }
 
@@ -670,24 +668,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     pub(crate) fn save_frame(&mut self) -> FrameSnapshot<'ctx, 'tcx> {
         FrameSnapshot {
             caller_def_id: self.caller_def_id,
-            values: std::mem::take(&mut self.locals.values),
-            slots: std::mem::take(&mut self.locals.slots),
-            local_fields: std::mem::take(&mut self.locals.local_fields),
-            move_sources: std::mem::take(&mut self.locals.move_sources),
-            op_sources: std::mem::take(&mut self.analysis.op_sources),
-            iter_ptr_offset: std::mem::take(&mut self.analysis.iter_ptr_offset),
+            locals: std::mem::take(&mut self.locals),
+            analysis: std::mem::take(&mut self.analysis),
         }
     }
 
     /// Restore the frame-scoped state after an inlined callee returns.
     pub(crate) fn restore_frame(&mut self, snapshot: FrameSnapshot<'ctx, 'tcx>) {
         self.caller_def_id = snapshot.caller_def_id;
-        self.locals.values = snapshot.values;
-        self.locals.slots = snapshot.slots;
-        self.locals.local_fields = snapshot.local_fields;
-        self.locals.move_sources = snapshot.move_sources;
-        self.analysis.op_sources = snapshot.op_sources;
-        self.analysis.iter_ptr_offset = snapshot.iter_ptr_offset;
+        self.locals = snapshot.locals;
+        self.analysis = snapshot.analysis;
     }
 
     /// Look up the value bound to a MIR local.

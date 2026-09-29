@@ -835,13 +835,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             for src in source_locals {
                 let caller_field_keys: Vec<Vec<usize>> = snapshot
+                    .locals
                     .local_fields
                     .keys()
                     .filter(|(l, _)| *l == src)
                     .map(|(_, f)| f.clone())
                     .collect();
                 for fields in caller_field_keys {
-                    if let Some(fv) = snapshot.local_fields.get(&(src, fields.clone())).cloned() {
+                    if let Some(fv) = snapshot.locals.local_fields.get(&(src, fields.clone())).cloned() {
                         self.set_field_value(callee_param, fields, fv);
                     }
                 }

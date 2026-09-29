@@ -78,6 +78,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         for (i, arg) in arg_locals.iter().enumerate() {
             let caller_local = Local::from_usize(*arg);
             let keys: Vec<Vec<usize>> = snapshot
+                .locals
                 .local_fields
                 .keys()
                 .filter(|(l, _)| *l == caller_local)
@@ -85,6 +86,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 .collect();
             for fields in keys {
                 if let Some(fv) = snapshot
+                    .locals
                     .local_fields
                     .get(&(caller_local, fields.clone()))
                     .cloned()
@@ -97,7 +99,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.caller_def_id = callee;
 
         for (i, arg) in arg_locals.iter().enumerate() {
-            if let Some(v) = snapshot.values.get(&Local::from_usize(*arg)).cloned() {
+            if let Some(v) = snapshot.locals.values.get(&Local::from_usize(*arg)).cloned() {
                 self.set_local(Local::from_usize(i + 1), v);
             }
         }
