@@ -158,7 +158,7 @@ fn traces_to_dest<'ctx, 'tcx>(
             // Defensive: a cycle in the move chain is unexpected, but stop.
             return false;
         }
-        match vm_state.move_sources.get(&local) {
+        match vm_state.locals.move_sources.get(&local) {
             Some(src) => local = *src,
             None => return false,
         }

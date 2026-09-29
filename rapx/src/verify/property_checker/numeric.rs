@@ -143,11 +143,11 @@ impl PropertyChecker {
         };
         solver.push();
         vm_state.assert_all(solver);
-        // Bridge the smt_iter_ptr_offset (tracked by post_inc_start) to the
+        // Bridge the iter_ptr_offset (tracked by post_inc_start) to the
         // predicate's LHS (typically the loop counter `i` in position).
         // At the assert_unchecked(i < n) point, tracked_offset == i + 1
         // because post_inc_start(1) was just called before the check.
-        for (_, off) in vm_state.smt_iter_ptr_offset.iter() {
+        for (_, off) in vm_state.analysis.iter_ptr_offset.iter() {
             let one = Int::from_u64(vm_state.ctx, 1);
             solver.assert(&off._eq(&Int::add(vm_state.ctx, &[&lhs, &one])));
         }
@@ -282,11 +282,11 @@ impl PropertyChecker {
             return;
         }
 
-        // Walk op_sources (binary and non-binary producers) for destinations
+        // Walk analysis.op_sources (binary and non-binary producers) for destinations
         // whose term matches target.
         let op_sources: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = {
             let mut src: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = Vec::new();
-            for (pk, src_ops) in vm_state.op_sources.iter() {
+            for (pk, src_ops) in vm_state.analysis.op_sources.iter() {
                 let (lhs, rhs) = src_ops.operands();
                 if pk
                     .local()
@@ -314,7 +314,7 @@ impl PropertyChecker {
                 continue;
             }
 
-            for (pk, src_ops) in vm_state.op_sources.iter() {
+            for (pk, src_ops) in vm_state.analysis.op_sources.iter() {
                 let (lhs, rhs) = src_ops.operands();
                 if let Some(dest_local) = pk.local() {
                     if let Some(dest_val) = vm_state.local_value(dest_local) {
@@ -356,7 +356,7 @@ impl PropertyChecker {
                 lhs: div_lhs_pk,
                 rhs: div_rhs_pk,
                 op: _,
-            }) = vm_state.op_sources.get(lhs_pk).cloned()
+            }) = vm_state.analysis.op_sources.get(lhs_pk).cloned()
             {
                 let Some(div_lhs_local) = div_lhs_pk.and_then(|pk| pk.local()) else {
                     continue;

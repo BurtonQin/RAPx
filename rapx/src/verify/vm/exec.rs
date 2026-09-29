@@ -85,24 +85,22 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// switch to the callee body, and bind the caller's argument locals to the
     /// callee's parameters.
     fn handle_callee_entry(&mut self, callee: DefId, arg_locals: &[usize]) {
-        let saved_body = self.body;
-        let saved_def_id = self.caller_def_id;
-        let saved_values = std::mem::take(&mut self.locals.values);
-        let saved_local_fields = std::mem::take(&mut self.locals.local_fields);
-        let saved_move_sources = std::mem::take(&mut self.move_sources);
+        let snapshot = self.save_frame();
 
         // Collect the caller argument fields from the saved map, so the callee's
         // parameters inherit them (e.g. NonZero's non-zero inner value).
         let mut arg_fields: Vec<(usize, Vec<usize>, VmValue<'ctx, 'tcx>)> = Vec::new();
         for (i, arg) in arg_locals.iter().enumerate() {
             let caller_local = Local::from_usize(*arg);
-            let keys: Vec<Vec<usize>> = saved_local_fields
+            let keys: Vec<Vec<usize>> = snapshot
+                .local_fields
                 .keys()
                 .filter(|(l, _)| *l == caller_local)
                 .map(|(_, f)| f.clone())
                 .collect();
             for fields in keys {
-                if let Some(fv) = saved_local_fields
+                if let Some(fv) = snapshot
+                    .local_fields
                     .get(&(caller_local, fields.clone()))
                     .cloned()
                 {
@@ -115,7 +113,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.caller_def_id = callee;
 
         for (i, arg) in arg_locals.iter().enumerate() {
-            if let Some(v) = saved_values.get(&Local::from_usize(*arg)).cloned() {
+            if let Some(v) = snapshot.values.get(&Local::from_usize(*arg)).cloned() {
                 self.set_local(Local::from_usize(i + 1), v);
             }
         }
@@ -123,13 +121,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.set_field_value(Local::from_usize(callee_param), fields, fv);
         }
 
-        self.exec.inline.frames.push(InlineFrame {
-            body: saved_body,
-            def_id: saved_def_id,
-            saved_values,
-            saved_local_fields,
-            saved_move_sources,
-        });
+        self.exec.inline.frames.push(InlineFrame { snapshot });
     }
 
     /// Exit an inlined callee: capture the callee's return value, restore the
@@ -144,11 +136,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .map(|((_, f), v)| (f.clone(), v.clone()))
             .collect();
         if let Some(frame) = self.exec.inline.frames.pop() {
-            self.body = frame.body;
-            self.caller_def_id = frame.def_id;
-            self.locals.values = frame.saved_values;
-            self.locals.local_fields = frame.saved_local_fields;
-            self.move_sources = frame.saved_move_sources;
+            self.restore_frame(frame.snapshot);
         }
         if let Some(mut v) = ret {
             let dest_ty = self.body.local_decls[Local::from_usize(dest)].ty;
@@ -477,7 +465,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let elem_size = self.size_of_ty(*elem_ty);
                         let len = self.fresh_int(&format!("slice_len_{}", local_idx));
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.smt_path_conditions.push(len.ge(&zero));
+                        self.constraints.push(len.ge(&zero));
                         let isize_max = Int::from_i64(self.ctx, i64::MAX);
                         let elem_sz = if elem_size > 0 {
                             elem_size
@@ -490,7 +478,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             .max(1)
                         };
                         let elem_sz_term = Int::from_u64(self.ctx, elem_sz);
-                        self.smt_path_conditions
+                        self.constraints
                             .push(Int::mul(self.ctx, &[&len, &elem_sz_term]).le(&isize_max));
                         // The data allocation's byte size uses the shared
                         // symbolic `sizeof_T` so `InBound` can cancel the factor
@@ -1019,7 +1007,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let elem_align = self.align_sym(pointee);
             let elem_size = self.size_sym(pointee);
             let len_term = self.fresh_int(&format!("field_len_{}_{}", local_idx, idx));
-            self.smt_path_conditions
+            self.constraints
                 .push(len_term.ge(&Int::from_u64(self.ctx, 0)));
             let prost_offset = Int::mul(self.ctx, &[&len_term, &elem_size]);
             let field_term = Int::add(self.ctx, &[base, &prost_offset]);
@@ -1057,7 +1045,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             };
             let max_size = if is_raw_ptr {
                 let s = self.fresh_int("raw_target_size");
-                self.smt_path_conditions.push(s.ge(&Int::from_u64(self.ctx, 0)));
+                self.constraints.push(s.ge(&Int::from_u64(self.ctx, 0)));
                 s
             } else {
                 Int::from_u64(self.ctx, i64::MAX as u64)
@@ -1771,7 +1759,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 _ => None,
             };
             if let Some(src) = moved_from {
-                self.move_sources.insert(place.local, src);
+                self.locals.move_sources.insert(place.local, src);
             }
             // Propagate field values for aggregate copies (e.g. `_4 = copy _1`)
             // so downstream field accesses (NonZero::get -> self.0) resolve to
@@ -2058,7 +2046,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let is_align_or_size = text.starts_with("AlignOf(") || text.starts_with("SizeOf(");
                 if is_align_or_size {
                     let one = Int::from_u64(self.ctx, 1);
-                    self.smt_path_conditions.push(val.term.ge(&one));
+                    self.constraints.push(val.term.ge(&one));
                 }
             }
         }
@@ -2105,8 +2093,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let zero = Int::from_u64(self.ctx, 0);
         // `g = gcd(a, b)`:
         // 1. g divides both a and b.
-        self.smt_path_conditions.push(a.rem(g)._eq(&zero));
-        self.smt_path_conditions.push(b.rem(g)._eq(&zero));
+        self.constraints.push(a.rem(g)._eq(&zero));
+        self.constraints.push(b.rem(g)._eq(&zero));
         // 2. the lcm identity `(a / g) * b == (b / g) * a`. Emitting it directly
         //    (rather than letting Z3 derive it from the divisibility, which its
         //    incomplete nonlinear-integer solver cannot do reliably) is what
@@ -2116,7 +2104,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let b_div_g = b.div(g);
         let lhs = Int::mul(self.ctx, &[&a_div_g, &b]);
         let rhs = Int::mul(self.ctx, &[&b_div_g, &a]);
-        self.smt_path_conditions.push(lhs._eq(&rhs));
+        self.constraints.push(lhs._eq(&rhs));
     }
 
     /// Evaluate an Rvalue into a VmValue.
@@ -2291,7 +2279,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let dest_pk = PlaceKey::from_mir_place(dest_place);
                 let lhs_pk = crate::helpers::mir_utils::operand_place(lhs_op);
                 let rhs_pk = crate::helpers::mir_utils::operand_place(rhs_op);
-                self.op_sources.insert(
+                self.analysis.op_sources.insert(
                     dest_pk,
                     OpSource::Binary {
                         lhs: lhs_pk,
@@ -2329,29 +2317,29 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let rem = lhs.term.rem(&rhs.term);
                     let mul_term = Int::mul(self.ctx, &[quot, &rhs.term]);
                     let sum_term = Int::add(self.ctx, &[&mul_term, &rem]);
-                    self.smt_path_conditions.push(lhs.term._eq(&sum_term));
+                    self.constraints.push(lhs.term._eq(&sum_term));
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.smt_path_conditions.push(rem.ge(&zero));
+                    self.constraints.push(rem.ge(&zero));
                     // Remainder and quotient bounds help prove length constraints
                     // involving % and / in the SMT solver.
                     if rhs.term.as_u64().is_none_or(|r| r >= 1) {
-                        self.smt_path_conditions.push(rem.lt(&rhs.term));
+                        self.constraints.push(rem.lt(&rhs.term));
                     }
-                    self.smt_path_conditions.push(rem.le(&lhs.term));
-                    self.smt_path_conditions.push(quot.ge(&zero));
+                    self.constraints.push(rem.le(&lhs.term));
+                    self.constraints.push(quot.ge(&zero));
                     // Direct inequality: (lhs/rhs)*rhs <= lhs
-                    self.smt_path_conditions.push(mul_term.le(&lhs.term));
+                    self.constraints.push(mul_term.le(&lhs.term));
                     // Quotient strict bound: for rhs >= 2 and lhs >= 2,
                     // quot + 1 <= lhs (hence quot < lhs). E.g. X/2 < X for X>1.
                     if rhs.term.as_u64().is_some_and(|r| r >= 2) {
                         let one = Int::from_u64(self.ctx, 1);
                         let qp1 = Int::add(self.ctx, &[quot, &one]);
                         // qp1 <= lhs is equivalent to quot < lhs for integers
-                        self.smt_path_conditions.push(qp1.le(&lhs.term));
+                        self.constraints.push(qp1.le(&lhs.term));
                     } else {
                         // For rhs >= 1: quot <= lhs
                         if rhs.term.as_u64().is_some_and(|r| r >= 1) {
-                            self.smt_path_conditions.push(quot.le(&lhs.term));
+                            self.constraints.push(quot.le(&lhs.term));
                         }
                     }
                 }
@@ -2456,9 +2444,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 );
                 if src_is_ptr && dest_is_int {
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.smt_path_conditions.push(term.ge(&zero));
+                    self.constraints.push(term.ge(&zero));
                     if src_val.invariants.non_null {
-                        self.smt_path_conditions.push(term._eq(&zero).not());
+                        self.constraints.push(term._eq(&zero).not());
                     }
                 }
                 VmValue {
@@ -2694,12 +2682,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         if api_classify::is_std_ordering(adt_def.did()) && adt_def.is_enum() {
                             let one = Int::from_u64(self.ctx, 1);
                             let discr_minus_one = Int::sub(self.ctx, &[&term, &one]);
-                            self.smt_path_conditions.push(pv.term._eq(&discr_minus_one));
+                            self.constraints.push(pv.term._eq(&discr_minus_one));
                             // Also bound the discriminant to {0, 1, 2}
                             let zero = Int::from_u64(self.ctx, 0);
                             let two = Int::from_u64(self.ctx, 2);
-                            self.smt_path_conditions.push(term.ge(&zero));
-                            self.smt_path_conditions.push(term.le(&two));
+                            self.constraints.push(term.ge(&zero));
+                            self.constraints.push(term.le(&two));
                         }
                     }
                 }
@@ -2742,7 +2730,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let is_size_of = op_debug.contains("SizeOf");
                 if is_align_of || is_size_of {
                     let one = Int::from_u64(self.ctx, 1);
-                    self.smt_path_conditions.push(term.ge(&one));
+                    self.constraints.push(term.ge(&one));
                 }
                 VmValue::new(term, dest_ty)
             }
@@ -2805,7 +2793,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // per-function effect.
                 let zero = Int::from_u64(self.ctx, 0);
                 let exact = self
-                    .smt_path_conditions
+                    .constraints
                     .iter()
                     .any(|c| *c == lhs.rem(rhs)._eq(&zero));
                 if exact {
@@ -2826,26 +2814,26 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let result = self.fresh_int("binop");
                 // BitAnd only clears bits, so it never increases a non-negative
                 // value: result <= lhs.
-                self.smt_path_conditions.push(result.le(lhs));
+                self.constraints.push(result.le(lhs));
                 // When the mask (rhs) is a non-negative constant, the result is
                 // also bounded by it: `x & c <= c` (e.g. `rhs & 31 <= 31`).
                 // This lets `(rhs & (BITS - 1)) < BITS` be discharged. The
                 // mask may be a folded expression (`SubWithOverflow(BITS, 1)`),
                 // so `simplify()` is used to recover its constant value.
                 if rhs.simplify().as_u64().is_some() {
-                    self.smt_path_conditions.push(result.le(rhs));
+                    self.constraints.push(result.le(rhs));
                 }
-                if self.smt_not_mask_terms.contains(rhs) {
+                if self.exec.not_mask_terms.contains(rhs) {
                     // rhs is a two's-complement mask `!(align-1) == -align`,
                     // so `align = -rhs`. The result of `x & !(align-1)` is
                     // `x` rounded down to a multiple of `align` (i.e. align_up
                     // of the pre-incremented value).
                     let zero = Int::from_u64(self.ctx, 0);
                     let align = Int::sub(self.ctx, &[&zero, rhs]);
-                    self.smt_path_conditions.push(result.rem(&align)._eq(&zero));
+                    self.constraints.push(result.rem(&align)._eq(&zero));
                     let one = Int::from_u64(self.ctx, 1);
                     let addr = Int::add(self.ctx, &[lhs, rhs, &one]);
-                    self.smt_path_conditions.push(result.ge(&addr));
+                    self.constraints.push(result.ge(&addr));
                 }
                 result
             }
@@ -2857,9 +2845,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `result >= lhs`, which is only valid for non-negative values)
                 // so `NonZero` bit-or methods discharge their `!= 0` obligation
                 // for both signed and unsigned instantiations.
-                self.smt_path_conditions
+                self.constraints
                     .push(lhs._eq(&zero).not().implies(&result._eq(&zero).not()));
-                self.smt_path_conditions
+                self.constraints
                     .push(rhs._eq(&zero).not().implies(&result._eq(&zero).not()));
                 result
             }
@@ -2878,7 +2866,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // Two's-complement bitwise NOT: !x == -x - 1.
                     let one = Int::from_u64(self.ctx, 1);
                     let result = Int::sub(self.ctx, &[&self.negate(val), &one]);
-                    self.smt_not_mask_terms.insert(result.clone());
+                    self.exec.not_mask_terms.insert(result.clone());
                     result
                 }
             }
@@ -3293,12 +3281,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 for (value, target) in targets.iter() {
                     if target == chosen {
                         let val_term = Int::from_u64(self.ctx, value as u64);
-                        self.smt_path_conditions.push(discr_val.term._eq(&val_term));
+                        self.constraints.push(discr_val.term._eq(&val_term));
                         if let Some(ref cond) = cmp_cond {
                             if value != 0 {
-                                self.smt_path_conditions.push(cond.clone());
+                                self.constraints.push(cond.clone());
                             } else {
-                                self.smt_path_conditions.push(cond.not());
+                                self.constraints.push(cond.not());
                             }
                         }
                         if value != 0 {
@@ -3312,14 +3300,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // Negate every explicit target value.
                     for (value, _) in targets.iter() {
                         let val_term = Int::from_u64(self.ctx, value as u64);
-                        self.smt_path_conditions
+                        self.constraints
                             .push(discr_val.term._eq(&val_term).not());
                     }
                     if let Some(ref cond) = cmp_cond {
                         // For a boolean discriminator, `otherwise` means
                         // `discr != 0`, i.e. the comparison is true.
                         if targets.iter().any(|(v, _)| v == 0) {
-                            self.smt_path_conditions.push(cond.clone());
+                            self.constraints.push(cond.clone());
                         }
                     }
                 }
@@ -3336,15 +3324,15 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let cmp_cond = cond_val.bool_cond().cloned();
         if expected {
             let zero = Int::from_u64(self.ctx, 0);
-            self.smt_path_conditions.push(cond_val.term._eq(&zero).not());
+            self.constraints.push(cond_val.term._eq(&zero).not());
             if let Some(c) = &cmp_cond {
-                self.smt_path_conditions.push(c.clone());
+                self.constraints.push(c.clone());
             }
         } else {
             let zero = Int::from_u64(self.ctx, 0);
-            self.smt_path_conditions.push(cond_val.term._eq(&zero));
+            self.constraints.push(cond_val.term._eq(&zero));
             if let Some(c) = &cmp_cond {
-                self.smt_path_conditions.push(c.not());
+                self.constraints.push(c.not());
             }
         }
 
@@ -3367,7 +3355,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
         // Check if cond is a Ne/Eq comparison of (x % n) or (x & (align-1)) against 0
         if let Some(OpSource::Binary { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
-            self.op_sources.get(&cond_pk).cloned()
+            self.analysis.op_sources.get(&cond_pk).cloned()
         {
             // The lhs is (x % n) / (x & (align-1)), rhs is constant 0
             let inner_pk = match (&lhs_pk, &rhs_pk) {
@@ -3379,7 +3367,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 lhs: div_lhs,
                 rhs: div_rhs,
                 op: inner_op,
-            }) = self.op_sources.get(&inner_pk).cloned()
+            }) = self.analysis.op_sources.get(&inner_pk).cloned()
             {
                 match inner_op {
                     // `x % n == 0`: div_rhs is the concrete divisor constant.
@@ -3434,7 +3422,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // non-nullness; an `Eq` guard (`assert (addr & mask) == 0`, the
         // alignment check) means the value *is* zero, not non-null.
         if let Some(OpSource::Binary { lhs: lhs_pk, rhs: rhs_pk, op }) =
-            self.op_sources.get(&cond_pk).cloned()
+            self.analysis.op_sources.get(&cond_pk).cloned()
         {
             if op != rustc_middle::mir::BinOp::Ne {
                 return;
@@ -3456,7 +3444,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         };
         let pk = PlaceKey::from_mir_place(place);
         if let Some(OpSource::Binary { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
-            self.op_sources.get(&pk).cloned()
+            self.analysis.op_sources.get(&pk).cloned()
         {
             self.mark_guard_pointer(&lhs_pk, &rhs_pk);
         }
@@ -3652,7 +3640,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .get(1)
                         .and_then(|a| self.resolve_contract_count(a))
                     {
-                        self.smt_path_conditions.push(self.alloc(id).size.ge(&n));
+                        self.constraints.push(self.alloc(id).size.ge(&n));
                     }
                 }
             }
@@ -3660,13 +3648,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(PropertyArg::Predicates(predicates)) = property.args().first() {
                     for pred in predicates {
                         if let Some(condition) = self.eval_predicate_as_bool(pred) {
-                            self.smt_path_conditions.push(condition);
+                            self.constraints.push(condition);
                             // For !self.is_empty() → self.len() != 0 on
                             // Iter/IterMut: also assert len >= 1 to help
                             // Z3 with integer division reasoning.
                             if let Some(len_term) = self.try_simple_iter_len_from_pred(pred) {
                                 let one = Int::from_u64(self.ctx, 1);
-                                self.smt_path_conditions.push(len_term.ge(&one));
+                                self.constraints.push(len_term.ge(&one));
                             }
                         }
                     }
@@ -4143,11 +4131,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return;
         }
         let one = Int::from_u64(self.ctx, 1);
-        let new_offset = match self.smt_iter_ptr_offset.get(&local) {
+        let new_offset = match self.analysis.iter_ptr_offset.get(&local) {
             Some(prev) => Int::add(self.ctx, &[prev, &one]),
             None => one,
         };
-        self.smt_iter_ptr_offset.insert(local, new_offset);
+        self.analysis.iter_ptr_offset.insert(local, new_offset);
     }
 
     /// Set non_null invariant on the target value.
@@ -4211,8 +4199,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .unwrap_or_else(|| data_size.div(&elem_sz_term));
         let zero = Int::from_u64(self.ctx, 0);
         for (_, term) in &byte_vals {
-            self.smt_path_conditions.push(term.ge(&zero));
-            self.smt_path_conditions.push(term.lt(&len));
+            self.constraints.push(term.ge(&zero));
+            self.constraints.push(term.lt(&len));
         }
     }
 
@@ -4268,7 +4256,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let Some(index_term) = self.eval_contract_expr_simple(index) else {
             return;
         };
-        self.smt_path_conditions.push(index_term.lt(&len));
+        self.constraints.push(index_term.lt(&len));
     }
 
     /// When a `&T`/`&mut T` reference is created (e.g. via `&*NonNull<T>`), assume
@@ -4325,7 +4313,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             for pred in preds {
                 if let Some(cond) = self.eval_pointee_predicate_as_bool(alloc_id, pointee_ty, pred)
                 {
-                    self.smt_path_conditions.push(cond);
+                    self.constraints.push(cond);
                 }
             }
         }
@@ -4415,7 +4403,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // non-linear `% align_T` is not decidable, so `align_n` alone is
                 // used for that case.)
                 if align.simplify().as_u64().is_some() {
-                    self.smt_path_conditions.push(
+                    self.constraints.push(
                         val.term
                             .rem(&align)
                             ._eq(&Int::from_u64(self.ctx, 0)),

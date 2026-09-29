@@ -372,11 +372,7 @@ pub(crate) struct ByteInfo<'ctx> {
 /// A saved caller context pushed when entering an inlined callee during path
 /// execution.
 pub(crate) struct InlineFrame<'ctx, 'tcx> {
-    pub body: &'ctx Body<'tcx>,
-    pub def_id: DefId,
-    pub saved_values: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
-    pub saved_local_fields: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
-    pub saved_move_sources: FxHashMap<Local, Local>,
+    pub snapshot: FrameSnapshot<'ctx, 'tcx>,
 }
 
 /// State owned by the inlined-callee execution (`exec_inline_call`): the
@@ -432,6 +428,26 @@ impl OpSource {
     }
 }
 
+/// Per-frame analysis metadata keyed by `Local`/`PlaceKey`.
+///
+/// `op_sources` records operand sources for guard inference; `iter_ptr_offset`
+/// is the cumulative `Iter`/`IterMut` field-0 pointer offset that keeps Z3
+/// expressions compact.  Both are checkpointed together around a call (see
+/// `exec_inline_call`), so they share one struct and one lifecycle.
+#[derive(Default)]
+pub(crate) struct AnalysisCtx<'ctx> {
+    /// Operand sources for guard inference: destination → (lhs, rhs) place
+    /// keys, with the operator kind for binary ops.  `Other` producers (e.g.
+    /// `select_unpredictable`) are not treated as pointer comparisons.
+    pub(crate) op_sources: FxHashMap<PlaceKey, OpSource>,
+
+    /// Cumulative ptr offset for Iter/IterMut field [0] (ptr).
+    /// Key: (struct_local). When post_inc_start advances the ptr by `n`
+    /// elements, we increment this offset instead of nesting symbolic
+    /// additions.  This keeps Z3 expressions compact.
+    pub(crate) iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
+}
+
 /// Execution-scoped data, as opposed to program-state data.
 ///
 /// `path` is the input path currently being replayed (consumed by branch
@@ -459,6 +475,12 @@ pub(crate) struct ExecCtx<'ctx, 'tcx> {
 
     /// `DefId` of the most recent call (for `DefId`-based API classification).
     pub(crate) last_call_callee: Option<DefId>,
+
+    /// Terms that are the result of a bitwise `Not` (two's-complement mask).
+    /// Used to recognize `x & !(align-1)` alignment patterns in BitAnd so we
+    /// can derive `align = -mask` and emit linear bounds for the result.
+    /// Transient recognition set, not accumulated program state.
+    pub(crate) not_mask_terms: FxHashSet<Int<'ctx>>,
 }
 
 /// The object space: every allocation plus the per-allocation contents that are
@@ -507,6 +529,13 @@ pub(crate) struct Locals<'ctx, 'tcx> {
     /// Field-level value tracking for aggregates: (local, field_indices) → value.
     /// Example: `(local_3, [0])` is `local_3.0`, `(local_3, [0, 1])` is `local_3.0.1`.
     pub(crate) local_fields: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
+
+    /// Move-alias chain: `local → source` for a whole-place move (`_3 = move _4`).
+    /// Lets `Owning` tell the call's own rebuilt owner (`boxed = move dest`) from
+    /// a *previous* call's owner (also a shallow field, but tracing to a
+    /// different destination).  Frame-scoped like the rest of [`Locals`], so it
+    /// is saved/restored on inline entry/exit.
+    pub(crate) move_sources: FxHashMap<Local, Local>,
 }
 
 /// Shared symbolic layout constants for generic types whose concrete layout is
@@ -523,6 +552,25 @@ pub(crate) struct LayoutCache<'ctx, 'tcx> {
 
     /// `align_T` for each generic type, one symbolic constant per type.
     pub(crate) aligns: FxHashMap<Ty<'tcx>, Int<'ctx>>,
+}
+
+/// The frame-scoped subset of [`VmState`] captured when entering an inlined
+/// callee and restored on exit.
+///
+/// Everything here is keyed by MIR `Local` (the callee reuses the caller's
+/// local indices), so it must be swapped out for the duration of the callee's
+/// execution and swapped back afterwards.  The path-scoped state (`memory`,
+/// `constraints`, `layout`) is deliberately *not* captured: it accumulates
+/// across the whole path, including inlined frames.
+pub(crate) struct FrameSnapshot<'ctx, 'tcx> {
+    pub(crate) body: &'ctx Body<'tcx>,
+    pub(crate) caller_def_id: DefId,
+    pub(crate) values: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
+    pub(crate) slots: FxHashMap<Local, AllocId>,
+    pub(crate) local_fields: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
+    pub(crate) move_sources: FxHashMap<Local, Local>,
+    pub(crate) op_sources: FxHashMap<PlaceKey, OpSource>,
+    pub(crate) iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
 }
 
 /// The full symbolic execution state at a program point.
@@ -548,46 +596,29 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// The object space: allocations, per-byte state, and per-allocation fields.
     pub(crate) memory: Memory<'ctx, 'tcx>,
 
-    /// Bindings from MIR locals (names) to values and stack slots.
+    /// Bindings from MIR locals (names) to values, stack slots, and move-alias
+    /// sources.
     pub(crate) locals: Locals<'ctx, 'tcx>,
 
     // ── Execution-scoped data
     /// Transient per-step data (input path, inline stack, one-shot flags).
     pub(crate) exec: ExecCtx<'ctx, 'tcx>,
 
-    // ── Analysis metadata (MIR-level, not SMT terms)
-    /// Operand sources for guard inference: destination → (lhs, rhs) place keys,
-    /// with the operator kind for binary ops.  `Other` producers (e.g.
-    /// `select_unpredictable`) are not treated as pointer comparisons.
-    pub(crate) op_sources: FxHashMap<PlaceKey, OpSource>,
+    // ── Per-frame analysis metadata
+    /// Operand sources for guard inference and iterator pointer offsets,
+    /// checkpointed together around a call.
+    pub(crate) analysis: AnalysisCtx<'ctx>,
 
-    /// Move-alias chain: `local → source` for a whole-place move (`_3 = move _4`).
-    /// Lets `Owning` tell the call's own rebuilt owner (`boxed = move dest`) from
-    /// a *previous* call's owner (also a shallow field, but tracing to a
-    /// different destination).
-    pub(crate) move_sources: FxHashMap<Local, Local>,
-
-    // ── SMT data
-    /// SMT path condition: the accumulated branch/guard constraints along the
-    /// current path (`SwitchInt`/`Assert` branches plus API preconditions).
-    /// Asserted into the solver by [`Self::assert_all`] and by the property
-    /// checker's feasibility queries.
-    pub(crate) smt_path_conditions: Vec<Bool<'ctx>>,
+    // ── Solver constraints (accumulated program state)
+    /// Accumulated solver constraints along the current path: branch/guard
+    /// constraints (`SwitchInt`/`Assert`), API preconditions, and symbolic
+    /// layout facts (`sizeof_T`, `align_T`).  Asserted into the solver by
+    /// [`Self::assert_all`] and by the property checker's feasibility queries.
+    pub(crate) constraints: Vec<Bool<'ctx>>,
 
     /// The shared symbolic layout constants (`sizeof_T`, `align_T`) for generic
     /// types whose concrete layout is unknown at verification time.
-    pub(crate) smt_layout: LayoutCache<'ctx, 'tcx>,
-
-    /// Cumulative ptr offset for Iter/IterMut field [0] (ptr).
-    /// Key: (struct_local). When post_inc_start advances the ptr by
-    /// `n` elements, we increment this offset instead of nesting
-    /// symbolic additions. This keeps Z3 expressions compact.
-    pub(crate) smt_iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
-
-    /// Terms that are the result of a bitwise `Not` (two's-complement mask).
-    /// Used to recognize `x & !(align-1)` alignment patterns in BitAnd so we
-    /// can derive `align = -mask` and emit linear bounds for the result.
-    pub(crate) smt_not_mask_terms: FxHashSet<Int<'ctx>>,
+    pub(crate) layout: LayoutCache<'ctx, 'tcx>,
 }
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
@@ -606,13 +637,43 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             memory: Memory::default(),
             locals: Locals::default(),
             exec: ExecCtx::default(),
-            smt_path_conditions: Vec::new(),
-            op_sources: FxHashMap::default(),
-            move_sources: FxHashMap::default(),
-            smt_iter_ptr_offset: FxHashMap::default(),
-            smt_not_mask_terms: FxHashSet::default(),
-            smt_layout: LayoutCache::default(),
+            analysis: AnalysisCtx::default(),
+            constraints: Vec::new(),
+            layout: LayoutCache::default(),
         }
+    }
+
+    /// Capture the frame-scoped state before switching to an inlined callee.
+    ///
+    /// This is the single source of truth for *what* is frame-scoped: the
+    /// local bindings (`values`, `slots`, `local_fields`, `move_sources`) and
+    /// the per-frame analysis metadata (`op_sources`, `iter_ptr_offset`), plus
+    /// the current function identity.  Both inline mechanisms
+    /// (`handle_callee_entry` in path replay and `exec_inline_call`) call this,
+    /// so they can no longer drift apart.
+    pub(crate) fn save_frame(&mut self) -> FrameSnapshot<'ctx, 'tcx> {
+        FrameSnapshot {
+            body: self.body,
+            caller_def_id: self.caller_def_id,
+            values: std::mem::take(&mut self.locals.values),
+            slots: std::mem::take(&mut self.locals.slots),
+            local_fields: std::mem::take(&mut self.locals.local_fields),
+            move_sources: std::mem::take(&mut self.locals.move_sources),
+            op_sources: std::mem::take(&mut self.analysis.op_sources),
+            iter_ptr_offset: std::mem::take(&mut self.analysis.iter_ptr_offset),
+        }
+    }
+
+    /// Restore the frame-scoped state after an inlined callee returns.
+    pub(crate) fn restore_frame(&mut self, snapshot: FrameSnapshot<'ctx, 'tcx>) {
+        self.body = snapshot.body;
+        self.caller_def_id = snapshot.caller_def_id;
+        self.locals.values = snapshot.values;
+        self.locals.slots = snapshot.slots;
+        self.locals.local_fields = snapshot.local_fields;
+        self.locals.move_sources = snapshot.move_sources;
+        self.analysis.op_sources = snapshot.op_sources;
+        self.analysis.iter_ptr_offset = snapshot.iter_ptr_offset;
     }
 
     /// Look up the value bound to a MIR local.
@@ -874,7 +935,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Assert path conditions and invariant constraints into a solver.
     pub(crate) fn assert_all(&self, solver: &z3::Solver<'ctx>) {
-        for cond in &self.smt_path_conditions {
+        for cond in &self.constraints {
             solver.assert(cond);
         }
         let zero = Int::from_u64(self.ctx, 0);
@@ -931,7 +992,7 @@ impl std::fmt::Debug for VmState<'_, '_> {
         f.debug_struct("VmState")
             .field("locals_count", &self.locals.values.len())
             .field("allocations_count", &self.memory.allocations.len())
-            .field("smt_path_conditions", &self.smt_path_conditions.len())
+            .field("constraints", &self.constraints.len())
             .finish()
     }
 }
