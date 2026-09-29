@@ -374,14 +374,15 @@ pub(crate) struct ByteInfo<'ctx> {
 pub(crate) struct InlineFrame<'ctx, 'tcx> {
     pub body: &'ctx Body<'tcx>,
     pub def_id: DefId,
-    pub saved_locals: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
-    pub saved_field_values: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
+    pub saved_values: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
+    pub saved_local_fields: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
     pub saved_move_sources: FxHashMap<Local, Local>,
 }
 
 /// State owned by the inlined-callee execution (`exec_inline_call`): the
 /// recursion depth, the caller-frame stack, and the temporary bindings that are
 /// swapped in on entry and restored on exit.
+#[derive(Default)]
 pub(crate) struct InlineCtx<'ctx, 'tcx> {
     /// Current depth of the recursive `exec_inline_call` stack.  `exec_call`
     /// re-enters inline execution with `depth = 0` on every nested call, so a
@@ -396,7 +397,7 @@ pub(crate) struct InlineCtx<'ctx, 'tcx> {
     /// self` reborrow temp back to the caller's referent.
     pub arg_referents: Vec<Option<Local>>,
     /// Field writes collected during `exec_inline_call` that must be applied to
-    /// the caller's `field_values` *after* the inline frame is popped (the
+    /// the caller's `local_fields` *after* the inline frame is popped (the
     /// caller's field map is not live while the callee executes).  Each entry is
     /// `(caller_referent_local, field_path, value)`.
     pub deferred_field_writes: Vec<(Local, Vec<usize>, VmValue<'ctx, 'tcx>)>,
@@ -431,6 +432,99 @@ impl OpSource {
     }
 }
 
+/// Execution-scoped data, as opposed to program-state data.
+///
+/// `path` is the input path currently being replayed (consumed by branch
+/// resolution), `inline` is the inlined-callee stack, and `contract_flags` /
+/// `last_call_callee` describe the *current step* rather than anything
+/// accumulated across the whole path. These are transient: they are reset or
+/// overwritten per step, so they are kept apart from [`Memory`]/[`Locals`] and
+/// the path conditions that describe the accumulated program state.
+#[derive(Default)]
+pub(crate) struct ExecCtx<'ctx, 'tcx> {
+    /// The path being executed (for branch target resolution).
+    pub(crate) path: Option<Path>,
+
+    /// Block occurrence cursor: how many times each block has been entered so
+    /// far while walking `path`, used to disambiguate the `k`-th loop iteration
+    /// when resolving a `SwitchInt` successor.
+    pub(crate) block_occurrences: FxHashMap<BasicBlock, usize>,
+
+    /// Inlined-callee execution state (depth, frame stack, and per-call
+    /// temporary bindings swapped on entry / restored on exit).
+    pub(crate) inline: InlineCtx<'ctx, 'tcx>,
+
+    /// One-shot execution/contract flags accumulated while stepping a path.
+    pub(crate) contract_flags: ContractFlags,
+
+    /// `DefId` of the most recent call (for `DefId`-based API classification).
+    pub(crate) last_call_callee: Option<DefId>,
+}
+
+/// The object space: every allocation plus the per-allocation contents that are
+/// keyed purely by `AllocId` (fields and byte state).
+///
+/// This is the *address/place* layer — the memory that values live in — kept
+/// separate from [`Locals`], which binds MIR locals (names) to values. Grouping
+/// these maps keeps `next_alloc_id` consistent with `allocations.len()` and
+/// makes the `AllocId`-keyed field/byte tables evolve together.
+#[derive(Default)]
+pub(crate) struct Memory<'ctx, 'tcx> {
+    /// All known allocations.
+    pub(crate) allocations: Vec<Allocation<'ctx, 'tcx>>,
+
+    /// The next allocation ID.
+    pub(crate) next_alloc_id: usize,
+
+    /// Per-byte symbolic state: (alloc_id, concrete_byte_offset) → ByteInfo.
+    /// Populated by aggregate initialisation, pointer stores, and write call
+    /// effects. Enables byte-level reasoning for properties like ValidCStr.
+    pub(crate) bytes: FxHashMap<(AllocId, usize), ByteInfo<'ctx>>,
+
+    /// Per-allocation field tracking: (alloc_id, viewed_type, field_indices) →
+    /// value, i.e. the value of a field *within an allocation* viewed as
+    /// `viewed_type`.  The `viewed_type` distinguishes reinterprets of the same
+    /// allocation under different ADTs (e.g. `LeafNode` vs `InternalNode` cast
+    /// views), so field index `1` resolves to `parent_idx` under `LeafNode` and
+    /// `edges` under `InternalNode` without colliding.
+    pub(crate) fields: FxHashMap<(AllocId, Ty<'tcx>, Vec<usize>), VmValue<'ctx, 'tcx>>,
+}
+
+/// Bindings from MIR locals (names) to values and places.
+///
+/// This is the *value* layer: `values` is the rvalue each local holds, `slots`
+/// is the stack allocation backing each local's place (lvalue identity), and
+/// `local_fields` is a local-keyed cache of field values (mirrors
+/// [`Memory::fields`]'s alloc-keyed entries for pointee decomposition).
+#[derive(Default)]
+pub(crate) struct Locals<'ctx, 'tcx> {
+    /// Current value bound to each MIR local (rvalue).
+    pub(crate) values: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
+
+    /// The stack allocation backing each local's place (lvalue identity).
+    pub(crate) slots: FxHashMap<Local, AllocId>,
+
+    /// Field-level value tracking for aggregates: (local, field_indices) → value.
+    /// Example: `(local_3, [0])` is `local_3.0`, `(local_3, [0, 1])` is `local_3.0.1`.
+    pub(crate) local_fields: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
+}
+
+/// Shared symbolic layout constants for generic types whose concrete layout is
+/// unknown at verification time (an unconstrained `T`).
+///
+/// One constant per type keeps `ptr.add` strides, `access_bytes` element sizes,
+/// and allocation sizes consistent so that SMT can cancel the `S` factor in
+/// `InBound` (`(mid+n)·S <= len·S ⟺ mid+n <= len`); the alignment constant is
+/// linked to the size by the layout constraint `sizeof_T % align_T == 0`.
+#[derive(Default)]
+pub(crate) struct LayoutCache<'ctx, 'tcx> {
+    /// `sizeof_T` for each generic type, one symbolic constant per type.
+    pub(crate) sizes: FxHashMap<Ty<'tcx>, Int<'ctx>>,
+
+    /// `align_T` for each generic type, one symbolic constant per type.
+    pub(crate) aligns: FxHashMap<Ty<'tcx>, Int<'ctx>>,
+}
+
 /// The full symbolic execution state at a program point.
 ///
 /// Accumulates locals, allocations, path conditions, and definitions
@@ -450,50 +544,18 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// The MIR body being executed.
     pub(crate) body: &'ctx Body<'tcx>,
 
-    // ── Values
-    /// Current value bound to each MIR local.
-    pub(crate) locals: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
+    // ── Memory + local bindings (the two-state layers)
+    /// The object space: allocations, per-byte state, and per-allocation fields.
+    pub(crate) memory: Memory<'ctx, 'tcx>,
 
-    /// Allocation ID for each stack-allocated local.
-    pub(crate) local_alloc_ids: FxHashMap<Local, AllocId>,
+    /// Bindings from MIR locals (names) to values and stack slots.
+    pub(crate) locals: Locals<'ctx, 'tcx>,
 
-    /// Field-level value tracking for aggregates: (local, field_indices) → value.
-    /// Example: `(local_3, [0])` is `local_3.0`, `(local_3, [0, 1])` is `local_3.0.1`.
-    pub(crate) field_values: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
+    // ── Execution-scoped data
+    /// Transient per-step data (input path, inline stack, one-shot flags).
+    pub(crate) exec: ExecCtx<'ctx, 'tcx>,
 
-    /// Per-allocation field tracking: (alloc_id, viewed_type, field_indices) →
-    /// value.  This mirrors `field_values` but is keyed by allocation instead of
-    /// local, so a `&*NonNull<ADT>` dereference can resolve the pointee's fields
-    /// (e.g. `(*leaf).len`) regardless of which local holds the pointer.  The
-    /// `viewed_type` distinguishes reinterprets of the same allocation under
-    /// different ADTs (e.g. `LeafNode` vs `InternalNode` cast views), so field
-    /// index `1` resolves to `parent_idx` under `LeafNode` and `edges` under
-    /// `InternalNode` without colliding.
-    pub(crate) alloc_field_values: FxHashMap<(AllocId, Ty<'tcx>, Vec<usize>), VmValue<'ctx, 'tcx>>,
-
-    // ── Memory
-    /// All known allocations.
-    pub(crate) allocations: Vec<Allocation<'ctx, 'tcx>>,
-
-    /// The next allocation ID.
-    pub(crate) next_alloc_id: usize,
-
-    /// Per-byte symbolic state: (alloc_id, concrete_byte_offset) → ByteInfo.
-    /// Populated by aggregate initialisation, pointer stores, and write call
-    /// effects. Enables byte-level reasoning for properties like ValidCStr.
-    pub(crate) bytes: FxHashMap<(AllocId, usize), ByteInfo<'ctx>>,
-
-    // ── Path constraints
-    /// The path being executed (for branch target resolution).
-    pub(crate) path: Option<Path>,
-
-    /// Accumulated path conditions (SwitchInt branches, Assert).
-    pub(crate) path_conditions: Vec<Bool<'ctx>>,
-
-    /// Track block occurrence counts for loop-carried value indexing.
-    pub(crate) block_occurrences: FxHashMap<BasicBlock, usize>,
-
-    // ── Analysis metadata
+    // ── Analysis metadata (MIR-level, not SMT terms)
     /// Operand sources for guard inference: destination → (lhs, rhs) place keys,
     /// with the operator kind for binary ops.  `Other` producers (e.g.
     /// `select_unpredictable`) are not treated as pointer comparisons.
@@ -505,42 +567,27 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// different destination).
     pub(crate) move_sources: FxHashMap<Local, Local>,
 
+    // ── SMT data
+    /// SMT path condition: the accumulated branch/guard constraints along the
+    /// current path (`SwitchInt`/`Assert` branches plus API preconditions).
+    /// Asserted into the solver by [`Self::assert_all`] and by the property
+    /// checker's feasibility queries.
+    pub(crate) smt_path_conditions: Vec<Bool<'ctx>>,
+
+    /// The shared symbolic layout constants (`sizeof_T`, `align_T`) for generic
+    /// types whose concrete layout is unknown at verification time.
+    pub(crate) smt_layout: LayoutCache<'ctx, 'tcx>,
+
     /// Cumulative ptr offset for Iter/IterMut field [0] (ptr).
     /// Key: (struct_local). When post_inc_start advances the ptr by
     /// `n` elements, we increment this offset instead of nesting
     /// symbolic additions. This keeps Z3 expressions compact.
-    pub(crate) iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
+    pub(crate) smt_iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
 
     /// Terms that are the result of a bitwise `Not` (two's-complement mask).
     /// Used to recognize `x & !(align-1)` alignment patterns in BitAnd so we
     /// can derive `align = -mask` and emit linear bounds for the result.
-    pub(crate) not_mask_terms: FxHashSet<Int<'ctx>>,
-
-    // ── Symbolic layout
-    /// Symbolic element size for generic types whose concrete `size_of` is
-    /// unknown at verification time (e.g. an unconstrained `T`).  A single
-    /// symbolic constant per type keeps `ptr.add` strides, `access_bytes`
-    /// element sizes, and allocation sizes consistent so that SMT can cancel the
-    /// factor in `InBound` (e.g. `(mid+n)·S <= len·S  ⟺  mid+n <= len`).
-    pub(crate) sym_sizes: FxHashMap<Ty<'tcx>, Int<'ctx>>,
-
-    /// Symbolic element alignment for generic types whose concrete `align_of`
-    /// is unknown at verification time (an unconstrained `T`).  One constant
-    /// per type, linked to `sym_sizes` by the layout constraint
-    /// `sizeof_T % align_T == 0`.
-    pub(crate) sym_aligns: FxHashMap<Ty<'tcx>, Int<'ctx>>,
-
-    // ── Inlining
-    /// Inlined-callee execution state (depth, frame stack, and per-call
-    /// temporary bindings swapped on entry / restored on exit).
-    pub(crate) inline: InlineCtx<'ctx, 'tcx>,
-
-    // ── Misc
-    /// One-shot execution/contract flags accumulated while stepping a path.
-    pub(crate) contract_flags: ContractFlags,
-
-    /// `DefId` of the most recent call (for `DefId`-based API classification).
-    pub(crate) last_call_callee: Option<DefId>,
+    pub(crate) smt_not_mask_terms: FxHashSet<Int<'ctx>>,
 }
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
@@ -556,48 +603,33 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             tcx,
             body,
             caller_def_id,
-            locals: FxHashMap::default(),
-            local_alloc_ids: FxHashMap::default(),
-            allocations: Vec::new(),
-            path_conditions: Vec::new(),
-            next_alloc_id: 0,
-            block_occurrences: FxHashMap::default(),
+            memory: Memory::default(),
+            locals: Locals::default(),
+            exec: ExecCtx::default(),
+            smt_path_conditions: Vec::new(),
             op_sources: FxHashMap::default(),
             move_sources: FxHashMap::default(),
-            contract_flags: ContractFlags::default(),
-            field_values: FxHashMap::default(),
-            alloc_field_values: FxHashMap::default(),
-            iter_ptr_offset: FxHashMap::default(),
-            bytes: FxHashMap::default(),
-            path: None,
-            last_call_callee: None,
-            inline: InlineCtx {
-                depth: 0,
-                frames: Vec::new(),
-                arg_referents: Vec::new(),
-                deferred_field_writes: Vec::new(),
-            },
-            not_mask_terms: FxHashSet::default(),
-            sym_sizes: FxHashMap::default(),
-            sym_aligns: FxHashMap::default(),
+            smt_iter_ptr_offset: FxHashMap::default(),
+            smt_not_mask_terms: FxHashSet::default(),
+            smt_layout: LayoutCache::default(),
         }
     }
 
     /// Look up the value bound to a MIR local.
     pub(crate) fn local_value(&self, local: Local) -> Option<&VmValue<'ctx, 'tcx>> {
-        self.locals.get(&local)
+        self.locals.values.get(&local)
     }
 
     /// Bind a value to a MIR local.
     pub(crate) fn set_local(&mut self, local: Local, value: VmValue<'ctx, 'tcx>) {
-        self.locals.insert(local, value);
+        self.locals.values.insert(local, value);
     }
 
     /// Get the symbolic address of a MIR local (its stack allocation's base).
     pub(crate) fn local_address(&mut self, local: Local) -> Int<'ctx> {
         self.ensure_local_allocation(local);
-        let id = self.local_alloc_ids[&local];
-        self.allocations[id.0].base.clone()
+        let id = self.locals.slots[&local];
+        self.memory.allocations[id.0].base.clone()
     }
 
     /// Allocate a fresh symbolic object and return its ID and base address.
@@ -646,8 +678,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         element_ty: Option<Ty<'tcx>>,
         kind: AllocKind<'ctx>,
     ) -> (AllocId, Int<'ctx>) {
-        let id = AllocId(self.next_alloc_id);
-        self.next_alloc_id += 1;
+        let id = AllocId(self.memory.next_alloc_id);
+        self.memory.next_alloc_id += 1;
         let base = {
             let name = format!(
                 "{}_{}",
@@ -661,18 +693,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             Int::new_const(self.ctx, name.as_str())
         };
         let alloc = Allocation::new(base.clone(), size, align, element_ty, kind);
-        self.allocations.push(alloc);
+        self.memory.allocations.push(alloc);
         (id, base)
     }
 
     /// Indexed access to an allocation by its `AllocId` (the id is the index).
     pub(crate) fn alloc(&self, id: AllocId) -> &Allocation<'ctx, 'tcx> {
-        &self.allocations[id.0]
+        &self.memory.allocations[id.0]
     }
 
     /// Mutable indexed access to an allocation by its `AllocId`.
     pub(crate) fn alloc_mut(&mut self, id: AllocId) -> &mut Allocation<'ctx, 'tcx> {
-        &mut self.allocations[id.0]
+        &mut self.memory.allocations[id.0]
     }
 
     /// The ultimate root allocation, following `parent` chains (sub-allocations
@@ -684,7 +716,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         while let Some(parent) = self.alloc(cur).parent {
             cur = parent;
             guard += 1;
-            if guard > self.allocations.len() {
+            if guard > self.memory.allocations.len() {
                 break;
             }
         }
@@ -699,7 +731,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Get the value of a specific field within an aggregate local.
     pub(crate) fn field_value(&self, local: Local, path: &[usize]) -> Option<&VmValue<'ctx, 'tcx>> {
-        self.field_values.get(&(local, path.to_vec()))
+        self.locals.local_fields.get(&(local, path.to_vec()))
     }
 
     /// The field carrying an owned value's heap pointer (`Box.0.0`/`Vec.0.0`,
@@ -709,7 +741,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.field_value(local, &[0, 0])
             .filter(|v| v.provenance_alloc_id().is_some())
             .or_else(|| {
-                self.field_values
+                self.locals
+                    .local_fields
                     .iter()
                     .find(|((l, _), v)| *l == local && v.provenance_alloc_id().is_some())
                     .map(|(_, v)| v)
@@ -723,53 +756,53 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         path: Vec<usize>,
         value: VmValue<'ctx, 'tcx>,
     ) {
-        self.field_values.insert((local, path), value);
+        self.locals.local_fields.insert((local, path), value);
     }
 
     /// Record a per-byte symbolic value at a concrete offset in an allocation.
     pub(crate) fn record_byte_value(&mut self, alloc_id: AllocId, offset: usize, term: Int<'ctx>) {
-        let byte = self.bytes.entry((alloc_id, offset)).or_default();
+        let byte = self.memory.bytes.entry((alloc_id, offset)).or_default();
         byte.value = Some(term);
         byte.init = true;
     }
 
     /// Mark a byte as initialized without changing its value.
     pub(crate) fn mark_byte_init(&mut self, alloc_id: AllocId, offset: usize) {
-        self.bytes.entry((alloc_id, offset)).or_default().init = true;
+        self.memory.bytes.entry((alloc_id, offset)).or_default().init = true;
     }
 
     /// Mark a byte as known NUL (0x00).
     pub(crate) fn mark_byte_nul(&mut self, alloc_id: AllocId, offset: usize) {
-        self.bytes.entry((alloc_id, offset)).or_default().nul = Some(true);
+        self.memory.bytes.entry((alloc_id, offset)).or_default().nul = Some(true);
     }
 
     /// Mark a byte as known non-NUL (!= 0x00).
     pub(crate) fn mark_byte_non_nul(&mut self, alloc_id: AllocId, offset: usize) {
-        self.bytes.entry((alloc_id, offset)).or_default().nul = Some(false);
+        self.memory.bytes.entry((alloc_id, offset)).or_default().nul = Some(false);
     }
 
     /// Look up a per-byte Z3 term for a concrete offset in an allocation.
     pub(crate) fn get_byte_value(&self, alloc_id: AllocId, offset: usize) -> Option<&Int<'ctx>> {
-        self.bytes
+        self.memory.bytes
             .get(&(alloc_id, offset))
             .and_then(|b| b.value.as_ref())
     }
 
     /// Check whether a byte at a concrete offset is known to be initialized.
     pub(crate) fn is_byte_init(&self, alloc_id: AllocId, offset: usize) -> bool {
-        self.bytes.get(&(alloc_id, offset)).is_some_and(|b| b.init)
+        self.memory.bytes.get(&(alloc_id, offset)).is_some_and(|b| b.init)
     }
 
     /// Check whether a byte at a concrete offset is known to be NUL.
     pub(crate) fn is_byte_nul(&self, alloc_id: AllocId, offset: usize) -> bool {
-        self.bytes
+        self.memory.bytes
             .get(&(alloc_id, offset))
             .is_some_and(|b| b.nul == Some(true))
     }
 
     /// Check whether a byte at a concrete offset is known to be non-NUL.
     pub(crate) fn is_byte_non_nul(&self, alloc_id: AllocId, offset: usize) -> bool {
-        self.bytes
+        self.memory.bytes
             .get(&(alloc_id, offset))
             .is_some_and(|b| b.nul == Some(false))
     }
@@ -777,7 +810,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Return all known (offset, term) pairs for an allocation, sorted by offset.
     pub(crate) fn alloc_byte_values(&self, alloc_id: AllocId) -> Vec<(usize, &Int<'ctx>)> {
         let mut pairs: Vec<_> = self
-            .bytes
+            .memory.bytes
             .iter()
             .filter_map(|((aid, off), byte)| {
                 if *aid == alloc_id {
@@ -793,7 +826,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Collect all offsets known to be NUL in an allocation.
     pub(crate) fn alloc_nul_offsets(&self, alloc_id: AllocId) -> Vec<usize> {
-        self.bytes
+        self.memory.bytes
             .iter()
             .filter_map(|((aid, off), byte)| {
                 if *aid == alloc_id && byte.nul == Some(true) {
@@ -807,7 +840,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Collect all offsets known to be non-NUL in an allocation.
     pub(crate) fn alloc_non_nul_offsets(&self, alloc_id: AllocId) -> Vec<usize> {
-        self.bytes
+        self.memory.bytes
             .iter()
             .filter_map(|((aid, off), byte)| {
                 if *aid == alloc_id && byte.nul == Some(false) {
@@ -823,7 +856,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// allocation to another.
     pub(crate) fn copy_byte_tracking(&mut self, src: AllocId, src_offset: usize, dst: AllocId) {
         let infos: Vec<(usize, ByteInfo<'ctx>)> = self
-            .bytes
+            .memory.bytes
             .iter()
             .filter(|((aid, _), _)| *aid == src)
             .map(|((_, off), byte)| (*off, byte.clone()))
@@ -834,18 +867,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             // src_offset]`).  Bytes before `src_offset` lie outside the sub-slice
             // and are dropped.
             if off >= src_offset {
-                self.bytes.insert((dst, off - src_offset), byte);
+                self.memory.bytes.insert((dst, off - src_offset), byte);
             }
         }
     }
 
     /// Assert path conditions and invariant constraints into a solver.
     pub(crate) fn assert_all(&self, solver: &z3::Solver<'ctx>) {
-        for cond in &self.path_conditions {
+        for cond in &self.smt_path_conditions {
             solver.assert(cond);
         }
         let zero = Int::from_u64(self.ctx, 0);
-        for alloc in &self.allocations {
+        for alloc in &self.memory.allocations {
             if !alloc.is_external() {
                 solver.assert(&alloc.base._eq(&zero).not());
             }
@@ -855,10 +888,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         }
 
-        for (_local, value) in self.locals.iter() {
+        for (_local, value) in self.locals.values.iter() {
             self.assert_value_constraints(solver, value);
         }
-        for value in self.field_values.values() {
+        for value in self.locals.local_fields.values() {
             self.assert_value_constraints(solver, value);
         }
     }
@@ -896,9 +929,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 impl std::fmt::Debug for VmState<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VmState")
-            .field("locals_count", &self.locals.len())
-            .field("allocations_count", &self.allocations.len())
-            .field("path_conditions", &self.path_conditions.len())
+            .field("locals_count", &self.locals.values.len())
+            .field("allocations_count", &self.memory.allocations.len())
+            .field("smt_path_conditions", &self.smt_path_conditions.len())
             .finish()
     }
 }
@@ -976,7 +1009,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Look up the value stored at a MIR place.
     pub(crate) fn value_of_place(&self, place: &Place<'tcx>) -> Option<VmValue<'ctx, 'tcx>> {
         if place.projection.is_empty() {
-            return self.locals.get(&place.local).cloned();
+            return self.locals.values.get(&place.local).cloned();
         }
 
         // Collect field indices from projections
@@ -992,8 +1025,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // If we have a pure field path (only Field / Downcast projections),
         // look up in the per-field value map first.  For `Option`/`ControlFlow`,
         // the variant's data is stored under the same field index as the enum
-        // field (the discriminant is tracked separately, not in field_values),
-        // so `(x as Some).0` resolves to `field_values[x][0]`.
+        // field (the discriminant is tracked separately, not in local_fields),
+        // so `(x as Some).0` resolves to `local_fields[x][0]`.
         let is_pure_field = place.projection.iter().all(|p| {
             matches!(
                 p.kind(),
@@ -1006,7 +1039,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .any(|p| matches!(p.kind(), ProjectionElem::Downcast(..)));
         if !field_path.is_empty() && is_pure_field {
             if let Some(val) = self
-                .field_values
+                .locals
+                .local_fields
                 .get(&(place.local, field_path.clone()))
                 .cloned()
             {
@@ -1017,7 +1051,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // to field accesses. This handles pointer-wrapper types (Box,
                 // Unique, NonNull) where accessing inner pointer fields yields
                 // the same provenance as the container.
-                if let Some(base_val) = self.locals.get(&place.local) {
+                if let Some(base_val) = self.locals.values.get(&place.local) {
                     if let Some(ref prov) = base_val.provenance {
                         return Some(VmValue {
                             term: base_val.term.clone(),
@@ -1039,7 +1073,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
 
         // For Deref+Field chains (e.g. (*self).ptr), strip the leading Deref
-        // projection(s) and look up field_values with the remaining field path.
+        // projection(s) and look up local_fields with the remaining field path.
         if !field_path.is_empty()
             && field_path.len() < place.projection.len()
             && place
@@ -1061,7 +1095,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             });
             if non_field_deref {
                 if let Some(val) = self
-                    .field_values
+                    .locals
+                    .local_fields
                     .get(&(place.local, field_path.clone()))
                     .cloned()
                 {
@@ -1073,12 +1108,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `decompose_pointee_fields`).  The viewed type (pointee) is part
                 // of the key so reinterpret casts (e.g. `LeafNode` → `InternalNode`)
                 // resolve to the right field view.
-                if let Some(base_val) = self.locals.get(&place.local) {
+                if let Some(base_val) = self.locals.values.get(&place.local) {
                     if let Some(alloc_id) = base_val.provenance_alloc_id() {
                         let view_ty = crate::helpers::mir_utils::pointee_ty(base_val.ty)
                             .unwrap_or(base_val.ty);
                         if let Some(val) = self
-                            .alloc_field_values
+                            .memory.fields
                             .get(&(alloc_id, view_ty, field_path.clone()))
                             .cloned()
                         {
@@ -1092,7 +1127,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Handle Deref + Field projections: follow the dereference chain to
         // get the pointee base, then apply field offsets.
         // E.g. `(*self).ptr` → Deref then Field(0).
-        let mut base = self.locals.get(&place.local)?.clone();
+        let mut base = self.locals.values.get(&place.local)?.clone();
         for proj in place.projection.iter() {
             match proj.kind() {
                 ProjectionElem::Deref => {
@@ -1102,7 +1137,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // Try to get the field value from the VM's field tracking
                     if !field_path.is_empty() {
                         if let Some(val) = self
-                            .field_values
+                            .locals
+                            .local_fields
                             .get(&(place.local, field_path.clone()))
                             .cloned()
                         {
@@ -1130,7 +1166,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             };
                             let elem_sz = self.size_of_ty(inner_ty) as usize;
                             let step = elem_sz.max(1);
-                            if let Some(index_val) = self.locals.get(local) {
+                            if let Some(index_val) = self.locals.values.get(local) {
                                 if let Some(concrete_idx) = index_val.term.as_u64() {
                                     let offset = concrete_idx as usize * step;
                                     let term = self
@@ -1175,7 +1211,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         // (`let r = &mut self.v`) should yield the field's
                         // *value* (materialized by `propagate_field_values_to_ref`
                         // at the empty field path), not the field's address.
-                        if let Some(v) = self.field_values.get(&(place.local, Vec::new())).cloned()
+                        if let Some(v) = self
+                            .locals
+                            .local_fields
+                            .get(&(place.local, Vec::new()))
+                            .cloned()
                         {
                             return Some(v);
                         }

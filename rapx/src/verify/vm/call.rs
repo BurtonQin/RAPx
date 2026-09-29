@@ -113,7 +113,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     crate::verify::call_summary::interprocedural::try_field_load_effect(self.tcx, c)
                 {
                     self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
-                    self.last_call_callee = callee;
+                    self.exec.last_call_callee = callee;
                     self.materialize_const_bytes_after_call(args, destination);
                     return;
                 }
@@ -123,7 +123,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     )
                 {
                     self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
-                    self.last_call_callee = callee;
+                    self.exec.last_call_callee = callee;
                     self.materialize_const_bytes_after_call(args, destination);
                     return;
                 }
@@ -131,7 +131,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     crate::verify::call_summary::interprocedural::try_branch_effect(self.tcx, c)
                 {
                     self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
-                    self.last_call_callee = callee;
+                    self.exec.last_call_callee = callee;
                     self.materialize_const_bytes_after_call(args, destination);
                     return;
                 }
@@ -141,7 +141,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     )
                 {
                     self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
-                    self.last_call_callee = callee;
+                    self.exec.last_call_callee = callee;
                     self.materialize_const_bytes_after_call(args, destination);
                     return;
                 }
@@ -151,7 +151,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     )
                 {
                     self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
-                    self.last_call_callee = callee;
+                    self.exec.last_call_callee = callee;
                     self.materialize_const_bytes_after_call(args, destination);
                     return;
                 }
@@ -194,12 +194,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // shared symbolic `sizeof_T` / `align_T` so it agrees with allocation
         // sizes and pointer strides.
         if self.try_size_align_effect(func, destination) {
-            self.last_call_callee = callee;
+            self.exec.last_call_callee = callee;
             self.materialize_const_bytes_after_call(args, destination);
             return;
         }
 
-        self.last_call_callee = callee;
+        self.exec.last_call_callee = callee;
 
         if !summary.unsupported {
             for effect in &summary.effects {
@@ -212,16 +212,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if api_classify::is_std_ordering(adt_def.did()) {
                     let minus_one = Int::from_i64(self.ctx, -1);
                     let one = Int::from_i64(self.ctx, 1);
-                    self.path_conditions.push(term.ge(&minus_one));
-                    self.path_conditions.push(term.le(&one));
+                    self.smt_path_conditions.push(term.ge(&minus_one));
+                    self.smt_path_conditions.push(term.le(&one));
                 }
             }
             // bool return (bool, Result::ok/err, etc.) — constrain to {0, 1}
             if dest_ty.is_bool() {
                 let zero = Int::from_u64(self.ctx, 0);
                 let one = Int::from_u64(self.ctx, 1);
-                self.path_conditions.push(term.ge(&zero));
-                self.path_conditions.push(term.le(&one));
+                self.smt_path_conditions.push(term.ge(&zero));
+                self.smt_path_conditions.push(term.le(&one));
             }
             self.set_local(
                 destination,
@@ -258,7 +258,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let dest_ty = self.body.local_decls[destination].ty;
         let eq1 = term._eq(&arg_values[1].term);
         let eq2 = term._eq(&arg_values[2].term);
-        self.path_conditions.push(Bool::or(self.ctx, &[&eq1, &eq2]));
+        self.smt_path_conditions.push(Bool::or(self.ctx, &[&eq1, &eq2]));
         let prov = arg_values[1]
             .provenance
             .clone()
@@ -641,7 +641,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             val.ty = dest_ty;
             val.invariants.non_null = true;
             let zero = Int::from_u64(self.ctx, 0);
-            self.path_conditions.push(ptr.term._eq(&zero).not());
+            self.smt_path_conditions.push(ptr.term._eq(&zero).not());
             self.set_local(destination, val);
         } else {
             // ptr may be null, so the Option may be None — keep it symbolic.
@@ -693,7 +693,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Compute is_empty from fields/tracked offset (same as is_empty()).
         let sz = self.iter_elem_size(ptr);
         let ep_offset = ep.offset.clone();
-        let remaining = if let Some(off) = self.iter_ptr_offset.get(&local) {
+        let remaining = if let Some(off) = self.smt_iter_ptr_offset.get(&local) {
             let base_len = ep_offset.div(&sz);
             let zero = Int::from_u64(self.ctx, 0);
             off.gt(&base_len)
@@ -704,10 +704,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         };
         let is_empty = remaining._eq(&Int::from_u64(self.ctx, 0));
         // The returned element is the *current* position: the tracked element
-        // index (iter_ptr_offset) scaled by the element stride, or the base
+        // index (smt_iter_ptr_offset) scaled by the element stride, or the base
         // ptr offset on the first call.
         let zero = Int::from_u64(self.ctx, 0);
-        let cur_off = match self.iter_ptr_offset.get(&local) {
+        let cur_off = match self.smt_iter_ptr_offset.get(&local) {
             Some(prev) => Int::mul(self.ctx, &[prev, &sz]),
             None => pp.offset.clone(),
         };
@@ -730,16 +730,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         };
         // Advance ptr when not empty
         let one_term = Int::from_u64(self.ctx, 1);
-        let new_offset = match self.iter_ptr_offset.get(&local) {
+        let new_offset = match self.smt_iter_ptr_offset.get(&local) {
             Some(prev) => Int::add(self.ctx, &[prev, &one_term]),
             None => one_term.clone(),
         };
         // Assert !is_empty as path condition (remaining > 0)
-        self.path_conditions.push(remaining.gt(&zero));
+        self.smt_path_conditions.push(remaining.gt(&zero));
         // Push: base_len >= tracked_offset
         let base_len = ep_offset.div(&sz);
-        self.path_conditions.push(new_offset.le(&base_len));
-        self.iter_ptr_offset.insert(local, new_offset);
+        self.smt_path_conditions.push(new_offset.le(&base_len));
+        self.smt_iter_ptr_offset.insert(local, new_offset);
         // Return None or old ptr
         let result_val = VmValue {
             term: is_empty.ite(&zero, &old_ptr_val.term),
@@ -766,7 +766,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         args: &[Spanned<Operand<'tcx>>],
         destination: Local,
     ) {
-        if let Some(mut dv) = self.locals.get(&destination).cloned() {
+        if let Some(mut dv) = self.locals.values.get(&destination).cloned() {
             let dest_ty = dv.ty;
             let pointee_is_byte_like = match dest_ty.kind() {
                 rustc_middle::ty::TyKind::RawPtr(inner, _)
@@ -810,10 +810,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         caller_arg_locals: &[Option<Local>],
         dest: Local,
     ) -> bool {
-        if self.inline.depth >= MAX_INLINE_DEPTH {
+        if self.exec.inline.depth >= MAX_INLINE_DEPTH {
             return false;
         }
-        self.inline.depth += 1;
+        self.exec.inline.depth += 1;
 
         // Only inline small, branch-free functions. `inline_execute_body`
         // follows every `SwitchInt` target without forking state, so a real
@@ -853,7 +853,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         });
         if arg_values.len() > 4 || callee_body.basic_blocks.len() > 16 || n_return > 1 || has_switch
         {
-            self.inline.depth -= 1;
+            self.exec.inline.depth -= 1;
             return false;
         }
 
@@ -875,14 +875,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .collect();
         let saved_body = self.body;
         let saved_caller = self.caller_def_id;
-        let saved_locals = std::mem::take(&mut self.locals);
-        let saved_field_values = std::mem::take(&mut self.field_values);
-        let saved_local_alloc_ids = std::mem::take(&mut self.local_alloc_ids);
+        let saved_values = std::mem::take(&mut self.locals.values);
+        let saved_local_fields = std::mem::take(&mut self.locals.local_fields);
+        let saved_slots = std::mem::take(&mut self.locals.slots);
         let saved_op_sources = std::mem::take(&mut self.op_sources);
-        let saved_iter_ptr_offset = std::mem::take(&mut self.iter_ptr_offset);
+        let saved_iter_ptr_offset = std::mem::take(&mut self.smt_iter_ptr_offset);
         let saved_inline_arg_referents =
-            std::mem::replace(&mut self.inline.arg_referents, inline_arg_referents);
-        let saved_deferred_field_writes = std::mem::take(&mut self.inline.deferred_field_writes);
+            std::mem::replace(&mut self.exec.inline.arg_referents, inline_arg_referents);
+        let saved_deferred_field_writes = std::mem::take(&mut self.exec.inline.deferred_field_writes);
 
         // ── Switch to callee context ──
         self.body = callee_body;
@@ -895,7 +895,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.set_local(callee_local, arg_val.clone());
         }
 
-        // Propagate field_values from caller arg locals into the callee
+        // Propagate local_fields from caller arg locals into the callee
         // context so that inline body can access struct fields (e.g.
         // Iter::ptr / end_or_len for len/is_empty computations).
         for (i, caller_arg_opt) in caller_arg_locals.iter().enumerate() {
@@ -914,13 +914,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             for src in source_locals {
-                let caller_field_keys: Vec<Vec<usize>> = saved_field_values
+                let caller_field_keys: Vec<Vec<usize>> = saved_local_fields
                     .keys()
                     .filter(|(l, _)| *l == src)
                     .map(|(_, f)| f.clone())
                     .collect();
                 for fields in caller_field_keys {
-                    if let Some(fv) = saved_field_values.get(&(src, fields.clone())).cloned() {
+                    if let Some(fv) = saved_local_fields.get(&(src, fields.clone())).cloned() {
                         self.set_field_value(callee_param, fields, fv);
                     }
                 }
@@ -931,7 +931,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.inline_execute_body();
 
         // ── Capture return value and its per-field values ──
-        let return_val = self.locals.get(&Local::from_usize(0)).cloned();
+        let return_val = self.locals.values.get(&Local::from_usize(0)).cloned();
         crate::rap_debug!(
             "exec_inline_call: callee={:?} return_val={:?}",
             callee_def_id,
@@ -940,7 +940,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 .map(|v| (v.term.to_string(), v.invariants.non_null))
         );
         let return_fields: Vec<(Vec<usize>, VmValue<'ctx, 'tcx>)> = self
-            .field_values
+            .locals
+            .local_fields
             .iter()
             .filter(|((l, _), _)| *l == Local::from_usize(0))
             .map(|((_, path), val)| (path.clone(), val.clone()))
@@ -949,20 +950,20 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // ── Restore caller context ──
         self.body = saved_body;
         self.caller_def_id = saved_caller;
-        self.locals = saved_locals;
-        self.field_values = saved_field_values;
-        self.local_alloc_ids = saved_local_alloc_ids;
+        self.locals.values = saved_values;
+        self.locals.local_fields = saved_local_fields;
+        self.locals.slots = saved_slots;
         self.op_sources = saved_op_sources;
-        self.iter_ptr_offset = saved_iter_ptr_offset;
+        self.smt_iter_ptr_offset = saved_iter_ptr_offset;
 
         // Apply deferred field writes (`(*self).field = val` through a
         // `&mut self` reborrow) collected during the callee's execution, now
-        // that the caller's `field_values` is live again.
-        for (local, path, value) in std::mem::take(&mut self.inline.deferred_field_writes) {
+        // that the caller's `local_fields` is live again.
+        for (local, path, value) in std::mem::take(&mut self.exec.inline.deferred_field_writes) {
             self.set_field_value(local, path, value);
         }
-        self.inline.arg_referents = saved_inline_arg_referents;
-        self.inline.deferred_field_writes = saved_deferred_field_writes;
+        self.exec.inline.arg_referents = saved_inline_arg_referents;
+        self.exec.inline.deferred_field_writes = saved_deferred_field_writes;
 
         // ── Write return value to caller destination ──
         let dest_ty = self.body.local_decls[dest].ty;
@@ -990,17 +991,17 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // for ADT returns (struct/enum) whose aggregate value carries
                 // no provenance: a later `&raw const (*&field)` + `ptr::read`
                 // must be able to discharge `Init` against the field.
-                if let Some(dest_alloc_id) = self.local_alloc_ids.get(&dest).copied() {
+                if let Some(dest_alloc_id) = self.locals.slots.get(&dest).copied() {
                     self.alloc_mut(dest_alloc_id).initialized = true;
                 }
             }
             None => {
-                self.inline.depth -= 1;
+                self.exec.inline.depth -= 1;
                 return false;
             }
         }
 
-        self.inline.depth -= 1;
+        self.exec.inline.depth -= 1;
         true
     }
 
@@ -1204,10 +1205,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let cond_val = self.value_of_operand(cond);
                     if *expected {
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.path_conditions.push(cond_val.term._eq(&zero).not());
+                        self.smt_path_conditions.push(cond_val.term._eq(&zero).not());
                     } else {
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.path_conditions.push(cond_val.term._eq(&zero));
+                        self.smt_path_conditions.push(cond_val.term._eq(&zero));
                     }
                     // Guard inference for inline callee
                     self.infer_guard_non_null(cond, *expected);
@@ -1239,7 +1240,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     for (value, target) in targets.iter() {
                         let discr_val = self.value_of_operand(discr);
                         let val_term = Int::from_u64(self.ctx, value as u64);
-                        self.path_conditions.push(discr_val.term._eq(&val_term));
+                        self.smt_path_conditions.push(discr_val.term._eq(&val_term));
                         queue.push(target);
                     }
                     let otherwise = targets.otherwise();
@@ -1389,7 +1390,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             CallEffect::ReturnDerefArg { arg } => {
                 // `mem::replace(dest, src)` returns `*dest`: the pointee value,
                 // not the `&mut` reference. Prefer the materialized pointee
-                // (`field_values` at the empty path, set by
+                // (`local_fields` at the empty path, set by
                 // `propagate_field_values_to_ref` for `&mut self.field`); then
                 // recover the old field value from the materialized field maps;
                 // finally, when the borrow chain was dropped by the slicer and no
@@ -1400,13 +1401,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let mut val = args.get(*arg).cloned().unwrap_or_else(|| VmValue::new(self.fresh_int("replaced"), dest_ty));
                 let arg_local = caller_arg_locals.get(*arg).copied().flatten();
                 let pointee =
-                    arg_local.and_then(|l| self.field_values.get(&(l, Vec::new())).cloned());
+                    arg_local.and_then(|l| self.locals.local_fields.get(&(l, Vec::new())).cloned());
                 if let Some(p) = pointee {
                     val = p;
                 } else if let Some(search) = self
-                    .field_values
+                    .locals
+                    .local_fields
                     .values()
-                    .chain(self.alloc_field_values.values())
+                    .chain(self.memory.fields.values())
                     .find(|v| v.ty == dest_ty && v.is_pointer())
                     .cloned()
                 {
@@ -1451,7 +1453,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // and expose them as the deref result's pointee fields.
                     if let Some(arg_local) = caller_arg_locals.get(*arg).copied().flatten() {
                         let keys: Vec<Vec<usize>> = self
-                            .field_values
+                            .locals
+                            .local_fields
                             .keys()
                             .filter(|(l, _)| *l == arg_local)
                             .map(|(_, p)| p.clone())
@@ -1459,7 +1462,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         for path in keys {
                             if path.len() > *peel && path[..*peel].iter().all(|&f| f == 0) {
                                 if let Some(v) =
-                                    self.field_values.get(&(arg_local, path.clone())).cloned()
+                                    self.locals.local_fields.get(&(arg_local, path.clone())).cloned()
                                 {
                                     self.set_field_value(dest, path[*peel..].to_vec(), v);
                                 }
@@ -1505,8 +1508,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .unwrap_or_else(|| alloc_size.div(&elem_sz_term)); // self.len()
 
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.path_conditions.push(mid_val.term.ge(&zero));
-                    self.path_conditions.push(mid_val.term.le(&total_len));
+                    self.smt_path_conditions.push(mid_val.term.ge(&zero));
+                    self.smt_path_conditions.push(mid_val.term.le(&total_len));
 
                     // mid (field 0 length)
                     let mid = mid_val.term.clone();
@@ -1539,16 +1542,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         );
                         let src_bytes = Int::mul(self.ctx, &[&total_len, &elem_sz_term]);
                         if f == 0 {
-                            self.path_conditions.push(field_size._eq(&mid_bytes));
+                            self.smt_path_conditions.push(field_size._eq(&mid_bytes));
                         } else {
                             let remaining = Int::sub(self.ctx, &[&src_bytes, &mid_bytes]);
-                            self.path_conditions.push(field_size._eq(&remaining));
+                            self.smt_path_conditions.push(field_size._eq(&remaining));
                         }
                         self.alloc_mut(alloc_id).initialized = true;
                         if let Some(ref source_prov) = self_val.provenance {
                             self.alloc_mut(alloc_id).parent = Some(source_prov.alloc_id);
                         }
-                        if let Some(ref_dest_alloc_id) = self.local_alloc_ids.get(&dest).copied() {
+                        if let Some(ref_dest_alloc_id) = self.locals.slots.get(&dest).copied() {
                             self.alloc_mut(ref_dest_alloc_id).slice_data = Some(alloc_id);
                         }
 
@@ -1706,10 +1709,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let offset = self.fresh_int(&format!("align_to_offset_{}", dest.as_usize()));
                 let zero = Int::from_u64(self.ctx, 0);
                 let ptr_plus_offset = Int::add(self.ctx, &[&self_val.term, &offset]);
-                self.path_conditions
+                self.smt_path_conditions
                     .push(ptr_plus_offset.rem(&align_u)._eq(&zero));
-                self.path_conditions.push(offset.ge(&zero));
-                self.path_conditions.push(offset.lt(&align_u));
+                self.smt_path_conditions.push(offset.ge(&zero));
+                self.smt_path_conditions.push(offset.lt(&align_u));
 
                 // body = len_bytes - offset bytes split into size_u chunks; the
                 // remainder is the suffix. Record the Euclidean identity so that
@@ -1720,9 +1723,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let suffix_bytes = body_bytes.rem(&size_u_term);
                 let mul_term = Int::mul(self.ctx, &[&body_len, &size_u_term]);
                 let sum_term = Int::add(self.ctx, &[&mul_term, &suffix_bytes]);
-                self.path_conditions.push(body_bytes._eq(&sum_term));
-                self.path_conditions.push(suffix_bytes.ge(&zero));
-                self.path_conditions.push(suffix_bytes.lt(&size_u_term));
+                self.smt_path_conditions.push(body_bytes._eq(&sum_term));
+                self.smt_path_conditions.push(suffix_bytes.ge(&zero));
+                self.smt_path_conditions.push(suffix_bytes.lt(&size_u_term));
 
                 // Field lengths in elements.
                 let prefix_len = offset.div(&elem_sz_term);
@@ -1756,7 +1759,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     );
                     self.alloc_mut(alloc_id).initialized = true;
                     self.alloc_mut(alloc_id).parent = Some(src_prov.alloc_id);
-                    if let Some(ref_dest_alloc_id) = self.local_alloc_ids.get(&dest).copied() {
+                    if let Some(ref_dest_alloc_id) = self.locals.slots.get(&dest).copied() {
                         self.alloc_mut(ref_dest_alloc_id).slice_data = Some(alloc_id);
                     }
                     let field_val = VmValue {
@@ -1826,7 +1829,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }
                     if src_non_null {
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.path_conditions.push(val.term._eq(&zero).not());
+                        self.smt_path_conditions.push(val.term._eq(&zero).not());
                     }
                     self.set_local(dest, val);
                 }
@@ -1976,18 +1979,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             CallEffect::ReturnNonZero => {
                 let zero = Int::from_u64(self.ctx, 0);
-                if let Some(mut existing) = self.locals.get(&dest).cloned() {
+                if let Some(mut existing) = self.locals.values.get(&dest).cloned() {
                     existing.invariants.non_null = true;
                     // Record the non-zero fact as a path condition so that a
                     // downstream `ValidNum(result != 0)` obligation (e.g.
                     // `NonZero::new_unchecked` after a bit-preserving operation)
                     // discharges against it.
-                    self.path_conditions.push(existing.term._eq(&zero).not());
+                    self.smt_path_conditions.push(existing.term._eq(&zero).not());
                     self.set_local(dest, existing);
                 } else {
                     let dest_ty = self.body.local_decls[dest].ty;
                     let term = self.fresh_int(&format!("ret_nz_{}", dest.as_usize()));
-                    self.path_conditions.push(term._eq(&zero).not());
+                    self.smt_path_conditions.push(term._eq(&zero).not());
                     self.set_local(
                         dest,
                         VmValue {
@@ -2012,7 +2015,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let zero = Int::from_u64(self.ctx, 0);
                         let term =
                             self.fresh_int(&format!("ret_tup_nz_{}_{}", dest.as_usize(), field));
-                        self.path_conditions.push(term._eq(&zero).not());
+                        self.smt_path_conditions.push(term._eq(&zero).not());
                         self.set_field_value(
                             dest,
                             vec![*field],
@@ -2034,7 +2037,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             CallEffect::ReturnAligned => {
-                if let Some(mut existing) = self.locals.get(&dest).cloned() {
+                if let Some(mut existing) = self.locals.values.get(&dest).cloned() {
                     // `as_ptr`/`as_mut_ptr`/`into_raw` expose a pointer aligned to
                     // the *pointee* type, so record the symbolic alignment for the
                     // downstream `raw-ptr-deref`/`from_raw_parts` `Align` check.
@@ -2125,10 +2128,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let byte_off = Int::mul(self.ctx, &[&offset, &elem]);
                     let ptr_plus_off = Int::add(self.ctx, &[&ptr_val.term, &byte_off]);
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.path_conditions
+                    self.smt_path_conditions
                         .push(ptr_plus_off.rem(&align_val.term)._eq(&zero));
-                    self.path_conditions.push(offset.ge(&zero));
-                    self.path_conditions.push(offset.lt(&align_val.term));
+                    self.smt_path_conditions.push(offset.ge(&zero));
+                    self.smt_path_conditions.push(offset.lt(&align_val.term));
                 }
                 let val = VmValue::new(offset, dest_ty);
                 self.set_local(dest, val);
@@ -2227,11 +2230,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // (field 1); `len = end_or_len - ptr`.
                 if let Some(iter_ref) = caller_arg_locals.get(*self_arg).copied().flatten() {
                     let iter_local = self
-                        .locals
+                        .locals.values
                         .get(&iter_ref)
                         .and_then(|v| v.provenance_alloc_id())
                         .and_then(|alloc| {
-                            self.local_alloc_ids
+                            self.locals.slots
                                 .iter()
                                 .find(|(_, a)| **a == alloc)
                                 .map(|(l, _)| *l)
@@ -2243,7 +2246,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let (Some(ptr), Some(end)) = (ptr_term, end_term) {
                         let len = Int::sub(self.ctx, &[&end, &ptr]);
                         let payload = self.fresh_int(&format!("scan_idx_{}", dest.as_usize()));
-                        self.path_conditions.push(payload.lt(&len));
+                        self.smt_path_conditions.push(payload.lt(&len));
                         let dest_ty = self.body.local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
@@ -2279,9 +2282,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(slice) = args.get(*arg) {
                     if let Some(len) = self.slice_len_from_value(slice) {
                         let payload = self.fresh_int(&format!("scan_idx_{}", dest.as_usize()));
-                        self.path_conditions.push(payload.lt(&len));
+                        self.smt_path_conditions.push(payload.lt(&len));
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.path_conditions.push(payload.ge(&zero));
+                        self.smt_path_conditions.push(payload.ge(&zero));
                         let dest_ty = self.body.local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
@@ -2304,7 +2307,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(slice) = args.get(*arg) {
                     if let Some(arg_len) = self.slice_len_from_value(slice) {
                         let len = self.fresh_int(&format!("decode_len_{}", dest.as_usize()));
-                        self.path_conditions.push(len.le(&arg_len));
+                        self.smt_path_conditions.push(len.le(&arg_len));
                         let dest_ty = self.body.local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
@@ -2331,7 +2334,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `ValidNum(size_of(T)*(len+1) <= isize::MAX)`.
                 let len = self.fresh_int(&format!("strlen_{}", dest.as_usize()));
                 let max = Int::from_i64(self.ctx, i64::MAX);
-                self.path_conditions.push(len.lt(&max));
+                self.smt_path_conditions.push(len.lt(&max));
                 let dest_ty = self.body.local_decls[dest].ty;
                 self.set_local(
                     dest,
@@ -2345,7 +2348,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let term = self.fresh_int(&format!("ret_nz_iff_{}", dest.as_usize()));
                     // `result == 0` iff `arg == 0`, i.e. non-zero is preserved
                     // exactly (bit-preserving ops map 0 -> 0, non-zero -> non-zero).
-                    self.path_conditions
+                    self.smt_path_conditions
                         .push(term._eq(&zero)._eq(&a.term._eq(&zero)));
                     self.set_local(
                         dest,
@@ -2357,7 +2360,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(a) = args.get(*arg) {
                     let zero = Int::from_u64(self.ctx, 0);
                     let term = self.fresh_int(&format!("ret_opt_nz_iff_{}", dest.as_usize()));
-                    self.path_conditions
+                    self.smt_path_conditions
                         .push(term._eq(&zero)._eq(&a.term._eq(&zero)));
                     self.set_field_value(
                         dest,
@@ -2371,7 +2374,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `checked_next_power_of_two`).
                 let zero = Int::from_u64(self.ctx, 0);
                 let term = self.fresh_int(&format!("ret_opt_nz_{}", dest.as_usize()));
-                self.path_conditions.push(term._eq(&zero).not());
+                self.smt_path_conditions.push(term._eq(&zero).not());
                 let payload_ty = args
                     .first()
                     .map(|a| a.ty)
@@ -2409,7 +2412,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         // allocation on first mutation. (Param Vecs already have
                         // an external allocation set by init_parameters.)
                         let is_vec = crate::verify::api_classify::is_vec_push_or_reserve(
-                            self.last_call_callee,
+                            self.exec.last_call_callee,
                         );
                         let is_external = self.alloc(prov.alloc_id).is_external();
                         if is_vec && !is_external {
@@ -2517,7 +2520,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         offset_kind: None,
                     };
                     // If return is a reference, register slice/pointee data
-                    if let Some(ref dest_alloc_id) = self.local_alloc_ids.get(&dest).copied() {
+                    if let Some(ref dest_alloc_id) = self.locals.slots.get(&dest).copied() {
                         self.alloc_mut(*dest_alloc_id).slice_data = Some(alloc_id);
                     }
                     // Propagate init status and byte-level tracking from the source pointer.
@@ -2625,8 +2628,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // read `(_1.0).0` and cast it to `*const`/`*mut T` — inherit the
                 // heap pointer's provenance (rustc 1.95 lowers `&raw **b` to
                 // exactly this field read + transmute).  Record it both on the
-                // local (`field_values`, for direct `_1.0.0` reads) and on the
-                // heap allocation (`alloc_field_values`, for `(*&box).0.0`
+                // local (`local_fields`, for direct `_1.0.0` reads) and on the
+                // heap allocation (`memory.fields`, for `(*&box).0.0`
                 // deref-reads through a reborrow).
                 let nn_field = VmValue {
                     term: base.clone(),
@@ -2642,7 +2645,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     bool_cond: None,
                 };
                 self.set_field_value(dest, vec![0, 0], nn_field.clone());
-                self.alloc_field_values
+                self.memory.fields
                     .insert((alloc_id, dest_ty, vec![0, 0]), nn_field);
                 self.set_local(
                     dest,
@@ -2687,7 +2690,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
                     self.alloc_mut(alloc_id).set_slice_len(size_val.term.clone());
-                    let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
+                    let dest_alloc_id = self.locals.slots.get(&dest).copied();
                     if let Some(dest_alloc_id) = dest_alloc_id {
                         self.alloc_mut(dest_alloc_id).slice_data = Some(alloc_id);
                     }
@@ -2759,7 +2762,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .map(|ty| self.align_sym(ty))
                         .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
-                    let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
+                    let dest_alloc_id = self.locals.slots.get(&dest).copied();
                     if let Some(dest_alloc_id) = dest_alloc_id {
                         self.alloc_mut(dest_alloc_id).slice_data = Some(alloc_id);
                     }
@@ -2831,7 +2834,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .and_then(|p| self.alloc(p.alloc_id).slice_len().cloned())
                     .unwrap_or_else(|| Int::from_u64(self.ctx, i64::MAX as u64));
                 let (alloc_id, base) = self.allocate_external(size, heap_align, elem_ty);
-                let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
+                let dest_alloc_id = self.locals.slots.get(&dest).copied();
                 if let Some(ref dest_alloc_id) = dest_alloc_id {
                     self.alloc_mut(*dest_alloc_id).slice_data = Some(alloc_id);
                 }
@@ -2935,7 +2938,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         if api_classify::is_std_box(adt.did()) {
                             self.set_field_value(dest, vec![0, 0], val.clone());
                             if let Some(prov) = &val.provenance {
-                                self.alloc_field_values
+                                self.memory.fields
                                     .insert((prov.alloc_id, val.ty, vec![0, 0]), val.clone());
                             }
                         }
@@ -2976,7 +2979,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let dest_ty = self.body.local_decls[dest].ty;
                 let term = self.fresh_int(&format!("layout_align_{}", dest.as_usize()));
                 let zero = Int::from_u64(self.ctx, 0);
-                self.path_conditions.push(term.gt(&zero));
+                self.smt_path_conditions.push(term.gt(&zero));
                 self.set_local(
                     dest,
                     VmValue::new(term, dest_ty),
@@ -2997,7 +3000,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let alloc_id = indices_val.provenance_alloc_id().or_else(|| {
                             // Slicer may have dropped the &indices
                             // assignment, losing provenance.  Fall back
-                            self.locals.values().find_map(|v| {
+                            self.locals.values.values().find_map(|v| {
                                 if v.ty == arr_ty {
                                     v.provenance_alloc_id()
                                 } else {
@@ -3006,7 +3009,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             })
                         });
                         if let Some(alloc_id) = alloc_id {
-                            self.contract_flags.has_checked_bounds = true;
+                            self.exec.contract_flags.has_checked_bounds = true;
                             let zero = Int::from_u64(self.ctx, 0);
                             let mut byte_offsets: Vec<(usize, Int)> = self
                                 .alloc_byte_values(alloc_id)
@@ -3015,14 +3018,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 .collect();
                             byte_offsets.sort_by_key(|(off, _)| *off);
                             for (_, term) in &byte_offsets {
-                                self.path_conditions.push(term.ge(&zero));
-                                self.path_conditions.push(term.lt(&len_val.term));
+                                self.smt_path_conditions.push(term.ge(&zero));
+                                self.smt_path_conditions.push(term.lt(&len_val.term));
                             }
                             for i in 0..byte_offsets.len() {
                                 for j in (i + 1)..byte_offsets.len() {
                                     let ti = &byte_offsets[i].1;
                                     let tj = &byte_offsets[j].1;
-                                    self.path_conditions.push(ti._eq(tj).not());
+                                    self.smt_path_conditions.push(ti._eq(tj).not());
                                 }
                             }
                         }
@@ -3133,7 +3136,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Remaining element count of the Iter/IterMut backed by `local`
     /// (fields `[0]` = ptr, `[1]` = end_or_len).  When a tracked pointer
-    /// offset exists (`iter_ptr_offset`), prefers the compact
+    /// offset exists (`smt_iter_ptr_offset`), prefers the compact
     /// `base_len - offset` form; otherwise falls back to
     /// `(end.offset - ptr.offset) / elem_size`.
     fn iter_remaining_len(&self, local: Local) -> Option<Int<'ctx>> {
@@ -3144,7 +3147,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return None;
         }
         let sz = self.iter_elem_size(ptr);
-        if let Some(offset) = self.iter_ptr_offset.get(&local) {
+        if let Some(offset) = self.smt_iter_ptr_offset.get(&local) {
             let base_len = ep.offset.div(&sz);
             let zero = Int::from_u64(self.ctx, 0);
             Some(
@@ -3193,11 +3196,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .get(1)
             .map(|v| v.term.clone())
             .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
-        let new_offset = match self.iter_ptr_offset.get(&local) {
+        let new_offset = match self.smt_iter_ptr_offset.get(&local) {
             Some(prev) => Int::add(self.ctx, &[prev, &offset_term]),
             None => offset_term,
         };
-        self.iter_ptr_offset.insert(local, new_offset);
+        self.smt_iter_ptr_offset.insert(local, new_offset);
     }
 
     /// Find the local whose symbolic address matches `term` (the address a
@@ -3205,8 +3208,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// receiver (often a reborrow temp) back to the referent local that carries
     /// the materialized field values.
     pub(crate) fn find_local_by_address(&self, term: &Int<'ctx>) -> Option<Local> {
-        for (local, id) in &self.local_alloc_ids {
-            if self.allocations[id.0].base == *term {
+        for (local, id) in &self.locals.slots {
+            if self.memory.allocations[id.0].base == *term {
                 return Some(*local);
             }
         }
@@ -3345,7 +3348,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
         // Any local that already materializes the field (covers the receiver
         // parameter / shared reborrow that the mutable reborrow does not copy).
-        for (l, _) in self.field_values.keys() {
+        for (l, _) in self.locals.local_fields.keys() {
             candidates.push(*l);
         }
         let mut found: Option<VmValue<'ctx, 'tcx>> = None;
@@ -3434,9 +3437,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let start = self.fresh_int(&format!("range_start_{}", dest.as_usize()));
         let end = self.fresh_int(&format!("range_end_{}", dest.as_usize()));
         let zero = Int::from_u64(self.ctx, 0);
-        self.path_conditions.push(start.ge(&zero));
-        self.path_conditions.push(start.le(&end));
-        self.path_conditions.push(end.le(&len_term));
+        self.smt_path_conditions.push(start.ge(&zero));
+        self.smt_path_conditions.push(start.le(&end));
+        self.smt_path_conditions.push(end.le(&len_term));
 
         let start_val = VmValue::new(start, field_ty(0));
         let end_val = VmValue::new(end, field_ty(1));
@@ -3484,16 +3487,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.set_field_value(local, vec![0, 1], VmValue::new(cap.clone(), usize_ty));
         self.set_field_value(local, vec![1], VmValue::new(len.clone(), usize_ty));
         let zero = Int::from_u64(self.ctx, 0);
-        self.path_conditions.push(len.ge(&zero));
-        self.path_conditions.push(len.le(&cap));
-        self.path_conditions.push(cap.ge(&zero));
+        self.smt_path_conditions.push(len.ge(&zero));
+        self.smt_path_conditions.push(len.le(&cap));
+        self.smt_path_conditions.push(cap.ge(&zero));
         // Language invariant: a Vec's byte length fits in `isize::MAX`, so the
         // `from_raw_parts`/`from_raw_parts_mut` precondition
         // `size_of(T) * len <= isize::MAX` is provable from the materialized
         // fields (`len <= cap` and `cap * elem_size <= isize::MAX`).
         let isize_max = Int::from_u64(self.ctx, isize::MAX as u64);
         let elem_term = Int::from_u64(self.ctx, elem_size.max(1));
-        self.path_conditions
+        self.smt_path_conditions
             .push(Int::mul(self.ctx, &[&cap, &elem_term]).le(&isize_max));
     }
 }

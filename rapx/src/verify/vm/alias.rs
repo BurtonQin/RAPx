@@ -71,7 +71,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Prefer parameters (arg_count) over temporaries.
         let mut best: Option<VmOrigin> = None;
 
-        for (local, val) in &self.locals {
+        for (local, val) in &self.locals.values {
             let Some(val_prov) = &val.provenance else {
                 continue;
             };
@@ -192,7 +192,7 @@ fn flow_xor_violation<'ctx, 'tcx>(
         false,
     );
     let body = vm_state.body;
-    for (local, val) in &vm_state.locals {
+    for (local, val) in &vm_state.locals.values {
         if *local == origin_local {
             continue;
         }
@@ -1106,7 +1106,7 @@ fn check_read_memory_alias<'ctx, 'tcx>(
     // If the enclosing function accepted the structural-alias hazard via its
     // contract (e.g. `any(Trait(T, Copy), Alias(self, ret))`), the read is the
     // accepted hazard rather than a violation.
-    if vm_state.contract_flags.alias_hazard_accepted {
+    if vm_state.exec.contract_flags.alias_hazard_accepted {
         return VmAliasResult::Proved;
     }
 

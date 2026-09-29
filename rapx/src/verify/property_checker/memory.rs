@@ -179,7 +179,7 @@ impl PropertyChecker {
         if let Some(known_align) = value.invariants.align_n.as_ref() {
             local.assert(&value.term.rem(known_align)._eq(&zero));
         }
-        for cond in &vm_state.path_conditions {
+        for cond in &vm_state.smt_path_conditions {
             local.assert(cond);
         }
         let negated = value.term.rem(&align_term)._eq(&zero).not();
@@ -238,7 +238,7 @@ impl PropertyChecker {
                 solver.assert(&alloc.base.rem(&alloc.align)._eq(&zero));
             }
         }
-        for cond in &vm_state.path_conditions {
+        for cond in &vm_state.smt_path_conditions {
             solver.assert(cond);
         }
         let align_term = Int::from_u64(vm_state.ctx, align);
@@ -278,7 +278,7 @@ impl PropertyChecker {
         // would circularly "prove" `NonNull` on the pointer being dereferenced.
         let zero = Int::from_u64(vm_state.ctx, 0);
         let local = Solver::new(vm_state.ctx);
-        for cond in &vm_state.path_conditions {
+        for cond in &vm_state.smt_path_conditions {
             local.assert(cond);
         }
         self.smt_check(&local, &value.term._eq(&zero))
@@ -391,7 +391,7 @@ impl PropertyChecker {
         };
 
         if vm_state.alloc(alloc_id).dead {
-            let unrolled = vm_state.path.as_ref().is_some_and(|p| {
+            let unrolled = vm_state.exec.path.as_ref().is_some_and(|p| {
                 let mut seen = FxHashSet::default();
                 p.steps.iter().any(|s| match s {
                     crate::verify::path_extractor::PathStep::Block(b) => !seen.insert(b.as_usize()),
@@ -786,10 +786,10 @@ impl PropertyChecker {
         // `Some` branch of `next()` that returned `None`). Check feasibility
         // only for such paths so unrelated over-constrained paths aren't
         // spuriously marked sound.
-        if vm_state.contract_flags.saw_next_discriminant {
+        if vm_state.exec.contract_flags.saw_next_discriminant {
             let local = Solver::new(vm_state.ctx);
             local.push();
-            for cond in &vm_state.path_conditions {
+            for cond in &vm_state.smt_path_conditions {
                 local.assert(cond);
             }
             if local.check() == SatResult::Unsat {
@@ -807,7 +807,7 @@ impl PropertyChecker {
         local: Local,
     ) -> Vec<AllocId> {
         let mut result = Vec::new();
-        if let Some(id) = vm_state.local_alloc_ids.get(&local) {
+        if let Some(id) = vm_state.locals.slots.get(&local) {
             result.push(*id);
         }
         let mut worklist = vec![local];
@@ -845,7 +845,7 @@ impl PropertyChecker {
                         };
                         if let Some(src) = src_local {
                             if visited.insert(src) {
-                                if let Some(id) = vm_state.local_alloc_ids.get(&src) {
+                                if let Some(id) = vm_state.locals.slots.get(&src) {
                                     result.push(*id);
                                 }
                                 worklist.push(src);

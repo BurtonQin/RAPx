@@ -30,7 +30,7 @@ impl PropertyChecker {
     ) -> CheckResult {
         // Fast-path: if a prior ChecksIndexBoundsDisjoint call already
         // validated bounds for this function, the InBound holds.
-        if vm_state.contract_flags.has_checked_bounds {
+        if vm_state.exec.contract_flags.has_checked_bounds {
             return CheckResult::ProvedByRule;
         }
         // Fast-path: contract with for_each guarantees all elements

@@ -48,7 +48,7 @@ impl<'tcx> SymbolicVm<'tcx> {
     ) -> VmState<'ctx, 'tcx> {
         let body = self.tcx.optimized_mir(items.path.target.caller);
         let mut state = VmState::new(ctx, self.tcx, body, items.path.target.caller);
-        state.path = Some(items.path.clone());
+        state.exec.path = Some(items.path.clone());
         state.execute_items(&items.items);
         state.propagate_from_checkpoint(items.path.target.block);
         state

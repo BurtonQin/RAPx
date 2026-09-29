@@ -49,7 +49,7 @@ impl PropertyChecker {
         // second `DropMemory` is an unrolled iteration rather than a genuine
         // same-iteration double free. Only the non-unrolled path distinguishes
         // them (uaf_10 drops twice in one iteration; uaf_false_2 drops once).
-        if vm_state.path.as_ref().is_some_and(|p| {
+        if vm_state.exec.path.as_ref().is_some_and(|p| {
             let mut seen = std::collections::HashSet::new();
             p.steps.iter().any(|s| match s {
                 crate::verify::path_extractor::PathStep::Block(b) => !seen.insert(b.as_usize()),
@@ -111,7 +111,7 @@ impl PropertyChecker {
                 }
             }
         }
-        for (local, _val) in &vm_state.locals {
+        for (local, _val) in &vm_state.locals.values {
             if Some(*local) == dest_local {
                 continue;
             }
@@ -128,7 +128,7 @@ impl PropertyChecker {
             if traces_to_dest(vm_state, *local, dest_local) {
                 continue;
             }
-            for ((l, _path), val) in &vm_state.field_values {
+            for ((l, _path), val) in &vm_state.locals.local_fields {
                 if *l != *local {
                     continue;
                 }

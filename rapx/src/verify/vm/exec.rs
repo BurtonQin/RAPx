@@ -55,11 +55,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 RelevantItem::Terminator { def_id, block } => {
                     let body = self.tcx.optimized_mir(*def_id);
                     let occ = self
+                        .exec
                         .block_occurrences
                         .get(block)
                         .map(|c| c + 1)
                         .unwrap_or(1);
-                    self.block_occurrences.insert(*block, occ);
+                    self.exec.block_occurrences.insert(*block, occ);
                     let terminator = body.basic_blocks[*block].terminator();
                     let saved = self.body;
                     self.body = body;
@@ -86,8 +87,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     fn handle_callee_entry(&mut self, callee: DefId, arg_locals: &[usize]) {
         let saved_body = self.body;
         let saved_def_id = self.caller_def_id;
-        let saved_locals = std::mem::take(&mut self.locals);
-        let saved_field_values = std::mem::take(&mut self.field_values);
+        let saved_values = std::mem::take(&mut self.locals.values);
+        let saved_local_fields = std::mem::take(&mut self.locals.local_fields);
         let saved_move_sources = std::mem::take(&mut self.move_sources);
 
         // Collect the caller argument fields from the saved map, so the callee's
@@ -95,13 +96,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let mut arg_fields: Vec<(usize, Vec<usize>, VmValue<'ctx, 'tcx>)> = Vec::new();
         for (i, arg) in arg_locals.iter().enumerate() {
             let caller_local = Local::from_usize(*arg);
-            let keys: Vec<Vec<usize>> = saved_field_values
+            let keys: Vec<Vec<usize>> = saved_local_fields
                 .keys()
                 .filter(|(l, _)| *l == caller_local)
                 .map(|(_, f)| f.clone())
                 .collect();
             for fields in keys {
-                if let Some(fv) = saved_field_values
+                if let Some(fv) = saved_local_fields
                     .get(&(caller_local, fields.clone()))
                     .cloned()
                 {
@@ -114,7 +115,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.caller_def_id = callee;
 
         for (i, arg) in arg_locals.iter().enumerate() {
-            if let Some(v) = saved_locals.get(&Local::from_usize(*arg)).cloned() {
+            if let Some(v) = saved_values.get(&Local::from_usize(*arg)).cloned() {
                 self.set_local(Local::from_usize(i + 1), v);
             }
         }
@@ -122,11 +123,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.set_field_value(Local::from_usize(callee_param), fields, fv);
         }
 
-        self.inline.frames.push(InlineFrame {
+        self.exec.inline.frames.push(InlineFrame {
             body: saved_body,
             def_id: saved_def_id,
-            saved_locals,
-            saved_field_values,
+            saved_values,
+            saved_local_fields,
             saved_move_sources,
         });
     }
@@ -134,18 +135,19 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Exit an inlined callee: capture the callee's return value, restore the
     /// caller context, and write the return value to the caller's destination.
     fn handle_callee_exit(&mut self, dest: usize) {
-        let ret = self.locals.get(&Local::from_usize(0)).cloned();
+        let ret = self.locals.values.get(&Local::from_usize(0)).cloned();
         let ret_fields: Vec<(Vec<usize>, VmValue<'ctx, 'tcx>)> = self
-            .field_values
+            .locals
+            .local_fields
             .iter()
             .filter(|((l, _), _)| *l == Local::from_usize(0))
             .map(|((_, f), v)| (f.clone(), v.clone()))
             .collect();
-        if let Some(frame) = self.inline.frames.pop() {
+        if let Some(frame) = self.exec.inline.frames.pop() {
             self.body = frame.body;
             self.caller_def_id = frame.def_id;
-            self.locals = frame.saved_locals;
-            self.field_values = frame.saved_field_values;
+            self.locals.values = frame.saved_values;
+            self.locals.local_fields = frame.saved_local_fields;
             self.move_sources = frame.saved_move_sources;
         }
         if let Some(mut v) = ret {
@@ -163,7 +165,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.set_local(Local::from_usize(dest), v);
             // The callee returned a fully-constructed value, so the caller's
             // destination stack slot is initialized.
-            if let Some(dest_alloc_id) = self.local_alloc_ids.get(&Local::from_usize(dest)).copied()
+            if let Some(dest_alloc_id) = self.locals.slots.get(&Local::from_usize(dest)).copied()
             {
                 self.alloc_mut(dest_alloc_id).initialized = true;
             }
@@ -182,7 +184,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Pre-allocate ALL locals and set initial values
         for local_idx in 1..local_count {
             let local = Local::from_usize(local_idx);
-            if self.locals.contains_key(&local) {
+            if self.locals.values.contains_key(&local) {
                 continue;
             }
             let decl = &self.body.local_decls[local];
@@ -475,7 +477,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let elem_size = self.size_of_ty(*elem_ty);
                         let len = self.fresh_int(&format!("slice_len_{}", local_idx));
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.path_conditions.push(len.ge(&zero));
+                        self.smt_path_conditions.push(len.ge(&zero));
                         let isize_max = Int::from_i64(self.ctx, i64::MAX);
                         let elem_sz = if elem_size > 0 {
                             elem_size
@@ -488,7 +490,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             .max(1)
                         };
                         let elem_sz_term = Int::from_u64(self.ctx, elem_sz);
-                        self.path_conditions
+                        self.smt_path_conditions
                             .push(Int::mul(self.ctx, &[&len, &elem_sz_term]).le(&isize_max));
                         // The data allocation's byte size uses the shared
                         // symbolic `sizeof_T` so `InBound` can cancel the factor
@@ -769,7 +771,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     };
                     self.alloc_mut(alloc_id).set_slice_len(n_term);
                     self.alloc_mut(alloc_id).initialized = true;
-                    self.local_alloc_ids.insert(local, alloc_id);
+                    self.locals.slots.insert(local, alloc_id);
                     if let Some(n) = n {
                         for i in 0..n {
                             let off = i * step;
@@ -878,10 +880,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         _ => None,
                     });
                     if let Some(src_local) = src {
-                        if let Some(src_val) = self.locals.get(&src_local) {
+                        if let Some(src_val) = self.locals.values.get(&src_local) {
                             let has_better_prov = src_val.is_pointer()
                                 && src_val.invariants.non_null
-                                && self.locals.get(&dest_local).is_none_or(|d| {
+                                && self.locals.values.get(&dest_local).is_none_or(|d| {
                                     d.provenance.is_none() || !d.invariants.non_null
                                 });
                             if has_better_prov {
@@ -1017,7 +1019,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let elem_align = self.align_sym(pointee);
             let elem_size = self.size_sym(pointee);
             let len_term = self.fresh_int(&format!("field_len_{}_{}", local_idx, idx));
-            self.path_conditions
+            self.smt_path_conditions
                 .push(len_term.ge(&Int::from_u64(self.ctx, 0)));
             let prost_offset = Int::mul(self.ctx, &[&len_term, &elem_size]);
             let field_term = Int::add(self.ctx, &[base, &prost_offset]);
@@ -1055,7 +1057,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             };
             let max_size = if is_raw_ptr {
                 let s = self.fresh_int("raw_target_size");
-                self.path_conditions.push(s.ge(&Int::from_u64(self.ctx, 0)));
+                self.smt_path_conditions.push(s.ge(&Int::from_u64(self.ctx, 0)));
                 s
             } else {
                 Int::from_u64(self.ctx, i64::MAX as u64)
@@ -1204,7 +1206,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let (fa, _fb) = self.allocate_external(max_size, field_align, Some(pointee));
                 self.alloc_mut(fa).initialized = true;
                 let term = self.fresh_int(&format!("pointee_nn_{}_{}", local_idx, idx));
-                self.alloc_field_values.insert(
+                self.memory.fields.insert(
                     (alloc_id, root_ty, path.clone()),
                     VmValue {
                         term,
@@ -1245,7 +1247,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 TyKind::Uint(_) | TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool | TyKind::Char
             ) {
                 let field_term = self.fresh_int(&format!("pointee_field_{}_{}", local_idx, idx));
-                self.alloc_field_values.insert(
+                self.memory.fields.insert(
                     (alloc_id, root_ty, path.clone()),
                     VmValue {
                         term: field_term,
@@ -1278,7 +1280,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     Some(*elem_ty),
                 );
                 self.alloc_mut(fa).initialized = true;
-                self.alloc_field_values.insert(
+                self.memory.fields.insert(
                     (alloc_id, root_ty, path.clone()),
                     VmValue {
                         term: fb,
@@ -1307,6 +1309,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Uses the current path to avoid cross-branch contamination.
     pub(crate) fn propagate_from_checkpoint(&mut self, checkpoint_block: BasicBlock) {
         let path_blocks: FxHashSet<BasicBlock> = self
+            .exec
             .path
             .as_ref()
             .map(|p| {
@@ -1332,6 +1335,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // in the block steps, the path is unrolled and path-filtering
         // may exclude needed blocks.
         let block_steps: Vec<BasicBlock> = self
+            .exec
             .path
             .as_ref()
             .map(|p| {
@@ -1415,13 +1419,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             {
                 let dest = destination.local;
                 // Check if the destination needs provenance (as_ptr/as_mut_ptr fallback).
-                let needs_fallback = match self.locals.get(&dest) {
+                let needs_fallback = match self.locals.values.get(&dest) {
                     Some(dv) => dv.provenance.is_none(),
                     None => true,
                 };
                 let mut fallback_applied = false;
                 // Try constant byte materialization first
-                if let Some(mut dv) = self.locals.get(&dest).cloned() {
+                if let Some(mut dv) = self.locals.values.get(&dest).cloned() {
                     let mut found = false;
                     for arg in args {
                         self.try_materialize_const_bytes(&mut dv, &arg.node);
@@ -1442,7 +1446,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         }
                     }
                 }
-                if !fallback_applied && needs_fallback && self.locals.get(&dest).is_none() {
+                if !fallback_applied && needs_fallback && self.locals.values.get(&dest).is_none() {
                     if let Some(first) = args.first() {
                         self.try_as_ptr_fallback(
                             dest,
@@ -1455,7 +1459,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // For comparison calls (e.g. <[u8]>::eq), propagate
                 // constant bytes from a literal operand to the tracked
                 // operand's allocation so ValidCStr checks succeed.
-                if self.locals.contains_key(&dest) {
+                if self.locals.values.contains_key(&dest) {
                     if crate::helpers::mir_utils::is_eq_call(self.tcx, func) {
                         self.propagate_const_bytes_to_tracked(args);
                     }
@@ -1481,7 +1485,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Skip when the destination already holds a value (from `init_parameters`
         // pre-population or forward execution); only a still-missing destination
         // is filled from the source.
-        if self.locals.contains_key(&dest_local) {
+        if self.locals.values.contains_key(&dest_local) {
             return;
         }
 
@@ -1496,7 +1500,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         };
 
         if let Some(src) = src_local {
-            if let Some(src_val) = self.locals.get(&src).cloned() {
+            if let Some(src_val) = self.locals.values.get(&src).cloned() {
                 let dest_ty = self.body.local_decls[dest_local].ty;
                 let is_cast = matches!(rvalue, Rvalue::Cast(..));
                 let is_ptr_arith = matches!(
@@ -1594,7 +1598,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let src_in_bounds = if is_slice_ref && is_from_raw_parts_like && has_deref {
                     addr.is_pointer()
                 } else {
-                    self.locals
+                    self.locals.values
                         .get(&place.local)
                         .is_some_and(|v| v.invariants.in_bounds)
                 };
@@ -1629,7 +1633,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .map(|p| self.alloc(p.alloc_id).align.clone())
                     .filter(|a| a.simplify().as_u64() != Some(1));
                 let src_in_bounds = self
-                    .locals
+                    .locals.values
                     .get(&place.local)
                     .is_some_and(|v| v.invariants.in_bounds);
                 self.set_local(
@@ -1669,9 +1673,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let lhs = crate::helpers::mir_utils::extract_local(lhs_op);
                 let rhs = crate::helpers::mir_utils::extract_local(rhs_op);
                 if let Some(src) = lhs {
-                    if let Some(src_val) = self.locals.get(&src).cloned() {
+                    if let Some(src_val) = self.locals.values.get(&src).cloned() {
                         let rhs_val = rhs
-                            .and_then(|r| self.locals.get(&r))
+                            .and_then(|r| self.locals.values.get(&r))
                             .map(|v| VmValue::new(v.term.clone(), v.ty))
                             .unwrap_or(VmValue {
                                 term: Int::from_u64(self.ctx, 0),
@@ -1820,7 +1824,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 });
                 if only_field || (only_field_deref && has_deref_src) {
                     let keys: Vec<Vec<usize>> = self
-                        .field_values
+                        .locals
+                        .local_fields
                         .keys()
                         .filter(|(l, _)| *l == sp.local)
                         .map(|(_, f)| f.clone())
@@ -1844,7 +1849,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
         } else if !has_deref {
-            // Field projection (no Deref): update field_values for the base local.
+            // Field projection (no Deref): update local_fields for the base local.
             let field_indices: Vec<usize> = place
                 .projection
                 .iter()
@@ -1887,7 +1892,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // `&mut self` (and other reference parameters) materialize
                     // their pointee's scalar fields keyed by the *reference*
                     // local itself, so a `(*self).field = val` write must land
-                    // in `field_values[(self, field)]` directly.  (This is what
+                    // in `local_fields[(self, field)]` directly.  (This is what
                     // makes a struct-invariant re-proof see `self.len += 1`.)
                     if self.field_value(place.local, &field_indices).is_some() {
                         let mut write_value = value;
@@ -1899,7 +1904,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // reference/reborrow temp) back to the local it points at,
                     // matching its address term against the known local
                     // addresses.
-                    let pointed = self.locals.get(&place.local).cloned();
+                    let pointed = self.locals.values.get(&place.local).cloned();
                     if let Some(pointed) = pointed {
                         if let Some(referent) = self.find_local_by_address(&pointed.term) {
                             let mut write_value = value;
@@ -1909,11 +1914,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             // Inline frame: the caller's address map is saved
                             // away, so resolve through the precomputed
                             // `&mut self` referent and defer the write until the
-                            // caller's `field_values` is restored.
+                            // caller's `local_fields` is restored.
                             if let Some(referent) =
-                                self.inline.arg_referents.get(arg_idx).copied().flatten()
+                                self.exec.inline.arg_referents.get(arg_idx).copied().flatten()
                             {
-                                self.inline.deferred_field_writes
+                                self.exec.inline.deferred_field_writes
                                     .push((referent, field_indices, value));
                             }
                         }
@@ -1928,13 +1933,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Record byte-level values when assigning to a place with projections.
     /// This handles patterns like `buf[i] = 0u8` (nul-store) and `arr[i] = val`.
     fn record_projected_store(&mut self, place: &Place<'tcx>, value: &VmValue<'ctx, 'tcx>) {
-        // Prefer the value's provenance (pointee alloc) over local_alloc_ids
+        // Prefer the value's provenance (pointee alloc) over slots
         // (reference alloc) for ref/ptr parameters.
         let Some(alloc_id) = self
-            .locals
+            .locals.values
             .get(&place.local)
             .and_then(|v| v.provenance_alloc_id())
-            .or_else(|| self.local_alloc_ids.get(&place.local).copied())
+            .or_else(|| self.locals.slots.get(&place.local).copied())
         else {
             return;
         };
@@ -2017,7 +2022,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
         let has_index_with_concrete = place.projection.iter().any(|p| {
             if let rustc_middle::mir::ProjectionElem::Index(local) = p {
-                self.locals
+                self.locals.values
                     .get(&local)
                     .and_then(|v| v.term.simplify().as_u64())
                     .is_some()
@@ -2053,7 +2058,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let is_align_or_size = text.starts_with("AlignOf(") || text.starts_with("SizeOf(");
                 if is_align_or_size {
                     let one = Int::from_u64(self.ctx, 1);
-                    self.path_conditions.push(val.term.ge(&one));
+                    self.smt_path_conditions.push(val.term.ge(&one));
                 }
             }
         }
@@ -2100,8 +2105,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let zero = Int::from_u64(self.ctx, 0);
         // `g = gcd(a, b)`:
         // 1. g divides both a and b.
-        self.path_conditions.push(a.rem(g)._eq(&zero));
-        self.path_conditions.push(b.rem(g)._eq(&zero));
+        self.smt_path_conditions.push(a.rem(g)._eq(&zero));
+        self.smt_path_conditions.push(b.rem(g)._eq(&zero));
         // 2. the lcm identity `(a / g) * b == (b / g) * a`. Emitting it directly
         //    (rather than letting Z3 derive it from the divisibility, which its
         //    incomplete nonlinear-integer solver cannot do reliably) is what
@@ -2111,7 +2116,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let b_div_g = b.div(g);
         let lhs = Int::mul(self.ctx, &[&a_div_g, &b]);
         let rhs = Int::mul(self.ctx, &[&b_div_g, &a]);
-        self.path_conditions.push(lhs._eq(&rhs));
+        self.smt_path_conditions.push(lhs._eq(&rhs));
     }
 
     /// Evaluate an Rvalue into a VmValue.
@@ -2165,7 +2170,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let src_in_bounds = if is_slice_ref && is_from_raw_parts_like && has_deref {
                         addr.is_pointer()
                     } else {
-                        self.locals
+                        self.locals.values
                             .get(&place.local)
                             .is_some_and(|v| v.invariants.in_bounds)
                     };
@@ -2243,7 +2248,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .map(|p| self.alloc(p.alloc_id).align.clone())
                         .filter(|a| a.simplify().as_u64() != Some(1));
                     let source_in_bounds = self
-                        .locals
+                        .locals.values
                         .get(&place.local)
                         .is_some_and(|v| v.invariants.in_bounds);
                     VmValue {
@@ -2324,34 +2329,34 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let rem = lhs.term.rem(&rhs.term);
                     let mul_term = Int::mul(self.ctx, &[quot, &rhs.term]);
                     let sum_term = Int::add(self.ctx, &[&mul_term, &rem]);
-                    self.path_conditions.push(lhs.term._eq(&sum_term));
+                    self.smt_path_conditions.push(lhs.term._eq(&sum_term));
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.path_conditions.push(rem.ge(&zero));
+                    self.smt_path_conditions.push(rem.ge(&zero));
                     // Remainder and quotient bounds help prove length constraints
                     // involving % and / in the SMT solver.
                     if rhs.term.as_u64().is_none_or(|r| r >= 1) {
-                        self.path_conditions.push(rem.lt(&rhs.term));
+                        self.smt_path_conditions.push(rem.lt(&rhs.term));
                     }
-                    self.path_conditions.push(rem.le(&lhs.term));
-                    self.path_conditions.push(quot.ge(&zero));
+                    self.smt_path_conditions.push(rem.le(&lhs.term));
+                    self.smt_path_conditions.push(quot.ge(&zero));
                     // Direct inequality: (lhs/rhs)*rhs <= lhs
-                    self.path_conditions.push(mul_term.le(&lhs.term));
+                    self.smt_path_conditions.push(mul_term.le(&lhs.term));
                     // Quotient strict bound: for rhs >= 2 and lhs >= 2,
                     // quot + 1 <= lhs (hence quot < lhs). E.g. X/2 < X for X>1.
                     if rhs.term.as_u64().is_some_and(|r| r >= 2) {
                         let one = Int::from_u64(self.ctx, 1);
                         let qp1 = Int::add(self.ctx, &[quot, &one]);
                         // qp1 <= lhs is equivalent to quot < lhs for integers
-                        self.path_conditions.push(qp1.le(&lhs.term));
+                        self.smt_path_conditions.push(qp1.le(&lhs.term));
                     } else {
                         // For rhs >= 1: quot <= lhs
                         if rhs.term.as_u64().is_some_and(|r| r >= 1) {
-                            self.path_conditions.push(quot.le(&lhs.term));
+                            self.smt_path_conditions.push(quot.le(&lhs.term));
                         }
                     }
                 }
                 // For tuple-returning binary ops (AddWithOverflow, MulWithOverflow),
-                // populate field_values so that .0 (result) and .1 (overflow flag)
+                // populate local_fields so that .0 (result) and .1 (overflow flag)
                 // are properly tracked. Without this, field access falls through
                 // to cloning the base term, mixing the arithmetic result with the
                 // boolean overflow flag and corrupting path conditions.
@@ -2451,9 +2456,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 );
                 if src_is_ptr && dest_is_int {
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.path_conditions.push(term.ge(&zero));
+                    self.smt_path_conditions.push(term.ge(&zero));
                     if src_val.invariants.non_null {
-                        self.path_conditions.push(term._eq(&zero).not());
+                        self.smt_path_conditions.push(term._eq(&zero).not());
                     }
                 }
                 VmValue {
@@ -2505,7 +2510,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let field_val = self.value_of_operand(operands.iter().next().unwrap());
                     let dest_local = dest_place.local;
                     self.set_field_value(dest_local, vec![0], field_val.clone());
-                    if let Some(alloc_id) = self.local_alloc_ids.get(&dest_local).copied() {
+                    if let Some(alloc_id) = self.locals.slots.get(&dest_local).copied() {
                         self.alloc_mut(alloc_id).initialized = true;
                     }
                     return VmValue {
@@ -2520,7 +2525,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 let term = self.fresh_int("aggregate");
                 let dest_local = dest_place.local;
-                let dest_alloc_id = self.local_alloc_ids.get(&dest_local).copied();
+                let dest_alloc_id = self.locals.slots.get(&dest_local).copied();
                 let is_byte_array = crate::helpers::mir_utils::is_u8_array_or_slice(dest_ty);
                 let field_types: Vec<_> = self.aggregate_field_tys(dest_ty);
                 let mut byte_offset = 0usize;
@@ -2556,7 +2561,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         if let Some(op_place) = operand.place() {
                             if op_place.projection.is_empty() {
                                 let nested: Vec<(Vec<usize>, VmValue<'ctx, 'tcx>)> = self
-                                    .field_values
+                                    .locals
+                                    .local_fields
                                     .iter()
                                     .filter(|((l, _), _)| *l == op_place.local)
                                     .map(|((_, p), v)| (p.clone(), v.clone()))
@@ -2677,7 +2683,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .map(|v| v.discriminant().is_some())
                     .unwrap_or(false)
                 {
-                    self.contract_flags.saw_next_discriminant = true;
+                    self.exec.contract_flags.saw_next_discriminant = true;
                 }
                 // For Ordering (repr i8, values: Less=-1 Equal=0 Greater=1),
                 // the discriminant index equals the repr value + 1.
@@ -2688,12 +2694,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         if api_classify::is_std_ordering(adt_def.did()) && adt_def.is_enum() {
                             let one = Int::from_u64(self.ctx, 1);
                             let discr_minus_one = Int::sub(self.ctx, &[&term, &one]);
-                            self.path_conditions.push(pv.term._eq(&discr_minus_one));
+                            self.smt_path_conditions.push(pv.term._eq(&discr_minus_one));
                             // Also bound the discriminant to {0, 1, 2}
                             let zero = Int::from_u64(self.ctx, 0);
                             let two = Int::from_u64(self.ctx, 2);
-                            self.path_conditions.push(term.ge(&zero));
-                            self.path_conditions.push(term.le(&two));
+                            self.smt_path_conditions.push(term.ge(&zero));
+                            self.smt_path_conditions.push(term.le(&two));
                         }
                     }
                 }
@@ -2736,7 +2742,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let is_size_of = op_debug.contains("SizeOf");
                 if is_align_of || is_size_of {
                     let one = Int::from_u64(self.ctx, 1);
-                    self.path_conditions.push(term.ge(&one));
+                    self.smt_path_conditions.push(term.ge(&one));
                 }
                 VmValue::new(term, dest_ty)
             }
@@ -2799,7 +2805,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // per-function effect.
                 let zero = Int::from_u64(self.ctx, 0);
                 let exact = self
-                    .path_conditions
+                    .smt_path_conditions
                     .iter()
                     .any(|c| *c == lhs.rem(rhs)._eq(&zero));
                 if exact {
@@ -2820,26 +2826,26 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let result = self.fresh_int("binop");
                 // BitAnd only clears bits, so it never increases a non-negative
                 // value: result <= lhs.
-                self.path_conditions.push(result.le(lhs));
+                self.smt_path_conditions.push(result.le(lhs));
                 // When the mask (rhs) is a non-negative constant, the result is
                 // also bounded by it: `x & c <= c` (e.g. `rhs & 31 <= 31`).
                 // This lets `(rhs & (BITS - 1)) < BITS` be discharged. The
                 // mask may be a folded expression (`SubWithOverflow(BITS, 1)`),
                 // so `simplify()` is used to recover its constant value.
                 if rhs.simplify().as_u64().is_some() {
-                    self.path_conditions.push(result.le(rhs));
+                    self.smt_path_conditions.push(result.le(rhs));
                 }
-                if self.not_mask_terms.contains(rhs) {
+                if self.smt_not_mask_terms.contains(rhs) {
                     // rhs is a two's-complement mask `!(align-1) == -align`,
                     // so `align = -rhs`. The result of `x & !(align-1)` is
                     // `x` rounded down to a multiple of `align` (i.e. align_up
                     // of the pre-incremented value).
                     let zero = Int::from_u64(self.ctx, 0);
                     let align = Int::sub(self.ctx, &[&zero, rhs]);
-                    self.path_conditions.push(result.rem(&align)._eq(&zero));
+                    self.smt_path_conditions.push(result.rem(&align)._eq(&zero));
                     let one = Int::from_u64(self.ctx, 1);
                     let addr = Int::add(self.ctx, &[lhs, rhs, &one]);
-                    self.path_conditions.push(result.ge(&addr));
+                    self.smt_path_conditions.push(result.ge(&addr));
                 }
                 result
             }
@@ -2851,9 +2857,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `result >= lhs`, which is only valid for non-negative values)
                 // so `NonZero` bit-or methods discharge their `!= 0` obligation
                 // for both signed and unsigned instantiations.
-                self.path_conditions
+                self.smt_path_conditions
                     .push(lhs._eq(&zero).not().implies(&result._eq(&zero).not()));
-                self.path_conditions
+                self.smt_path_conditions
                     .push(rhs._eq(&zero).not().implies(&result._eq(&zero).not()));
                 result
             }
@@ -2872,7 +2878,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // Two's-complement bitwise NOT: !x == -x - 1.
                     let one = Int::from_u64(self.ctx, 1);
                     let result = Int::sub(self.ctx, &[&self.negate(val), &one]);
-                    self.not_mask_terms.insert(result.clone());
+                    self.smt_not_mask_terms.insert(result.clone());
                     result
                 }
             }
@@ -2923,7 +2929,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .iter()
             .position(|f| f.ident(self.tcx).name.to_string() == "len")?;
 
-        self.alloc_field_values
+        self.memory.fields
             .get(&(alloc_id, elem_ty, vec![len_idx]))
             .map(|v| v.term.clone())
     }
@@ -2943,12 +2949,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let alloc_id = val.provenance_alloc_id()?;
         let view_ty = crate::helpers::mir_utils::pointee_ty(val.ty).unwrap_or(val.ty);
         let start = self
-            .alloc_field_values
+            .memory.fields
             .get(&(alloc_id, view_ty, vec![0]))?
             .term
             .clone();
         let end = self
-            .alloc_field_values
+            .memory.fields
             .get(&(alloc_id, view_ty, vec![1]))?
             .term
             .clone();
@@ -3006,7 +3012,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .fields
             .iter()
             .position(|f| f.ident(self.tcx).name.to_string() == "len")?;
-        self.alloc_field_values
+        self.memory.fields
             .get(&(alloc_id, pointee, vec![len_idx]))
             .map(|v| v.term.clone())
     }
@@ -3198,18 +3204,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     fn exec_storage_live(&mut self, local: Local) {
         self.ensure_local_allocation(local);
-        let alloc_id = self.local_alloc_ids[&local];
+        let alloc_id = self.locals.slots[&local];
         self.alloc_mut(alloc_id).dead = false;
     }
 
     fn exec_storage_dead(&mut self, local: Local) {
-        if let Some(alloc_id) = self.local_alloc_ids.get(&local).copied() {
+        if let Some(alloc_id) = self.locals.slots.get(&local).copied() {
             self.alloc_mut(alloc_id).dead = true;
         }
     }
 
     pub(crate) fn exec_drop(&mut self, place: &Place<'tcx>) {
-        if let Some(alloc_id) = self.local_alloc_ids.get(&place.local).copied() {
+        if let Some(alloc_id) = self.locals.slots.get(&place.local).copied() {
             self.alloc_mut(alloc_id).dead = true;
             // Cascade to heap data allocations (see exec_storage_dead).
             let mut worklist: Vec<AllocId> = vec![alloc_id];
@@ -3282,17 +3288,17 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let cmp_cond = discr_val.bool_cond().cloned();
 
         // Determine which target block is taken along the path.
-        if let Some(ref path) = self.path {
+        if let Some(ref path) = self.exec.path {
             if let Some(chosen) = chosen_successor(path, block, occurrence) {
                 for (value, target) in targets.iter() {
                     if target == chosen {
                         let val_term = Int::from_u64(self.ctx, value as u64);
-                        self.path_conditions.push(discr_val.term._eq(&val_term));
+                        self.smt_path_conditions.push(discr_val.term._eq(&val_term));
                         if let Some(ref cond) = cmp_cond {
                             if value != 0 {
-                                self.path_conditions.push(cond.clone());
+                                self.smt_path_conditions.push(cond.clone());
                             } else {
-                                self.path_conditions.push(cond.not());
+                                self.smt_path_conditions.push(cond.not());
                             }
                         }
                         if value != 0 {
@@ -3306,14 +3312,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // Negate every explicit target value.
                     for (value, _) in targets.iter() {
                         let val_term = Int::from_u64(self.ctx, value as u64);
-                        self.path_conditions
+                        self.smt_path_conditions
                             .push(discr_val.term._eq(&val_term).not());
                     }
                     if let Some(ref cond) = cmp_cond {
                         // For a boolean discriminator, `otherwise` means
                         // `discr != 0`, i.e. the comparison is true.
                         if targets.iter().any(|(v, _)| v == 0) {
-                            self.path_conditions.push(cond.clone());
+                            self.smt_path_conditions.push(cond.clone());
                         }
                     }
                 }
@@ -3330,15 +3336,15 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let cmp_cond = cond_val.bool_cond().cloned();
         if expected {
             let zero = Int::from_u64(self.ctx, 0);
-            self.path_conditions.push(cond_val.term._eq(&zero).not());
+            self.smt_path_conditions.push(cond_val.term._eq(&zero).not());
             if let Some(c) = &cmp_cond {
-                self.path_conditions.push(c.clone());
+                self.smt_path_conditions.push(c.clone());
             }
         } else {
             let zero = Int::from_u64(self.ctx, 0);
-            self.path_conditions.push(cond_val.term._eq(&zero));
+            self.smt_path_conditions.push(cond_val.term._eq(&zero));
             if let Some(c) = &cmp_cond {
-                self.path_conditions.push(c.not());
+                self.smt_path_conditions.push(c.not());
             }
         }
 
@@ -3388,7 +3394,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // generic `T`), so `align = mask + 1`.
                     rustc_middle::mir::BinOp::BitAnd => {
                         if let Some(rhs_local) = div_rhs.as_ref().and_then(|pk| pk.local()) {
-                            if let Some(rhs_val) = self.locals.get(&rhs_local) {
+                            if let Some(rhs_val) = self.locals.values.get(&rhs_local) {
                                 let one = Int::from_u64(self.ctx, 1);
                                 let align = Int::add(self.ctx, &[&rhs_val.term, &one]);
                                 self.mark_align_n(&div_lhs, align);
@@ -3404,7 +3410,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     fn mark_align_n(&mut self, src_pk: &Option<PlaceKey>, align: Int<'ctx>) {
         if let Some(src_pk) = src_pk {
             if let Some(local) = src_pk.local() {
-                if let Some(mut val) = self.locals.get(&local).cloned() {
+                if let Some(mut val) = self.locals.values.get(&local).cloned() {
                     val.invariants.align_n = Some(align);
                     self.set_local(local, val);
                 }
@@ -3459,7 +3465,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     fn mark_guard_pointer(&mut self, lhs: &Option<PlaceKey>, rhs: &Option<PlaceKey>) {
         for pk in [lhs, rhs].into_iter().flatten() {
             if let Some(local) = pk.local() {
-                if let Some(mut val) = self.locals.get(&local).cloned() {
+                if let Some(mut val) = self.locals.values.get(&local).cloned() {
                     val.invariants.non_null = true;
                     self.set_local(local, val);
                 }
@@ -3475,7 +3481,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // structurally aliases the source are then treated as the accepted
         // hazard rather than a hard failure.
         if contains_hazard(property) {
-            self.contract_flags.alias_hazard_accepted = true;
+            self.exec.contract_flags.alias_hazard_accepted = true;
         }
         match property {
             Property::Atom(atom) => {
@@ -3564,7 +3570,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 if let Some(fe_place) = property.for_each() {
                     self.assert_in_bound_for_each(property, fe_place);
-                    self.contract_flags.has_checked_bounds = true;
+                    self.exec.contract_flags.has_checked_bounds = true;
                 } else {
                     self.assert_in_bound_single(property);
                 }
@@ -3614,7 +3620,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             PropertyKind::SplitTransmute => {
-                self.contract_flags.split_transmute_asserted = true;
+                self.exec.contract_flags.split_transmute_asserted = true;
             }
             PropertyKind::ValidCStr => {
                 // A `ValidCStr(p, n)` fact guarantees `p` points to a live,
@@ -3629,7 +3635,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // at the byte buffer it owns).
                 let id = self.contract_alloc_id_field_aware(property).or_else(|| {
                     let local = self.contract_target_local(property)?;
-                    self.locals.get(&local)?.provenance_alloc_id()
+                    self.locals.values.get(&local)?.provenance_alloc_id()
                 });
                 if let Some(id) = id {
                     self.alloc_mut(id).dead = false;
@@ -3646,7 +3652,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .get(1)
                         .and_then(|a| self.resolve_contract_count(a))
                     {
-                        self.path_conditions.push(self.alloc(id).size.ge(&n));
+                        self.smt_path_conditions.push(self.alloc(id).size.ge(&n));
                     }
                 }
             }
@@ -3654,13 +3660,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(PropertyArg::Predicates(predicates)) = property.args().first() {
                     for pred in predicates {
                         if let Some(condition) = self.eval_predicate_as_bool(pred) {
-                            self.path_conditions.push(condition);
+                            self.smt_path_conditions.push(condition);
                             // For !self.is_empty() → self.len() != 0 on
                             // Iter/IterMut: also assert len >= 1 to help
                             // Z3 with integer division reasoning.
                             if let Some(len_term) = self.try_simple_iter_len_from_pred(pred) {
                                 let one = Int::from_u64(self.ctx, 1);
-                                self.path_conditions.push(len_term.ge(&one));
+                                self.smt_path_conditions.push(len_term.ge(&one));
                             }
                         }
                     }
@@ -3785,7 +3791,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let Some(local) = self.contract_target_local(property) else {
                 return;
             };
-            let Some(val) = self.locals.get(&local).cloned() else {
+            let Some(val) = self.locals.values.get(&local).cloned() else {
                 return;
             };
             if let Some(alloc_id) = val.provenance_alloc_id() {
@@ -3799,7 +3805,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             };
             if field_path.is_empty() {
                 // Whole pointer parameter: exact size.
-                let Some(val) = self.locals.get(&local).cloned() else {
+                let Some(val) = self.locals.values.get(&local).cloned() else {
                     return;
                 };
                 if self.mark_alloc_live_keep(&val, elem_ty) {
@@ -3897,7 +3903,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     fn contract_target_value(&mut self, property: &Property<'tcx>) -> Option<VmValue<'ctx, 'tcx>> {
         let (local, path) = self.contract_field_path(property)?;
         if path.is_empty() {
-            self.locals.get(&local).cloned()
+            self.locals.values.get(&local).cloned()
         } else {
             self.field_value(local, &path).cloned()
         }
@@ -3932,7 +3938,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         }
         if field_path.is_empty() {
-            self.locals.get(&local)?.provenance_alloc_id()
+            self.locals.values.get(&local)?.provenance_alloc_id()
         } else {
             self.field_value(local, &field_path)?.provenance_alloc_id()
         }
@@ -4016,12 +4022,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             // Deref+Field: the base local is a reference whose pointee
                             // fields live in the per-allocation map (e.g. the
                             // `ValidNum(len <= CAPACITY)` invariant on `&LeafNode`
-                            // reads `(*leaf).len` through `alloc_field_values`).
+                            // reads `(*leaf).len` through `memory.fields`).
                             let base_val = self.local_value(local)?;
                             let alloc_id = base_val.provenance_alloc_id()?;
                             let view_ty = crate::helpers::mir_utils::pointee_ty(base_val.ty)
                                 .unwrap_or(base_val.ty);
-                            self.alloc_field_values
+                            self.memory.fields
                                 .get(&(alloc_id, view_ty, path.clone()))
                                 .map(|v| v.term.clone())
                         })
@@ -4129,7 +4135,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// `interpreter_iter_len` can express `len = initial_len - offset`
     /// instead of nested `(end - (ptr + sz + sz + ...)) / sz`.
     fn track_iter_ptr_update(&mut self, local: Local) {
-        let local_val = match self.locals.get(&local) {
+        let local_val = match self.locals.values.get(&local) {
             Some(v) => v,
             None => return,
         };
@@ -4137,11 +4143,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return;
         }
         let one = Int::from_u64(self.ctx, 1);
-        let new_offset = match self.iter_ptr_offset.get(&local) {
+        let new_offset = match self.smt_iter_ptr_offset.get(&local) {
             Some(prev) => Int::add(self.ctx, &[prev, &one]),
             None => one,
         };
-        self.iter_ptr_offset.insert(local, new_offset);
+        self.smt_iter_ptr_offset.insert(local, new_offset);
     }
 
     /// Set non_null invariant on the target value.
@@ -4163,7 +4169,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let Some(fe_local) = fe_place.base.try_to_local() else {
             return;
         };
-        let fe_val = match self.locals.get(&fe_local).cloned() {
+        let fe_val = match self.locals.values.get(&fe_local).cloned() {
             Some(v) => v,
             None => return,
         };
@@ -4189,7 +4195,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             Some(PropertyArg::Expr(ContractExpr::Place(cp))) => cp.base.try_to_local(),
             _ => None,
         };
-        let slice_val = slice_local.and_then(|loc| self.locals.get(&loc));
+        let slice_val = slice_local.and_then(|loc| self.locals.values.get(&loc));
         let slice_alloc_id = slice_val.and_then(|sl_val| sl_val.provenance_alloc_id());
         let data_size = slice_alloc_id.map(|da_id| self.alloc(da_id).size.clone());
         let elem_sz = slice_alloc_id
@@ -4205,8 +4211,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .unwrap_or_else(|| data_size.div(&elem_sz_term));
         let zero = Int::from_u64(self.ctx, 0);
         for (_, term) in &byte_vals {
-            self.path_conditions.push(term.ge(&zero));
-            self.path_conditions.push(term.lt(&len));
+            self.smt_path_conditions.push(term.ge(&zero));
+            self.smt_path_conditions.push(term.lt(&len));
         }
     }
 
@@ -4239,7 +4245,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return;
         };
         let Some(da_id) = self
-            .locals
+            .locals.values
             .get(&slice_local)
             .and_then(|v| v.provenance_alloc_id())
         else {
@@ -4262,7 +4268,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let Some(index_term) = self.eval_contract_expr_simple(index) else {
             return;
         };
-        self.path_conditions.push(index_term.lt(&len));
+        self.smt_path_conditions.push(index_term.lt(&len));
     }
 
     /// When a `&T`/`&mut T` reference is created (e.g. via `&*NonNull<T>`), assume
@@ -4319,14 +4325,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             for pred in preds {
                 if let Some(cond) = self.eval_pointee_predicate_as_bool(alloc_id, pointee_ty, pred)
                 {
-                    self.path_conditions.push(cond);
+                    self.smt_path_conditions.push(cond);
                 }
             }
         }
     }
 
     /// Evaluate a `ValidNum` predicate against a pointee allocation (not a MIR
-    /// local): field places resolve through `alloc_field_values` keyed by the
+    /// local): field places resolve through `memory.fields` keyed by the
     /// pointee type.
     fn eval_pointee_predicate_as_bool(
         &self,
@@ -4353,7 +4359,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             ContractExpr::AlignOf(ty) => Some(self.align_sym_read(*ty)),
             ContractExpr::Place(cp) => {
                 let path = cp.plain_field_path()?;
-                self.alloc_field_values
+                self.memory.fields
                     .get(&(alloc_id, view_ty, path))
                     .map(|v| v.term.clone())
             }
@@ -4389,7 +4395,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return None;
         };
         let path = cp.plain_field_path()?;
-        self.alloc_field_values
+        self.memory.fields
             .get(&(alloc_id, view_ty, path))
             .cloned()
     }
@@ -4409,7 +4415,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // non-linear `% align_T` is not decidable, so `align_n` alone is
                 // used for that case.)
                 if align.simplify().as_u64().is_some() {
-                    self.path_conditions.push(
+                    self.smt_path_conditions.push(
                         val.term
                             .rem(&align)
                             ._eq(&Int::from_u64(self.ctx, 0)),
@@ -4444,7 +4450,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
         if let Some((local, path)) = self.contract_field_path(property) {
             let existing = if path.is_empty() {
-                self.locals.get(&local).cloned()
+                self.locals.values.get(&local).cloned()
             } else {
                 self.field_value(local, &path).cloned()
             };
@@ -4553,7 +4559,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .or_else(|| field_val.as_ref().and_then(|v| v.provenance.clone()))
             .or_else(|| {
                 if let Operand::Move(place) | Operand::Copy(place) = first_arg_op {
-                    self.local_alloc_ids
+                    self.locals.slots
                         .get(&place.local)
                         .map(|&id| Provenance {
                             alloc_id: id,
@@ -4753,7 +4759,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // reference or they can corrupt downstream InBound reasoning.
         let empty_proj = source_place.projection.is_empty();
         let keys: Vec<Vec<usize>> = self
-            .field_values
+            .locals
+            .local_fields
             .keys()
             .filter(|(l, _)| *l == source_place.local)
             .map(|(_, p)| p.clone())
@@ -4769,7 +4776,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     path[field_prefix.len()..].to_vec()
                 };
                 if let Some(v) = self
-                    .field_values
+                    .locals
+                    .local_fields
                     .get(&(source_place.local, path.clone()))
                     .cloned()
                 {
@@ -4787,7 +4795,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         source_place: &Place<'tcx>,
         ref_val: &VmValue<'ctx, 'tcx>,
     ) {
-        let Some(src_alloc_id) = self.local_alloc_ids.get(&source_place.local).copied() else {
+        let Some(src_alloc_id) = self.locals.slots.get(&source_place.local).copied() else {
             return;
         };
         let Some(ref_alloc_id) = ref_val.provenance_alloc_id() else {

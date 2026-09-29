@@ -21,13 +21,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let ty = self.body.local_decls[place.local].ty;
             // Prefer the local's value provenance over the stack-allocation
             // provenance. For Box/Vec parameters, the value tracks the heap
-            // allocation while local_alloc_ids tracks the stack location.
+            // allocation while slots tracks the stack location.
             let provenance = self
-                .locals
+                .locals.values
                 .get(&place.local)
                 .and_then(|v| v.provenance.clone())
                 .or_else(|| {
-                    self.local_alloc_ids
+                    self.locals.slots
                         .get(&place.local)
                         .copied()
                         .map(|alloc_id| Provenance {
@@ -49,7 +49,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
         let mut term = self.local_address(place.local);
         let mut provenance: Option<Provenance<'ctx>> = self
-            .local_alloc_ids
+            .locals.slots
             .get(&place.local)
             .copied()
             .map(|alloc_id| Provenance {
@@ -74,7 +74,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     _ => current_ty,
                 };
                 let elem_sz = Int::from_u64(self.ctx, self.size_of_ty(elem_ty).max(1));
-                if let Some(val) = self.locals.get(&local) {
+                if let Some(val) = self.locals.values.get(&local) {
                     if let Some(idx) = val.term.simplify().as_u64() {
                         let scaled = Int::mul(self.ctx, &[&Int::from_u64(self.ctx, idx), &elem_sz]);
                         term = Int::add(self.ctx, &[&term, &scaled]);
@@ -130,7 +130,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             // `&(*leaf).keys` keeps `len = N` for downstream InBound.
                             let alloc = provenance.as_ref().map(|p| p.alloc_id);
                             alloc.and_then(|a| {
-                                self.alloc_field_values
+                                self.memory.fields
                                     .get(&(a, view_ty, field_path.clone()))
                                     .and_then(|fv| {
                                         fv.provenance.clone().map(|p| (fv.term.clone(), p))
@@ -155,7 +155,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 ProjectionElem::Deref => {
                     field_path.clear();
-                    let pointed = self.locals.get(&place.local)?;
+                    let pointed = self.locals.values.get(&place.local)?;
                     term = pointed.term.clone();
                     provenance = pointed.provenance.clone();
                     // For fat pointers (aggregates without provenance),
@@ -192,7 +192,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Lazily create a stack allocation for a MIR local if one doesn't exist.
     pub(crate) fn ensure_local_allocation(&mut self, local: Local) {
-        if self.local_alloc_ids.contains_key(&local) {
+        if self.locals.slots.contains_key(&local) {
             return;
         }
         let ty = self.body.local_decls[local].ty;
@@ -201,8 +201,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // `Allocation::base` now; `local_address` reads it back from there).
         let name = format!("addr__{}", local.as_usize());
         let base = Int::new_const(self.ctx, name.as_str());
-        let id = AllocId(self.next_alloc_id);
-        self.next_alloc_id += 1;
+        let id = AllocId(self.memory.next_alloc_id);
+        self.memory.next_alloc_id += 1;
         // For arrays, track the element type (not the array type) so that
         // len() computes `size / elem_size` correctly.  When the element size
         // is unknown (a generic `T`), `size_of::<[T; N]>()` collapses to 0, so
@@ -238,8 +238,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if let Some(len) = slice_len {
             alloc.set_slice_len(len);
         }
-        self.allocations.push(alloc);
-        self.local_alloc_ids.insert(local, id);
+        self.memory.allocations.push(alloc);
+        self.locals.slots.insert(local, id);
     }
 
     pub(crate) fn field_offset_in_bytes(&self, ty: Ty<'tcx>, field_idx: usize) -> u64 {
@@ -296,13 +296,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if size > 0 || !crate::helpers::mir_utils::ty_has_type_param(ty) {
             return Int::from_u64(self.ctx, size);
         }
-        if let Some(s) = self.sym_sizes.get(&ty) {
+        if let Some(s) = self.smt_layout.sizes.get(&ty) {
             return s.clone();
         }
         let s = self.fresh_int(&format!("sizeof_{ty}"));
-        self.sym_sizes.insert(ty, s.clone());
+        self.smt_layout.sizes.insert(ty, s.clone());
         let zero = Int::from_u64(self.ctx, 0);
-        self.path_conditions.push(s.ge(&zero));
+        self.smt_path_conditions.push(s.ge(&zero));
         s
     }
 
@@ -332,7 +332,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if size > 0 {
             return Int::from_u64(self.ctx, size);
         }
-        self.sym_sizes
+        self.smt_layout.sizes
             .get(&ty)
             .cloned()
             .unwrap_or_else(|| Int::from_u64(self.ctx, 1))
@@ -372,20 +372,20 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if align > 1 || !crate::helpers::mir_utils::ty_has_type_param(ty) {
             return Int::from_u64(self.ctx, align);
         }
-        if let Some(a) = self.sym_aligns.get(&ty) {
+        if let Some(a) = self.smt_layout.aligns.get(&ty) {
             return a.clone();
         }
         let a = self.fresh_int(&format!("align_{ty}"));
-        self.sym_aligns.insert(ty, a.clone());
+        self.smt_layout.aligns.insert(ty, a.clone());
         let one = Int::from_u64(self.ctx, 1);
         let zero = Int::from_u64(self.ctx, 0);
-        self.path_conditions.push(a.ge(&one));
+        self.smt_path_conditions.push(a.ge(&one));
         // Lower bound from the trait bounds (0 for an unconstrained `T`): any
         // implementor is at least this aligned.
         let min_a =
             crate::helpers::mir_utils::min_align_of_generic_param(self.tcx, self.caller_def_id, ty);
         if min_a > 1 {
-            self.path_conditions
+            self.smt_path_conditions
                 .push(a.ge(&Int::from_u64(self.ctx, min_a)));
         }
         // Upper bound from the trait bounds (0 for an unconstrained `T`): any
@@ -394,7 +394,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let max_a =
             crate::helpers::mir_utils::max_align_of_generic_param(self.tcx, self.caller_def_id, ty);
         if max_a > 0 {
-            self.path_conditions
+            self.smt_path_conditions
                 .push(a.le(&Int::from_u64(self.ctx, max_a)));
         }
         // A struct's alignment is a multiple of each field's alignment (both
@@ -406,7 +406,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 for field in variant.fields.iter() {
                     let field_ty = crate::helpers::mir_utils::field_ty(self.tcx, field, substs);
                     let field_align = self.align_sym(field_ty);
-                    self.path_conditions.push(a.rem(&field_align)._eq(&zero));
+                    self.smt_path_conditions.push(a.rem(&field_align)._eq(&zero));
                 }
                 // A struct's size is at least the sum of its fields (padding may
                 // add more).  This relates the symbolic `sizeof_Struct` constant
@@ -416,13 +416,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // allocation size.
                 if let Some(sum) = self.struct_size_sym(ty) {
                     let size = self.size_sym(ty);
-                    self.path_conditions.push(size.ge(&sum));
+                    self.smt_path_conditions.push(size.ge(&sum));
                 }
             }
         }
         // Layout invariant: a type's size is a multiple of its alignment.
         let size = self.size_sym(ty);
-        self.path_conditions.push(size.rem(&a)._eq(&zero));
+        self.smt_path_conditions.push(size.rem(&a)._eq(&zero));
         a
     }
 
@@ -441,7 +441,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if align > 1 {
             return Int::from_u64(self.ctx, align);
         }
-        if let Some(a) = self.sym_aligns.get(&ty) {
+        if let Some(a) = self.smt_layout.aligns.get(&ty) {
             return a.clone();
         }
         let min_a =

@@ -143,11 +143,11 @@ impl PropertyChecker {
         };
         solver.push();
         vm_state.assert_all(solver);
-        // Bridge the iter_ptr_offset (tracked by post_inc_start) to the
+        // Bridge the smt_iter_ptr_offset (tracked by post_inc_start) to the
         // predicate's LHS (typically the loop counter `i` in position).
         // At the assert_unchecked(i < n) point, tracked_offset == i + 1
         // because post_inc_start(1) was just called before the check.
-        for (_, off) in vm_state.iter_ptr_offset.iter() {
+        for (_, off) in vm_state.smt_iter_ptr_offset.iter() {
             let one = Int::from_u64(vm_state.ctx, 1);
             solver.assert(&off._eq(&Int::add(vm_state.ctx, &[&lhs, &one])));
         }
@@ -395,7 +395,7 @@ impl PropertyChecker {
         let ContractExpr::Len(_) = expr else {
             return None;
         };
-        for (_, val) in vm_state.locals.iter() {
+        for (_, val) in vm_state.locals.values.iter() {
             let is_iter = match val.ty.kind() {
                 TyKind::Ref(_, pointee, _) => match pointee.kind() {
                     TyKind::Adt(adt_def, _) => api_classify::is_std_iter_or_itermut(adt_def.did()),
@@ -407,7 +407,7 @@ impl PropertyChecker {
                 continue;
             }
             let alloc_id = val.provenance_alloc_id()?;
-            for (&l, lv) in vm_state.locals.iter() {
+            for (&l, lv) in vm_state.locals.values.iter() {
                 if lv.provenance_alloc_id() != Some(alloc_id) {
                     continue;
                 }
@@ -461,7 +461,7 @@ impl PropertyChecker {
             _ => return None,
         };
         let local = place.local;
-        let local_val = vm_state.locals.get(&local)?;
+        let local_val = vm_state.locals.values.get(&local)?;
         let is_iter = match local_val.ty.kind() {
             TyKind::Ref(_, pointee, _) => match pointee.kind() {
                 TyKind::Adt(adt_def, _) => api_classify::is_std_iter_or_itermut(adt_def.did()),
@@ -487,7 +487,7 @@ impl PropertyChecker {
         }
         // Fallback: scan all locals for one with same struct alloc.
         let target_alloc = local_val.provenance_alloc_id()?;
-        for (&scan_local, scan_val) in vm_state.locals.iter() {
+        for (&scan_local, scan_val) in vm_state.locals.values.iter() {
             if scan_val.provenance_alloc_id() != Some(target_alloc) {
                 continue;
             }
