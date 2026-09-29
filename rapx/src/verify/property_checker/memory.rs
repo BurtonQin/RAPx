@@ -786,7 +786,7 @@ impl PropertyChecker {
         // `Some` branch of `next()` that returned `None`). Check feasibility
         // only for such paths so unrelated over-constrained paths aren't
         // spuriously marked sound.
-        if vm_state.contract_flags.saw_next_discriminant {
+        if vm_state.path_facts.saw_next_discriminant {
             let local = Solver::new(vm_state.ctx);
             local.push();
             for cond in &vm_state.solver.constraints {
@@ -913,7 +913,7 @@ impl PropertyChecker {
             // guarantee; it is alive only if explicitly assumed (`Alive`
             // precondition / struct invariant), or grounded in a live reference.
             if !vm_state.alloc(root_id).dead {
-                match &vm_state.alloc(root_id).facts.liveness {
+                match &vm_state.alloc(root_id).liveness {
                     Liveness::AssumedFor(src_region) => {
                         // The `Alive(p, 'r)` check demands the memory alive for
                         // `'r`, while the assumption only guarantees `'a`; the

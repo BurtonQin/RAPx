@@ -221,35 +221,6 @@ pub(crate) enum Liveness<'tcx> {
     AssumedFor(Region<'tcx>),
 }
 
-/// Facts established *about* an allocation, kept apart from the allocation's
-/// intrinsic shape/state ([`Allocation`]'s `base`/`size`/`align`/`kind`/`dead`/
-/// `initialized`).  These describe what the verifier has established the
-/// allocation is, rather than what it structurally *is*, so the two layers
-/// don't blur together.  The facts come from verified contracts, struct
-/// invariants, or the VM's own materialization (const/static byte data,
-/// external parameter fields).
-#[derive(Clone, Debug)]
-pub(crate) struct AllocFacts<'tcx> {
-    /// How this allocation's liveness is established, and for which region.
-    /// Only consulted for external allocations, which carry no liveness
-    /// guarantee (their memory is owned by the caller); `AssumedFor('a)` records
-    /// the `Alive(p, 'a)` contract's region so the checker can reject a use that
-    /// demands a longer region.
-    pub liveness: Liveness<'tcx>,
-
-    /// Whether the allocation is known to be a null-terminated byte buffer (a
-    /// valid C string), asserted via a `ValidCStr` contract fact or struct
-    /// invariant.
-    pub nul_terminated: bool,
-
-    /// The target type declared by a `Typed(container.iter(), T)` *for_each*
-    /// invariant: every pointer element of the container points at a valid `T`,
-    /// so a single pointer loaded from it (`let cur = buckets[i]`) discharges
-    /// `Typed(cur, T)` — without trusting the pointer type alone, which would
-    /// also bless dangling pointers in containers carrying no such invariant.
-    pub for_each_target_ty: Option<Ty<'tcx>>,
-}
-
 /// A memory allocation: a stack local, a heap object (`Box`/`Vec`), or an
 /// external raw-pointer placeholder.
 ///
@@ -283,10 +254,27 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     /// `MaybeUninit::uninit`).
     pub initialized: bool,
 
-    /// Facts established about this allocation (liveness, NUL termination,
-    /// `for_each` target type), from contracts, invariants, or VM
-    /// materialization.
-    pub facts: AllocFacts<'tcx>,
+    /// How this allocation's liveness is established, and for which region.
+    /// Only consulted for external allocations, which carry no liveness
+    /// guarantee (their memory is owned by the caller); `AssumedFor('a)` records
+    /// the `Alive(p, 'a)` contract's region so the checker can reject a use that
+    /// demands a longer region.
+    pub liveness: Liveness<'tcx>,
+
+    /// Whether the allocation is known to be a null-terminated byte buffer (a
+    /// valid C string), asserted via a `ValidCStr` contract fact or struct
+    /// invariant.
+    pub nul_terminated: bool,
+
+    /// The target type declared by a `Typed(container.iter(), T)` *for_each*
+    /// invariant: every pointer element of the container points at a valid `T`,
+    /// so a single pointer loaded from it (`let cur = buckets[i]`) discharges
+    /// `Typed(cur, T)` — without trusting the pointer type alone, which would
+    /// also bless dangling pointers in containers carrying no such invariant.
+    /// Anchored to the allocation (rather than the container value) because a
+    /// pointer loaded from the container resolves its provenance through this
+    /// allocation, not through the container value.
+    pub for_each_target_ty: Option<Ty<'tcx>>,
 
     /// The allocation a sub-view was derived from: a slice view created by
     /// `s[i..j]` / `s.get(range)`, `split_at` / `align_to` / `as_chunks`, or
@@ -324,11 +312,9 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
             kind,
             dead: false,
             initialized: false,
-            facts: AllocFacts {
-                liveness: Liveness::Unassumed,
-                nul_terminated: false,
-                for_each_target_ty: None,
-            },
+            liveness: Liveness::Unassumed,
+            nul_terminated: false,
+            for_each_target_ty: None,
             parent: None,
             slice_data: None,
         }
@@ -360,15 +346,16 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
     }
 }
 
-/// Contract/invariant facts latched while stepping a path.
+/// Facts latched while stepping a path, read afterwards by the property
+/// checker.
 ///
 /// Each flag is set at most once during path execution (a contract fact or a
-/// recognized discriminant) and read afterwards by the property checker.  They
-/// are per-path state, not per-step: once set they are never cleared within a
-/// path.  (`has_checked_bounds` is additionally accumulated *across checkpoints*
-/// by the engine, which reads it back into the next path's flags.)
+/// recognized discriminant / bounds check).  They are per-path state, not
+/// per-step: once set they are never cleared within a path.  (`has_checked_bounds`
+/// is additionally accumulated *across checkpoints* by the engine, which reads
+/// it back into the next path's flags.)
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ContractFlags {
+pub(crate) struct PathFacts {
     /// Whether a SplitTransmute contract was asserted by the caller.
     pub split_transmute_asserted: bool,
     /// Whether an `Alias` hazard was accepted via the caller's contract.
@@ -585,7 +572,7 @@ pub(crate) struct SolverState<'ctx, 'tcx> {
 /// Everything here is keyed by MIR `Local` (the callee reuses the caller's
 /// local indices), so it must be swapped out for the duration of the callee's
 /// execution and swapped back afterwards.  The path-scoped state (`memory`,
-/// `solver`, `contract_flags`) is deliberately *not* captured: it accumulates
+/// `solver`, `path_facts`) is deliberately *not* captured: it accumulates
 /// across the whole path, including inlined frames.
 pub(crate) struct FrameSnapshot<'ctx, 'tcx> {
     pub(crate) body: &'ctx Body<'tcx>,
@@ -639,10 +626,9 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// Solver constraints and term caches accumulated along the current path.
     pub(crate) solver: SolverState<'ctx, 'tcx>,
 
-    // ── Per-path contract facts
-    /// Contract/invariant facts latched while stepping this path, read by the
-    /// property checker.
-    pub(crate) contract_flags: ContractFlags,
+    // ── Per-path facts
+    /// Facts latched while stepping this path, read by the property checker.
+    pub(crate) path_facts: PathFacts,
 }
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
@@ -663,7 +649,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             exec: ExecCtx::default(),
             analysis: AnalysisCtx::default(),
             solver: SolverState::default(),
-            contract_flags: ContractFlags::default(),
+            path_facts: PathFacts::default(),
         }
     }
 

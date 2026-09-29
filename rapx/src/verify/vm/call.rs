@@ -2958,7 +2958,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             })
                         });
                         if let Some(alloc_id) = alloc_id {
-                            self.contract_flags.has_checked_bounds = true;
+                            self.path_facts.has_checked_bounds = true;
                             let zero = Int::from_u64(self.ctx, 0);
                             let mut byte_offsets: Vec<(usize, Int)> = self
                                 .alloc_byte_values(alloc_id)
