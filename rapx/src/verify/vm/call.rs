@@ -3387,12 +3387,33 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.set_field_value(dest, vec![1], end_val);
     }
 
+    /// Compute the `(ptr, cap, len)` field paths of a `Vec`-shaped local, handling
+    /// both the std `Vec<T>` layout `{ buf: RawVec { ptr, cap }, len }` and the
+    /// flat local re-implementation `{ ptr: NonNull, len, cap }` used by the
+    /// std-challenge suites.
+    fn vec_field_paths(&self, local: Local) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+        let ty = self.body().local_decls[local].ty;
+        let TyKind::Adt(adt, _) = ty.kind() else {
+            return (vec![0, 0], vec![0, 1], vec![1]);
+        };
+        if adt.non_enum_variant().fields.len() >= 3 {
+            // flat `{ ptr, len, cap }`: ptr=[0], len=[1], cap=[2].
+            (vec![0], vec![2], vec![1])
+        } else {
+            // std `{ buf: RawVec { ptr, cap }, len }`: ptr=[0,0], cap=[0,1], len=[1].
+            (vec![0, 0], vec![0, 1], vec![1])
+        }
+    }
+
     /// Materialize the `{ptr, cap, len}` field values of a `Vec<T>` aggregate
     /// at `local`, using the real `Vec` layout `{ buf: RawVec<T>, len }` /
     /// `RawVec { ptr, cap }`:
     ///   * field `[0, 0]` = backing-buffer pointer (`buf.ptr`),
     ///   * field `[0, 1]` = capacity (`buf.cap`),
     ///   * field `[1]`   = length (`len`).
+    ///
+    /// Flat local re-implementations (`{ ptr, len, cap }`) use `[0]`/`[2]`/`[1]`
+    /// instead (see [`Self::vec_field_paths`]).
     ///
     /// The symbolic invariant `0 <= len <= cap` and `cap * elem_size <=
     /// isize::MAX` is asserted as a path condition so downstream `len()` /
@@ -3409,7 +3430,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         len: Int<'ctx>,
     ) {
         let elem_size = self.size_of_ty(ptr.ty).max(1);
-        self.set_field_value(local, vec![0, 0], ptr);
+        let (ptr_path, _, _) = self.vec_field_paths(local);
+        self.set_field_value(local, ptr_path, ptr);
         self.materialize_vec_len_cap(local, cap, len, elem_size);
     }
 
@@ -3423,9 +3445,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         len: Int<'ctx>,
         elem_size: u64,
     ) {
+        let (_, cap_path, len_path) = self.vec_field_paths(local);
         let usize_ty = self.tcx.types.usize;
-        self.set_field_value(local, vec![0, 1], VmValue::new(cap.clone(), usize_ty));
-        self.set_field_value(local, vec![1], VmValue::new(len.clone(), usize_ty));
+        self.set_field_value(local, cap_path, VmValue::new(cap.clone(), usize_ty));
+        self.set_field_value(local, len_path, VmValue::new(len.clone(), usize_ty));
         let zero = Int::from_u64(self.ctx, 0);
         self.solver.constraints.push(len.ge(&zero));
         self.solver.constraints.push(len.le(&cap));

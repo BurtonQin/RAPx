@@ -183,6 +183,9 @@ fn init_types(tcx: TyCtxt) -> Types {
             continue;
         }
         let name = tcx.def_path_str(did);
+        if name.ends_with("::Vec") || name == "Vec" {
+            types.vec_types.push(did);
+        }
         if name.ends_with("::Iter")
             || name == "Iter"
             || name.ends_with("::IterMut")

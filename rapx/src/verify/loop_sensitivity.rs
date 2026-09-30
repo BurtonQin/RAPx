@@ -51,7 +51,12 @@ use super::{
 use crate::helpers::mir_scan::Checkpoint;
 
 /// Upper bound for repeat selected by auto mode.
-pub(crate) const MAX_AUTO_REPEAT: usize = 16;
+///
+/// This caps how many times a loop body is unrolled during path enumeration;
+/// loop-heavy functions (e.g. UTF-16 decoders) scale super-linearly with it.
+/// Lower it to speed up verification at the cost of loop sensitivity (bugs that
+/// only manifest after more iterations can be missed).
+pub(crate) const MAX_AUTO_REPEAT: usize = 8;
 
 /// Fallback loop-carried distance used when a sink is loop-sensitive but the
 /// local transfer graph is too imprecise to calculate a better distance.

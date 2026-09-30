@@ -550,25 +550,55 @@ impl<'tcx> PathGraph<'tcx> {
             let TerminatorKind::Call { func, .. } = &term.kind else {
                 continue;
             };
-            let Some(callee) = crate::helpers::mir_utils::dep_callee_def_id(func) else {
+            // Cross-crate callees keep their raw trait-method def_id (trait
+            // methods have no MIR and are left to builtin models). Local callees
+            // are resolved to the concrete impl so a user trait method (e.g.
+            // `<MyIter as Iterator>::next`) inlines against its actual MIR.
+            let Some(base_callee) = crate::helpers::mir_utils::dep_callee_def_id(func) else {
                 continue;
+            };
+            let cross_crate = base_callee.as_local().is_none();
+            let callee = if cross_crate {
+                base_callee
+            } else {
+                crate::helpers::mir_utils::dep_callee_resolved_def_id(tcx, caller_def_id, func)
+                    .unwrap_or(base_callee)
             };
             let name = tcx.def_path_str(callee);
             let is_intrinsic = name.contains("::intrinsics::")
                 || name.starts_with("intrinsics::")
                 || name.ends_with("::drop_in_place");
-            // If builtin_models has a hand-written summary, use it directly (it is
-            // more accurate than inline execution). Otherwise fall back to CFG
-            // inlining for cross-crate callees with available MIR.
+            let is_unsafe_fn = tcx.fn_sig(callee).skip_binder().safety() == rustc_hir::Safety::Unsafe;
             let has_fn_sim = crate::verify::call_summary::builtin_models::is_modeled(Some(callee));
             let is_slice_summary = crate::helpers::mir_utils::is_index_method(tcx, callee)
                 || crate::verify::call_summary::interprocedural::is_slice_get_summary(tcx, callee);
+            // Inlining a callee that itself has a loop (a back-edge) into a
+            // looping caller would nest the loop and blow up path enumeration.
+            // Only inline loop-free local callees.  Branch-free local callees
+            // (trivial getters like `as_ptr`/`as_mut_ptr`/`len`) are already
+            // handled precisely by the VM's recursive `exec_inline_call`, so
+            // only callees with a real `SwitchInt` (which that path rejects)
+            // need CFG inlining to recover branch-sensitive provenance.
+            let small_local = !cross_crate
+                && tcx.is_mir_available(callee)
+                && {
+                    let body = tcx.optimized_mir(callee);
+                    let has_backedge = body.basic_blocks.iter_enumerated().any(|(i, bb)| {
+                        bb.terminator().successors().any(|s| s.index() <= i.index())
+                    });
+                    let has_switch = body.basic_blocks.iter_enumerated().any(|(_, bb)| {
+                        !bb.is_cleanup
+                            && matches!(bb.terminator().kind, TerminatorKind::SwitchInt { .. })
+                    });
+                    body.basic_blocks.len() <= 16 && !has_backedge && has_switch
+                };
             if callee != caller_def_id
                 && tcx.is_mir_available(callee)
                 && !is_intrinsic
+                && !is_unsafe_fn
                 && !has_fn_sim
                 && !is_slice_summary
-                && callee.as_local().is_none()
+                && (cross_crate || small_local)
             {
                 pending.push((i, callee));
             }
@@ -948,6 +978,13 @@ impl<'tcx> PathGraph<'tcx> {
         // callee's global start for inlined blocks). Switch targets are local
         // MIR block indices, so they must be shifted into the global space.
         let base = cur - self.cfg.block(cur).local_index;
+
+        // An inlined callee's locals reuse the caller's indices, so its
+        // discriminant/constraint info is not tracked here; conservatively allow
+        // every branch instead of pruning with the caller's (clashing) locals.
+        if self.cfg.block(cur).def_id != self.cfg.def_id {
+            return true;
+        }
 
         match &terminator.kind {
             TerminatorKind::SwitchInt { discr, targets } => {

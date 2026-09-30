@@ -82,11 +82,13 @@ impl<'tcx> VerifyEngine<'tcx> {
         // can discharge InBound checks in a later checkpoint.
         let mut accumulated_has_checked: bool = false;
 
-        // Map (def_id, local block) -> global block, computed once and reused
-        // by `inject_inline_boundaries` for every checkpoint.
-        let mut local_to_global: HashMap<(DefId, usize), usize> = HashMap::new();
+        // Map (def_id, local block) -> global block(s), computed once and reused
+        // by `inject_inline_boundaries` for every checkpoint.  A callee inlined
+        // at several call sites (e.g. `as_mut_ptr` called twice) contributes one
+        // global entry block per site, so the value is a list in path order.
+        let mut local_to_global: HashMap<(DefId, usize), Vec<usize>> = HashMap::new();
         for (global, (def_id, local)) in tree.block_fns().iter().enumerate() {
-            local_to_global.insert((*def_id, *local), global);
+            local_to_global.entry((*def_id, *local)).or_default().push(global);
         }
 
         // Process checkpoints in forward (MIR) order so that facts
@@ -303,13 +305,15 @@ impl<'tcx> VerifyEngine<'tcx> {
     /// callee entry carries its argument binding; each exit writes the callee's
     /// return value back to the caller's destination.
     ///
-    /// `local_to_global` maps `(def_id, local_block)` pairs to their global
-    /// block index in `tree`; it is precomputed by the caller so it can be
-    /// reused across every checkpoint instead of rebuilt per path.
+    /// `local_to_global` maps `(def_id, local_block)` pairs to the list of
+    /// their global block indices in `tree` (a callee inlined at multiple call
+    /// sites has several entries, in path order); it is precomputed by the
+    /// caller so it can be reused across every checkpoint instead of rebuilt
+    /// per path.
     fn inject_inline_boundaries(
         items: Vec<RelevantItem<'tcx>>,
         tree: &PathTree,
-        local_to_global: &HashMap<(DefId, usize), usize>,
+        local_to_global: &HashMap<(DefId, usize), Vec<usize>>,
         caller: DefId,
     ) -> Vec<RelevantItem<'tcx>> {
         let mut out: Vec<RelevantItem<'tcx>> = Vec::new();
@@ -317,6 +321,10 @@ impl<'tcx> VerifyEngine<'tcx> {
         // still emits its CalleeEntry on the first item.
         let mut prev_def_id: Option<DefId> = Some(caller);
         let mut active: Vec<(DefId, usize)> = Vec::new();
+        // How many times each callee has been entered so far, to select the
+        // correct entry binding when the same callee is inlined more than once
+        // along a single path.
+        let mut entry_cursor: HashMap<DefId, usize> = HashMap::new();
 
         for item in items {
             let cur_def_id = match &item {
@@ -338,13 +346,24 @@ impl<'tcx> VerifyEngine<'tcx> {
                             {
                                 out.push(RelevantItem::CalleeExit { dest });
                             }
-                            let local = match &item {
-                                RelevantItem::Statement { block, .. }
-                                | RelevantItem::Terminator { block, .. } => block.as_usize(),
-                                _ => unreachable!(),
-                            };
-                            if let Some(global) = local_to_global.get(&(cur, local)).copied() {
-                                if let Some(binding) = tree.inline_binding(global) {
+                            // Bind the callee's entry (local block 0) to the
+                            // correct inlining of `cur` on this path. A callee
+                            // called from several call sites has one global
+                            // entry block per site; they are consumed in path
+                            // order. A single call site (possibly re-entered
+                            // via a loop) always reuses its one entry block.
+                            if let Some(globals) = local_to_global.get(&(cur, 0)) {
+                                let idx = if globals.len() == 1 {
+                                    0
+                                } else {
+                                    let cursor = entry_cursor.entry(cur).or_insert(0);
+                                    let idx = *cursor;
+                                    *cursor = (*cursor + 1).min(globals.len() - 1);
+                                    idx
+                                };
+                                if let Some(&global) = globals.get(idx)
+                                    && let Some(binding) = tree.inline_binding(global)
+                                {
                                     out.push(RelevantItem::CalleeEntry {
                                         callee: cur,
                                         args: binding.arg_locals.clone(),
