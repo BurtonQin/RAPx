@@ -586,9 +586,10 @@ impl<'tcx> PathGraph<'tcx> {
                     let has_backedge = body.basic_blocks.iter_enumerated().any(|(i, bb)| {
                         bb.terminator().successors().any(|s| s.index() <= i.index())
                     });
-                    let has_switch = body.basic_blocks.iter_enumerated().any(|(_, bb)| {
+                    let has_switch = body.basic_blocks.iter_enumerated().any(|(idx, bb)| {
                         !bb.is_cleanup
                             && matches!(bb.terminator().kind, TerminatorKind::SwitchInt { .. })
+                            && !crate::helpers::mir_utils::switch_is_debug_assert(tcx, &body, idx)
                     });
                     body.basic_blocks.len() <= 16 && !has_backedge && has_switch
                 };

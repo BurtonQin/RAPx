@@ -13,7 +13,8 @@ use rustc_middle::ty::consts::ConstExt;
 use rustc_middle::{
     mir::interpret::{AllocId, GlobalAlloc},
     mir::{
-        BasicBlock, Body, ConstValue, Local, Operand, Place, Rvalue, StatementKind, TerminatorKind,
+        BasicBlock, Body, ConstValue, Local, Operand, Place, Rvalue, StatementKind, SwitchTargets,
+        TerminatorKind,
     },
     ty::{
         ConstKind, FieldDef, GenericArgKind, GenericArgsRef, PseudoCanonicalInput, Ty, TyCtxt,
@@ -90,6 +91,127 @@ pub(crate) fn is_diverging_call(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
         || tcx.intrinsic(def_id).is_some_and(|i| {
             i.name == rustc_span::sym::unreachable || i.name == rustc_span::sym::abort
         })
+}
+
+/// Whether a `SwitchInt`'s non-`otherwise` targets all lead straight to
+/// `panic`/`unreachable` (a `debug_assert!`/`assert!` dispatch).  Such a switch
+/// is dead on the normal path and can be inlined by following only the
+/// `otherwise` edge.
+pub(crate) fn switch_targets_unreachable<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    targets: &SwitchTargets,
+) -> bool {
+    targets.iter().all(|(_, target)| {
+        let mut cur = target;
+        let mut seen = HashSet::new();
+        loop {
+            if !seen.insert(cur) {
+                return false;
+            }
+            let bb = &body.basic_blocks[cur];
+            let term = bb.terminator();
+            match &term.kind {
+                TerminatorKind::Unreachable => return true,
+                TerminatorKind::Call { func, .. } => {
+                    let Some(callee) = dep_callee_def_id(func) else {
+                        return false;
+                    };
+                    return is_diverging_call(tcx, callee);
+                }
+                TerminatorKind::Goto { target: next } => {
+                    cur = *next;
+                }
+                // A bare `return` with no statements is a drop-flag skip (dead
+                // on the normal path); a `return` preceded by real statements
+                // computes a different value, so it is a semantic branch and
+                // must not be ignored.
+                TerminatorKind::Return => return bb.statements.is_empty(),
+                _ => return false,
+            }
+        }
+    })
+}
+
+/// Whether a block's `SwitchInt` is a `debug_assert!`-style dispatch (all
+/// non-`otherwise` targets are `panic`/`unreachable`), or has a constant /
+/// runtime-check discriminant that folds to a single live edge.  Such a switch
+/// is dead on the normal path and is safe to ignore when inlining.
+pub(crate) fn switch_is_debug_assert<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    bb: BasicBlock,
+) -> bool {
+    let TerminatorKind::SwitchInt { discr, targets } = &body.basic_blocks[bb].terminator().kind
+    else {
+        return false;
+    };
+    // A constant discriminant (e.g. `_3 = const true` for a no-drop flag) folds
+    // to a single live edge; the other edges are dead and can be ignored when
+    // inlining.  This includes a `move _3` whose `_3` is assigned a constant
+    // earlier in the body.
+    let discr_is_const = match discr {
+        Operand::Constant(_) => true,
+        // `ub_checks` lowers to `Operand::RuntimeChecks` on newer rustc: it is a
+        // compile-time runtime-check flag, not a semantic branch, so it can be
+        // folded to the no-check edge when inlining (mirroring
+        // `rvalue_runtime_checks_value` below).
+        #[cfg(rapx_ge_95)]
+        Operand::RuntimeChecks(_) => true,
+        Operand::Copy(p) | Operand::Move(p) => {
+            body.basic_blocks.iter().any(|bbd| {
+                bbd.statements.iter().any(|stmt| {
+                    let StatementKind::Assign(assign) = &stmt.kind else {
+                        return false;
+                    };
+                    let (dest, rvalue) = &**assign;
+                    if dest != p {
+                        return false;
+                    }
+                    match rvalue {
+                        #[cfg(rapx_rvalue_use_with_retag)]
+                        Rvalue::Use(Operand::Constant(_), _) => true,
+                        #[cfg(not(rapx_rvalue_use_with_retag))]
+                        Rvalue::Use(Operand::Constant(_)) => true,
+                        _ => rvalue_runtime_checks_value(rvalue).is_some(),
+                    }
+                })
+            })
+        }
+        #[allow(unreachable_patterns)]
+        _ => false,
+    };
+    if discr_is_const {
+        return true;
+    }
+    switch_targets_unreachable(tcx, body, targets)
+}
+
+/// Resolve a `cfg!`-style runtime-check flag (`UbChecks`, `ContractChecks`,
+/// `OverflowChecks`) to a constant `u64`. We fold to the *no-check* edge (`0`):
+/// the check only panics on a violated precondition, and its branchy body would
+/// otherwise corrupt field/Typed propagation during inlining. Older rustc lowers
+/// these to `Rvalue::NullaryOp(NullOp::RuntimeChecks)`; newer rustc lowers them
+/// to `Operand::RuntimeChecks`.
+pub(crate) fn rvalue_runtime_checks_value(rvalue: &Rvalue<'_>) -> Option<u64> {
+    #[cfg(rapx_rvalue_has_nullary_op)]
+    {
+        if let Rvalue::NullaryOp(rustc_middle::mir::NullOp::RuntimeChecks(_)) = rvalue {
+            return Some(0);
+        }
+    }
+    #[cfg(not(rapx_rvalue_has_nullary_op))]
+    {
+        #[cfg(rapx_rvalue_use_with_retag)]
+        if let Rvalue::Use(Operand::RuntimeChecks(_), _) = rvalue {
+            return Some(0);
+        }
+        #[cfg(not(rapx_rvalue_use_with_retag))]
+        if let Rvalue::Use(Operand::RuntimeChecks(_)) = rvalue {
+            return Some(0);
+        }
+    }
+    None
 }
 
 /// The concrete `core::ops::Range*` struct a `DefId` denotes.

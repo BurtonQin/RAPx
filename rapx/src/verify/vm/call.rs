@@ -776,7 +776,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     bb.terminator().kind,
                     rustc_middle::mir::TerminatorKind::SwitchInt { .. }
                 )
-                && !Self::switch_is_debug_assert(self.tcx, callee_body, idx)
+                && !crate::helpers::mir_utils::switch_is_debug_assert(self.tcx, callee_body, idx)
         });
         if arg_values.len() > 4 || callee_body.basic_blocks.len() > 16 || n_return > 1 || has_switch
         {
@@ -921,142 +921,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         true
     }
 
-    /// Whether a `SwitchInt`'s non-`otherwise` targets all lead straight to
-    /// `panic`/`unreachable` (a `debug_assert!`/`assert!` dispatch).  Such a
-    /// switch is dead on the normal path and can be inlined by following only
-    /// the `otherwise` edge.
-    fn switch_targets_unreachable(
-        tcx: rustc_middle::ty::TyCtxt<'tcx>,
-        body: &rustc_middle::mir::Body<'tcx>,
-        targets: &rustc_middle::mir::SwitchTargets,
-    ) -> bool {
-        targets.iter().all(|(_, target)| {
-            let mut cur = target;
-            let mut seen = FxHashSet::default();
-            loop {
-                if !seen.insert(cur) {
-                    return false;
-                }
-                let bb = &body.basic_blocks[cur];
-                let term = bb.terminator();
-                match &term.kind {
-                    rustc_middle::mir::TerminatorKind::Unreachable => return true,
-                    rustc_middle::mir::TerminatorKind::Call { func, .. } => {
-                        let Some(callee) = crate::helpers::mir_utils::dep_callee_def_id(func)
-                        else {
-                            return false;
-                        };
-                        return crate::helpers::mir_utils::is_diverging_call(tcx, callee);
-                    }
-                    rustc_middle::mir::TerminatorKind::Goto { target: next } => {
-                        cur = *next;
-                    }
-                    // A bare `return` with no statements is a drop-flag skip
-                    // (dead on the normal path); a `return` preceded by real
-                    // statements computes a different value, so it is a semantic
-                    // branch and must not be ignored.
-                    rustc_middle::mir::TerminatorKind::Return => return bb.statements.is_empty(),
-                    _ => return false,
-                }
-            }
-        })
-    }
-
-    /// Whether a block's `SwitchInt` is a `debug_assert!`-style dispatch (all
-    /// non-`otherwise` targets are `panic`/`unreachable`).
-    fn switch_is_debug_assert(
-        tcx: rustc_middle::ty::TyCtxt<'tcx>,
-        body: &rustc_middle::mir::Body<'tcx>,
-        bb: BasicBlock,
-    ) -> bool {
-        let rustc_middle::mir::TerminatorKind::SwitchInt { discr, targets } =
-            &body.basic_blocks[bb].terminator().kind
-        else {
-            return false;
-        };
-        // A constant discriminant (e.g. `_3 = const true` for a no-drop flag)
-        // folds to a single live edge; the other edges are dead and can be
-        // ignored when inlining.  This includes a `move _3` whose `_3` is
-        // assigned a constant earlier in the body.
-        let discr_is_const = match discr {
-            rustc_middle::mir::Operand::Constant(_) => true,
-            // `ub_checks` lowers to `Operand::RuntimeChecks` on newer rustc: it
-            // is a compile-time runtime-check flag, not a semantic branch, so it
-            // can be folded to the no-check edge when inlining (mirroring
-            // `rvalue_runtime_checks_value` below).
-            #[cfg(rapx_ge_95)]
-            rustc_middle::mir::Operand::RuntimeChecks(_) => true,
-            rustc_middle::mir::Operand::Copy(p) | rustc_middle::mir::Operand::Move(p) => {
-                body.basic_blocks.iter().any(|bbd| {
-                    bbd.statements.iter().any(|stmt| {
-                        let rustc_middle::mir::StatementKind::Assign(assign) = &stmt.kind else {
-                            return false;
-                        };
-                        let (dest, rvalue) = &**assign;
-                        if dest != p {
-                            return false;
-                        }
-                        match rvalue {
-                            #[cfg(rapx_rvalue_use_with_retag)]
-                            rustc_middle::mir::Rvalue::Use(
-                                rustc_middle::mir::Operand::Constant(_),
-                                _,
-                            ) => true,
-                            #[cfg(not(rapx_rvalue_use_with_retag))]
-                            rustc_middle::mir::Rvalue::Use(
-                                rustc_middle::mir::Operand::Constant(_),
-                            ) => true,
-                            _ => Self::rvalue_runtime_checks_value(rvalue).is_some(),
-                        }
-                    })
-                })
-            }
-            #[allow(unreachable_patterns)]
-            _ => false,
-        };
-        if discr_is_const {
-            return true;
-        }
-        Self::switch_targets_unreachable(tcx, body, targets)
-    }
-
-    /// Resolve a `cfg!`-style runtime-check flag (`UbChecks`,
-    /// `ContractChecks`, `OverflowChecks`) to a constant `u64`. We fold to the
-    /// *no-check* edge (`0`): the check only panics on a violated precondition,
-    /// and its branchy body would otherwise corrupt field/Typed propagation
-    /// during inlining. Older rustc lowers these to
-    /// `Rvalue::NullaryOp(NullOp::RuntimeChecks)`; newer rustc lowers them to
-    /// `Operand::RuntimeChecks`.
-    fn rvalue_runtime_checks_value(
-        rvalue: &rustc_middle::mir::Rvalue<'tcx>,
-    ) -> Option<u64> {
-        #[cfg(rapx_rvalue_has_nullary_op)]
-        {
-            if let rustc_middle::mir::Rvalue::NullaryOp(rustc_middle::mir::NullOp::RuntimeChecks(
-                _,
-            )) = rvalue
-            {
-                return Some(0);
-            }
-        }
-        #[cfg(not(rapx_rvalue_has_nullary_op))]
-        {
-            #[cfg(rapx_rvalue_use_with_retag)]
-            if let rustc_middle::mir::Rvalue::Use(rustc_middle::mir::Operand::RuntimeChecks(_), _) =
-                rvalue
-            {
-                return Some(0);
-            }
-            #[cfg(not(rapx_rvalue_use_with_retag))]
-            if let rustc_middle::mir::Rvalue::Use(rustc_middle::mir::Operand::RuntimeChecks(_)) =
-                rvalue
-            {
-                return Some(0);
-            }
-        }
-        None
-    }
-
     /// Resolve a `SwitchInt` discriminant to a constant `u64`, following a
     /// single local-assignment chain (a `cfg!`-style runtime-check flag).
     fn switch_discr_const(
@@ -1078,7 +942,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if dest != p {
                     continue;
                 }
-                return Self::rvalue_runtime_checks_value(rvalue);
+                return crate::helpers::mir_utils::rvalue_runtime_checks_value(rvalue);
             }
         }
         None
@@ -1145,7 +1009,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // A `debug_assert!`/`assert!` switch or a drop-flag dispatch
                     // has its non-otherwise edges dead on the normal path, so
                     // follow only `otherwise`.
-                    let trivial = Self::switch_targets_unreachable(self.tcx, self.body(), targets);
+                    let trivial = crate::helpers::mir_utils::switch_targets_unreachable(
+                        self.tcx,
+                        self.body(),
+                        targets,
+                    );
                     if trivial {
                         queue.push(targets.otherwise());
                         continue;
