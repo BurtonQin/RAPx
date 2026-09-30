@@ -405,15 +405,37 @@ pub(crate) struct ByteInfo<'ctx> {
 /// * path replay (`CalleeEntry`/`CalleeExit` items) is iterative and keeps its
 ///   saved caller frames on `frames`;
 /// * recursive inlining (`exec_inline_call`) unwinds via the Rust call stack,
-///   is bounded by `depth`, and stashes its per-call scratch bindings in
+///   is bounded by `inline_depth`, and stashes its per-call scratch bindings in
 ///   `arg_referents`/`deferred_field_writes`.
+///
+/// # Deferring `&mut` writes across the inline frame
+///
+/// While the callee runs, the caller's `local_fields` is parked in the saved
+/// [`FrameSnapshot`], so a write through a `&mut` argument cannot land in it
+/// immediately.  `arg_referents` pre-resolves (before `save_frame`) which caller
+/// local each `&mut` argument points at, and `deferred_field_writes` collects
+/// the writes to replay once the caller is restored:
+///
+/// ```text
+/// struct Foo { field: i32 }
+/// fn bar(foo: &mut Foo) { foo.field = 1; }   // inlined callee
+/// fn main() {
+///     let mut x = Foo { field: 0 };
+///     bar(&mut x);                            // inline `bar`
+/// }
+/// ```
+///
+/// 1. Enter `bar`: `save_frame` parks `main`'s locals; `arg_referents[0] = x`.
+/// 2. Run `bar`: `foo.field = 1` (`(*foo).field`) can no longer resolve `x` by
+///    address (the caller's address map is gone), so it pushes `(x, [0], 1)`.
+/// 3. Exit `bar`: `restore_frame` brings `main`'s locals back, then the deferred
+///    write is replayed, giving `x.field == 1`.
 #[derive(Default)]
 pub(crate) struct InlineCtx<'ctx, 'tcx> {
-    /// Recursion depth of `exec_inline_call` (incremented on entry, decremented
-    /// on exit), to bound nested inlining.  Distinct from `frames`: recursive
-    /// inlining unwinds through the Rust call stack and does not push onto
-    /// `frames`.
-    pub depth: usize,
+    /// Current inlining depth (nested inlined callees), bounded by
+    /// `MAX_INLINE_DEPTH`.  Distinct from `frames`: recursive inlining unwinds
+    /// through the Rust call stack and does not push onto `frames`.
+    pub inline_depth: usize,
     /// Stack of saved caller frames (a [`FrameSnapshot`] each) for inlined-callee
     /// path execution.
     pub frames: Vec<FrameSnapshot<'ctx, 'tcx>>,
@@ -423,10 +445,12 @@ pub(crate) struct InlineCtx<'ctx, 'tcx> {
     /// `exec_assign` to resolve `(*self).field = val` writes through a `&mut
     /// self` reborrow temp back to the caller's referent.
     pub arg_referents: Vec<Option<Local>>,
-    /// Field writes collected during `exec_inline_call` that must be applied to
-    /// the caller's `local_fields` *after* the inline frame is popped (the
-    /// caller's field map is not live while the callee executes).  Each entry is
-    /// `(caller_referent_local, field_path, value)`.
+    /// Field writes through a `&mut` argument collected during
+    /// `exec_inline_call`, replayed against the caller's `local_fields` after
+    /// `restore_frame` (the caller's field map is parked while the callee runs).
+    /// Each entry is `(caller_local, field_path, value)`, where `caller_local`
+    /// comes from `arg_referents` — the caller local the `&mut` argument points
+    /// at, not the argument itself.
     pub deferred_field_writes: Vec<(Local, Vec<usize>, VmValue<'ctx, 'tcx>)>,
 }
 

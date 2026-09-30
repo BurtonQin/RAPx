@@ -19,7 +19,7 @@ use crate::verify::api_classify;
 use crate::verify::call_summary::{self, CallEffect};
 use super::state::{AllocId, ContentTy, OffsetKind, Provenance, ValueInvariants, VmState, VmValue};
 
-/// Classification of a call site for dispatch prioritization.
+/// Maximum number of nested inlined callees before giving up on inlining.
 const MAX_INLINE_DEPTH: usize = 5;
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
@@ -737,10 +737,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         caller_arg_locals: &[Option<Local>],
         dest: Local,
     ) -> bool {
-        if self.inline.depth >= MAX_INLINE_DEPTH {
+        if self.inline.inline_depth >= MAX_INLINE_DEPTH {
             return false;
         }
-        self.inline.depth += 1;
+        self.inline.inline_depth += 1;
 
         // Only inline small, branch-free functions. `inline_execute_body`
         // follows every `SwitchInt` target without forking state, so a real
@@ -780,7 +780,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         });
         if arg_values.len() > 4 || callee_body.basic_blocks.len() > 16 || n_return > 1 || has_switch
         {
-            self.inline.depth -= 1;
+            self.inline.inline_depth -= 1;
             return false;
         }
 
@@ -912,12 +912,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             None => {
-                self.inline.depth -= 1;
+                self.inline.inline_depth -= 1;
                 return false;
             }
         }
 
-        self.inline.depth -= 1;
+        self.inline.inline_depth -= 1;
         true
     }
 
