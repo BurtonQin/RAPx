@@ -568,7 +568,6 @@ impl<'tcx> PathGraph<'tcx> {
             let is_intrinsic = name.contains("::intrinsics::")
                 || name.starts_with("intrinsics::")
                 || name.ends_with("::drop_in_place");
-            let is_unsafe_fn = tcx.fn_sig(callee).skip_binder().safety() == rustc_hir::Safety::Unsafe;
             let has_fn_sim = crate::verify::call_summary::builtin_models::is_modeled(Some(callee));
             let is_slice_summary = crate::helpers::mir_utils::is_index_method(tcx, callee)
                 || crate::verify::call_summary::interprocedural::is_slice_get_summary(tcx, callee);
@@ -578,7 +577,12 @@ impl<'tcx> PathGraph<'tcx> {
             // (trivial getters like `as_ptr`/`as_mut_ptr`/`len`) are already
             // handled precisely by the VM's recursive `exec_inline_call`, so
             // only callees with a real `SwitchInt` (which that path rejects)
-            // need CFG inlining to recover branch-sensitive provenance.
+            // need CFG inlining to recover branch-sensitive provenance.  Unsafe
+            // callees are inlined too: their call site remains a checkpoint
+            // (the `#[rapx::requires]` is enforced from the pre-captured
+            // checkpoint operands, independent of inlining), while inlining the
+            // body propagates its branch-dependent return value to downstream
+            // checks in the caller.
             let small_local = !cross_crate
                 && tcx.is_mir_available(callee)
                 && {
@@ -596,7 +600,6 @@ impl<'tcx> PathGraph<'tcx> {
             if callee != caller_def_id
                 && tcx.is_mir_available(callee)
                 && !is_intrinsic
-                && !is_unsafe_fn
                 && !has_fn_sim
                 && !is_slice_summary
                 && (cross_crate || small_local)

@@ -696,6 +696,28 @@ fn call_chain_depth() {
     assert_function_result(&output, "target", "SOUND");
 }
 
+// ================ Unsafe Callee = Interprocedural Checkpoint ================
+// An unsafe callee is *both* a checkpoint for callers (its `requires` is
+// discharged at the call site) *and* a separate `#[rapx::verify]` target whose
+// own body is analyzed.  Inlining the unsafe callee must not drop the
+// `requires` checkpoint, while propagating its branch-dependent return value to
+// downstream `InBound` checks in the caller.
+#[test]
+fn interproc_unsafe_callee() {
+    let output = run_with_args("verify_units/interproc_unsafe_callee", CMD_VERIFY_TARGETED);
+    // The callee's own body (`*ptr`) is analyzed as a raw-ptr-deref checkpoint.
+    assert_function_result(&output, "read_ptr", "SOUND");
+    // The sound caller discharges the callee's `requires` at the call site.
+    assert_function_result(&output, "sound_caller", "SOUND");
+    // The unsound caller fails to discharge the callee's `requires` — the
+    // checkpoint is still enforced even though the callee is now inlined.
+    assert_unproved(&output, "unsound_caller", "ValidPtr");
+    // A branch-dependent return value (`is_within == 1` ⟹ `idx < len`) must
+    // propagate through the inlined unsafe callee so the caller's `InBound`
+    // access is proved.
+    assert_function_result(&output, "caller_uses_pred", "SOUND");
+}
+
 // ================ Trait Unsound Cases =============
 #[test]
 fn trait_unsound_prepare() {
