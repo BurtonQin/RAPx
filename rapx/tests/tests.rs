@@ -1,7 +1,6 @@
 #![allow(clippy::bool_assert_comparison)]
 use fs4::fs_std::FileExt;
 use std::ffi::OsString;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -33,21 +32,25 @@ fn path_count_for(output: &str, fn_name: &str) -> usize {
 
 struct LockGuard {
     file: std::fs::File,
-    path: PathBuf,
 }
 
 impl LockGuard {
     fn new(path: PathBuf) -> Self {
-        let file = File::create(&path).expect("Failed to create lock file");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .expect("Failed to open lock file");
         file.lock_exclusive().expect("Failed to acquire lock");
-        Self { file, path }
+        Self { file }
     }
 }
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
         let _ = self.file.unlock();
-        let _ = std::fs::remove_file(&self.path);
     }
 }
 

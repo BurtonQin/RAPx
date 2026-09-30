@@ -8,7 +8,7 @@ fn main() {
     if minor >= 99 {
         println!("cargo:rustc-cfg=rapx_rustc_ge_199");
     }
-    if minor >= 96 {
+    if minor >= 95 {
         println!("cargo:rustc-cfg=rapx_rustc_ge_196");
     }
 }
