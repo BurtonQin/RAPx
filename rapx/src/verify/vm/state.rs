@@ -476,17 +476,11 @@ pub(crate) struct BinaryOpSource {
 /// [`VmState::save_frame`]/[`VmState::restore_frame`], so they share one struct
 /// and one lifecycle.
 #[derive(Default)]
-pub(crate) struct AnalysisCtx<'ctx> {
+pub(crate) struct AnalysisCtx {
     /// Operand sources for guard inference: destination → (lhs, rhs) place
     /// keys with the operator kind of the binary operation that produced the
     /// destination.
     pub(crate) op_sources: FxHashMap<PlaceKey, BinaryOpSource>,
-
-    /// Cumulative ptr offset for Iter/IterMut field [0] (ptr).
-    /// Key: (struct_local). When post_inc_start advances the ptr by `n`
-    /// elements, we increment this offset instead of nesting symbolic
-    /// additions.  This keeps Z3 expressions compact.
-    pub(crate) iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
 }
 
 /// The object space: every allocation plus the per-allocation contents that are
@@ -600,7 +594,7 @@ pub(crate) struct SolverState<'ctx, 'tcx> {
 pub(crate) struct FrameSnapshot<'ctx, 'tcx> {
     pub(crate) caller_def_id: DefId,
     pub(crate) locals: Locals<'ctx, 'tcx>,
-    pub(crate) analysis: AnalysisCtx<'ctx>,
+    pub(crate) analysis: AnalysisCtx,
 }
 
 /// The full symbolic execution state at a program point.
@@ -637,7 +631,16 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     // ── Per-frame analysis metadata
     /// Operand sources for guard inference and iterator pointer offsets,
     /// checkpointed together around a call.
-    pub(crate) analysis: AnalysisCtx<'ctx>,
+    pub(crate) analysis: AnalysisCtx,
+
+    /// Cumulative ptr offset for Iter/IterMut field [0] (ptr), keyed by the
+    /// iterator's `self` local. Unlike `analysis`, this is *path-scoped*: an
+    /// iterator's offset accumulates across loop iterations and inlined
+    /// `&mut self` frames (whose `self` is always local 1), so it must survive
+    /// [`save_frame`]/[`restore_frame`]. `post_inc_start` advances the ptr by
+    /// `n` elements, so we increment this offset instead of nesting symbolic
+    /// additions (which keeps Z3 expressions compact).
+    pub(crate) iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
 
     // ── Accumulated solver state
     /// Solver constraints and term caches accumulated along the current path.
@@ -668,6 +671,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             locals: Locals::default(),
             inline: InlineCtx::default(),
             analysis: AnalysisCtx::default(),
+            iter_ptr_offset: FxHashMap::default(),
             solver: SolverState::default(),
             path_facts: PathFacts {
                 reenter,
@@ -685,8 +689,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     ///
     /// This is the single source of truth for *what* is frame-scoped: the
     /// local bindings (`values`, `slots`, `local_fields`, `move_sources`) and
-    /// the per-frame analysis metadata (`op_sources`, `iter_ptr_offset`), plus
-    /// the current function identity.  Both inline mechanisms
+    /// the per-frame analysis metadata (`op_sources`), plus the current
+    /// function identity.  `iter_ptr_offset` is deliberately *not* captured —
+    /// it is path-scoped so an iterator's cumulative offset survives inlined
+    /// `&mut self` frames and loop iterations.  Both inline mechanisms
     /// (`handle_callee_entry` in path replay and `exec_inline_call`) call this,
     /// so they can no longer drift apart.
     pub(crate) fn save_frame(&mut self) -> FrameSnapshot<'ctx, 'tcx> {

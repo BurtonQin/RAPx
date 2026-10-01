@@ -483,6 +483,15 @@ pub(crate) fn is_nonnull_checked_new(callee: Option<DefId>) -> bool {
     any_of(callee, &[crate::def_id::nonnull_new()])
 }
 
+/// Whether `callee` is `NonNull::new_unchecked` (the unchecked transparent
+/// wrapper). Modeled as a provenance-preserving alias so the pointer's element
+/// offset survives inlined iterator bodies (`post_inc_start`'s
+/// `new_unchecked(ptr.add(1))`); non-nullness is inherited from the source, not
+/// asserted, so `new_unchecked(null)` unsoundness is still caught.
+pub(crate) fn is_nonnull_new_unchecked(callee: Option<DefId>) -> bool {
+    any_of(callee, &[crate::def_id::nonnull_new_unchecked()])
+}
+
 /// Whether `callee` is `NonNull::as_ref` or `NonNull::as_mut`.
 pub fn is_nonnull_as_ref_as_mut(callee: Option<DefId>) -> bool {
     any_of(

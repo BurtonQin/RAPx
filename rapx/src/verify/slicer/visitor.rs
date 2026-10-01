@@ -503,7 +503,50 @@ impl<'tcx> BackwardSlicer<'tcx> {
             _ => false,
         };
 
-        if defs.intersects(relevant) || is_provenance_carrier {
+        // A statement that writes an iterator's `ptr` field (`(*self).0 = ...`,
+        // the inlined `post_inc_start`) must be kept even when it is not
+        // *value*-relevant to the property: the forward VM tracks the iterator's
+        // cumulative offset from this write (`track_iter_ptr_update`), which is
+        // what makes the loop-carried `i < n` invariant provable.
+        let is_iter_ptr_write = match &statement.kind {
+            StatementKind::Assign(assign) => {
+                let (place, _) = &**assign;
+                let mut proj = place.projection.iter();
+                if !matches!(
+                    proj.next().map(|p| p.kind()),
+                    Some(rustc_middle::mir::ProjectionElem::Deref)
+                ) {
+                    false
+                } else {
+                    let is_field0 = matches!(
+                        (proj.next().map(|p| p.kind()), proj.next()),
+                        (Some(rustc_middle::mir::ProjectionElem::Field(f, _)), None)
+                            if f.as_usize() == 0
+                    );
+                    if !is_field0 {
+                        false
+                    } else {
+                        let base_ty = self.tcx.optimized_mir(def_id).local_decls[place.local].ty;
+                        match base_ty.kind() {
+                            rustc_middle::ty::TyKind::Ref(_, pointee, _) => {
+                                match pointee.kind() {
+                                    rustc_middle::ty::TyKind::Adt(adt_def, _) => {
+                                        crate::verify::api_classify::is_std_iter_or_itermut(
+                                            adt_def.did(),
+                                        )
+                                    }
+                                    _ => false,
+                                }
+                            }
+                            _ => false,
+                        }
+                    }
+                }
+            }
+            _ => false,
+        };
+
+        if defs.intersects(relevant) || is_provenance_carrier || is_iter_ptr_write {
             let mut uses = collect_statement_uses(statement, block, statement_index, flow, &defs);
             items.push(RelevantItem::Statement {
                 def_id,

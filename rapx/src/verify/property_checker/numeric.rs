@@ -147,7 +147,7 @@ impl PropertyChecker {
         // predicate's LHS (typically the loop counter `i` in position).
         // At the assert_unchecked(i < n) point, tracked_offset == i + 1
         // because post_inc_start(1) was just called before the check.
-        for (_, off) in vm_state.analysis.iter_ptr_offset.iter() {
+        for (_, off) in vm_state.iter_ptr_offset.iter() {
             let one = Int::from_u64(vm_state.ctx, 1);
             solver.assert(&off._eq(&Int::add(vm_state.ctx, &[&lhs, &one])));
         }
@@ -414,18 +414,8 @@ impl PropertyChecker {
                 if let (Some(ptr), Some(end)) =
                     (vm_state.field_value(l, &[0]), vm_state.field_value(l, &[1]))
                 {
-                    if let (Some(pp), Some(ep)) = (&ptr.provenance, &end.provenance) {
-                        if pp.alloc_id == ep.alloc_id {
-                            let elem_ty = match ptr.ty.kind() {
-                                TyKind::Adt(_, substs) => substs.first().and_then(|s| s.as_type()),
-                                _ => None,
-                            };
-                            let sz = elem_ty
-                                .map(|t| vm_state.size_sym_read(t))
-                                .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));
-                            let diff = Int::sub(vm_state.ctx, &[&ep.offset, &pp.offset]);
-                            return Some(diff.div(&sz));
-                        }
+                    if let Some(len) = vm_state.iter_len_from_ptrs(ptr, end) {
+                        return Some(len);
                     }
                 }
             }
@@ -477,12 +467,8 @@ impl PropertyChecker {
             vm_state.field_value(local, &[0]),
             vm_state.field_value(local, &[1]),
         ) {
-            if let (Some(pp), Some(ep)) = (&ptr.provenance, &end.provenance) {
-                if pp.alloc_id == ep.alloc_id {
-                    let diff = Int::sub(vm_state.ctx, &[&ep.offset, &pp.offset]);
-                    let sz = vm_state.iter_elem_size(ptr);
-                    return Some(diff.div(&sz));
-                }
+            if let Some(len) = vm_state.iter_len_from_ptrs(ptr, end) {
+                return Some(len);
             }
         }
         // Fallback: scan all locals for one with same struct alloc.
@@ -495,12 +481,8 @@ impl PropertyChecker {
                 vm_state.field_value(scan_local, &[0]),
                 vm_state.field_value(scan_local, &[1]),
             ) {
-                if let (Some(pp), Some(ep)) = (&ptr.provenance, &end.provenance) {
-                    if pp.alloc_id == ep.alloc_id {
-                        let diff = Int::sub(vm_state.ctx, &[&ep.offset, &pp.offset]);
-                        let sz = vm_state.iter_elem_size(ptr);
-                        return Some(diff.div(&sz));
-                    }
+                if let Some(len) = vm_state.iter_len_from_ptrs(ptr, end) {
+                    return Some(len);
                 }
             }
         }

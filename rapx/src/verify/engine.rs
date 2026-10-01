@@ -320,7 +320,13 @@ impl<'tcx> VerifyEngine<'tcx> {
         // Start in the caller so a path that begins inside an inlined callee
         // still emits its CalleeEntry on the first item.
         let mut prev_def_id: Option<DefId> = Some(caller);
-        let mut active: Vec<(DefId, usize)> = Vec::new();
+        // Stack of entered callees, innermost last: (def_id, dest_local,
+        // entry global block). The entry block lets us resolve each callee's
+        // parent (`tree.inline_parent`) so a *nested* callee — one whose body
+        // is split around a further-inlined callee (e.g. `next_unchecked`
+        // calling `post_inc_start` and continuing afterwards) — is not popped
+        // from the frame stack until it actually returns.
+        let mut active: Vec<(DefId, usize, usize)> = Vec::new();
         // How many times each callee has been entered so far, to select the
         // correct entry binding when the same callee is inlined more than once
         // along a single path.
@@ -337,21 +343,17 @@ impl<'tcx> VerifyEngine<'tcx> {
                 if let Some(prev) = prev_def_id {
                     if prev != cur {
                         if cur == caller {
-                            if let Some((_, dest)) = active.pop() {
+                            if let Some((_, dest, _)) = active.pop() {
                                 out.push(RelevantItem::CalleeExit { dest });
                             }
                         } else {
-                            if prev != caller
-                                && let Some((_, dest)) = active.pop()
-                            {
-                                out.push(RelevantItem::CalleeExit { dest });
-                            }
                             // Bind the callee's entry (local block 0) to the
                             // correct inlining of `cur` on this path. A callee
                             // called from several call sites has one global
                             // entry block per site; they are consumed in path
                             // order. A single call site (possibly re-entered
                             // via a loop) always reuses its one entry block.
+                            let mut cur_entry: Option<usize> = None;
                             if let Some(globals) = local_to_global.get(&(cur, 0)) {
                                 let idx = if globals.len() == 1 {
                                     0
@@ -361,14 +363,40 @@ impl<'tcx> VerifyEngine<'tcx> {
                                     *cursor = (*cursor + 1).min(globals.len() - 1);
                                     idx
                                 };
-                                if let Some(&global) = globals.get(idx)
+                                cur_entry = globals.get(idx).copied();
+                            }
+                            // Distinguish an *ascent* (`prev` returns to its
+                            // parent `cur`, e.g. `post_inc_start` → the split
+                            // `next_unchecked`) from a *descent* (`cur` is a
+                            // fresh callee). In an ascent we pop `prev` and do
+                            // NOT re-enter `cur` (it is already active).
+                            let is_ascent = active.last().is_some_and(|(_, _, entry)| {
+                                tree.inline_parent(*entry) == Some(cur)
+                            });
+                            if is_ascent {
+                                let (_, dest, _) = active.pop().unwrap();
+                                out.push(RelevantItem::CalleeExit { dest });
+                            } else {
+                                // A descent: pop frames until `cur`'s parent is
+                                // on top (or the stack empties — `cur` is a
+                                // direct child of the caller), then enter `cur`.
+                                let cur_parent =
+                                    cur_entry.and_then(|g| tree.inline_parent(g));
+                                while let Some(&(top_def, _, _)) = active.last() {
+                                    if Some(top_def) == cur_parent {
+                                        break;
+                                    }
+                                    let (_, dest, _) = active.pop().unwrap();
+                                    out.push(RelevantItem::CalleeExit { dest });
+                                }
+                                if let Some(&global) = cur_entry.as_ref()
                                     && let Some(binding) = tree.inline_binding(global)
                                 {
                                     out.push(RelevantItem::CalleeEntry {
                                         callee: cur,
                                         args: binding.arg_locals.clone(),
                                     });
-                                    active.push((cur, binding.dest_local));
+                                    active.push((cur, binding.dest_local, global));
                                 }
                             }
                         }
@@ -380,7 +408,7 @@ impl<'tcx> VerifyEngine<'tcx> {
             out.push(item);
         }
 
-        while let Some((_, dest)) = active.pop() {
+        while let Some((_, dest, _)) = active.pop() {
             out.push(RelevantItem::CalleeExit { dest });
         }
 

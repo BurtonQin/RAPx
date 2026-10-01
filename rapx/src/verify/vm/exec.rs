@@ -24,7 +24,8 @@ use crate::{
 };
 
 use super::state::{
-    AllocId, ContentTy, Liveness, BinaryOpSource, Provenance, ValueInvariants, VmState, VmValue,
+    AllocId, ContentTy, Liveness, BinaryOpSource, OffsetKind, Provenance, ValueInvariants, VmState,
+    VmValue,
 };
 
 use crate::verify::api_classify;
@@ -73,25 +74,35 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let snapshot = self.save_frame();
 
         // Collect the caller argument fields from the saved map, so the callee's
-        // parameters inherit them (e.g. NonZero's non-zero inner value).
+        // parameters inherit them (e.g. NonZero's non-zero inner value, and an
+        // iterator's `ptr`/`end_or_len`). A whole-place reborrow
+        // (`_7 = &mut (*_1)`) carries its referent's fields, so resolve it too.
         let mut arg_fields: Vec<(usize, Vec<usize>, VmValue<'ctx, 'tcx>)> = Vec::new();
         for (i, arg) in arg_locals.iter().enumerate() {
             let caller_local = Local::from_usize(*arg);
-            let keys: Vec<Vec<usize>> = snapshot
-                .locals
-                .local_fields
-                .keys()
-                .filter(|(l, _)| *l == caller_local)
-                .map(|(_, f)| f.clone())
-                .collect();
-            for fields in keys {
-                if let Some(fv) = snapshot
+            let mut source_locals = vec![caller_local];
+            if let Some(r) = self.find_whole_reborrow_referent(caller_local) {
+                if r != caller_local {
+                    source_locals.push(r);
+                }
+            }
+            for src in source_locals {
+                let keys: Vec<Vec<usize>> = snapshot
                     .locals
                     .local_fields
-                    .get(&(caller_local, fields.clone()))
-                    .cloned()
-                {
-                    arg_fields.push((i + 1, fields, fv));
+                    .keys()
+                    .filter(|(l, _)| *l == src)
+                    .map(|(_, f)| f.clone())
+                    .collect();
+                for fields in keys {
+                    if let Some(fv) = snapshot
+                        .locals
+                        .local_fields
+                        .get(&(src, fields.clone()))
+                        .cloned()
+                    {
+                        arg_fields.push((i + 1, fields, fv));
+                    }
                 }
             }
         }
@@ -1010,7 +1021,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     provenance: Some(Provenance {
                         alloc_id: existing_alloc,
                         offset: prost_offset.clone(),
-                        offset_kind: None,
+                        offset_kind: Some(OffsetKind::Element(len_term.clone())),
                     }),
                     invariants,
                     field_offset: false,
@@ -1831,9 +1842,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // in `local_fields[(self, field)]` directly.  (This is what
                     // makes a struct-invariant re-proof see `self.len += 1`.)
                     if self.field_value(place.local, &field_indices).is_some() {
+                        let is_iter_field = field_indices == [0];
                         let mut write_value = value;
                         write_value.invariants.init = true;
                         self.set_field_value(place.local, field_indices, write_value);
+                        if is_iter_field {
+                            self.track_iter_ptr_update(place.local);
+                        }
                         return;
                     }
                     // Otherwise resolve the dereferenced pointer (a
@@ -2240,15 +2255,17 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // condition (e.g. `offset <= len - 16`) instead of
                 // `ite(cond, 1, 0) != 0`, which the SMT solver often fails to
                 // unfold.
-                let cmp_cond = match *op {
-                    BinOp::Le => Some(lhs.term.le(&rhs.term)),
-                    BinOp::Lt => Some(lhs.term.lt(&rhs.term)),
-                    BinOp::Ge => Some(lhs.term.ge(&rhs.term)),
-                    BinOp::Gt => Some(lhs.term.gt(&rhs.term)),
-                    BinOp::Eq => Some(lhs.term._eq(&rhs.term)),
-                    BinOp::Ne => Some(lhs.term._eq(&rhs.term).not()),
-                    _ => None,
-                };
+                let cmp_cond = self
+                    .iter_ptr_comparison(*op, &lhs, &rhs)
+                    .or_else(|| match *op {
+                        BinOp::Le => Some(lhs.term.le(&rhs.term)),
+                        BinOp::Lt => Some(lhs.term.lt(&rhs.term)),
+                        BinOp::Ge => Some(lhs.term.ge(&rhs.term)),
+                        BinOp::Gt => Some(lhs.term.gt(&rhs.term)),
+                        BinOp::Eq => Some(lhs.term._eq(&rhs.term)),
+                        BinOp::Ne => Some(lhs.term._eq(&rhs.term).not()),
+                        _ => None,
+                    });
                 // Add Euclidean division identity for Div and Rem:
                 //   lhs == (lhs/rhs)*rhs + lhs%rhs  ∧  lhs%rhs >= 0
                 // Also add (lhs/rhs)*rhs <= lhs directly for Div for robustness.
@@ -4036,6 +4053,62 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
     }
 
+    /// When `lhs op rhs` compares an iterator's `ptr` and `end_or_len` pointers
+    /// (the inlined form of `is_empty`: `ptr == end`), express the comparison
+    /// element-wise as `iter_ptr_offset == base_len`. The operands may be plain
+    /// temporaries (from the `as_ptr`/cast/field-read lowering), so the iterator
+    /// is located by scanning the tracked `iter_ptr_offset` keys for a local
+    /// whose `end` field shares the comparison's allocation. Returns `None` when
+    /// this is not an iterator emptiness comparison.
+    fn iter_ptr_comparison(
+        &self,
+        op: rustc_middle::mir::BinOp,
+        lhs: &VmValue<'ctx, 'tcx>,
+        rhs: &VmValue<'ctx, 'tcx>,
+    ) -> Option<z3::ast::Bool<'ctx>> {
+        if !matches!(op, rustc_middle::mir::BinOp::Eq | rustc_middle::mir::BinOp::Ne) {
+            return None;
+        }
+        let lp = lhs.provenance.as_ref()?;
+        let rp = rhs.provenance.as_ref()?;
+        if lp.alloc_id != rp.alloc_id {
+            return None;
+        }
+        // Locate the iterator by matching its `end` field's allocation.
+        let mut base_len: Option<Int<'ctx>> = None;
+        let mut local: Option<Local> = None;
+        for &l in self.iter_ptr_offset.keys() {
+            let Some(end) = self.field_value(l, &[1]) else {
+                continue;
+            };
+            let Some(ep) = end.provenance.as_ref() else {
+                continue;
+            };
+            if ep.alloc_id != lp.alloc_id {
+                continue;
+            }
+            if let Some(OffsetKind::Element(e)) = &ep.offset_kind {
+                base_len = Some(e.clone());
+                local = Some(l);
+                break;
+            }
+        }
+        let base_len = base_len?;
+        let local = local?;
+        let zero = Int::from_u64(self.ctx, 0);
+        let offset = self
+            .iter_ptr_offset
+            .get(&local)
+            .cloned()
+            .unwrap_or_else(|| zero.clone());
+        let eq = offset._eq(&base_len);
+        Some(if matches!(op, rustc_middle::mir::BinOp::Eq) {
+            eq
+        } else {
+            eq.not()
+        })
+    }
+
     fn try_simple_iter_len(&self, arg_val: &VmValue<'ctx, 'tcx>) -> Option<Int<'ctx>> {
         if !self.is_iter_ref(arg_val) {
             return None;
@@ -4080,11 +4153,24 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return;
         }
         let one = Int::from_u64(self.ctx, 1);
-        let new_offset = match self.analysis.iter_ptr_offset.get(&local) {
+        let new_offset = match self.iter_ptr_offset.get(&local) {
             Some(prev) => Int::add(self.ctx, &[prev, &one]),
             None => one,
         };
-        self.analysis.iter_ptr_offset.insert(local, new_offset);
+        // Mirror `try_iter_next`: the tracked offset must never exceed the
+        // iterator's length (the inlined `post_inc_start` body itself only
+        // mutates `ptr` and does not assert `offset <= len`).
+        let base_len = self
+            .field_value(local, &[1])
+            .and_then(|end| end.provenance.as_ref())
+            .and_then(|ep| match &ep.offset_kind {
+                Some(OffsetKind::Element(e)) => Some(e.clone()),
+                _ => None,
+            });
+        if let Some(e) = base_len {
+            self.solver.constraints.push(new_offset.le(&e));
+        }
+        self.iter_ptr_offset.insert(local, new_offset);
     }
 
     /// Set non_null invariant on the target value.

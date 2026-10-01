@@ -51,6 +51,11 @@ pub struct PathTree {
     block_fn: Vec<(DefId, usize)>,
     /// Argument/return bindings for inlined callee entry blocks.
     inline_bindings: FxHashMap<usize, InlineBinding>,
+    /// Per-inlined-callee parent: entry block (global index) → the `DefId` of
+    /// the function that called it. Lets the boundary injector distinguish a
+    /// *nested* callee (its body is split around a further-inlined callee) from
+    /// a *sibling* call when both appear as consecutive non-caller def_ids.
+    inline_parents: FxHashMap<usize, DefId>,
     /// Caller blocks whose `Call` terminator was inlined.
     inlined_call_blocks: FxHashSet<usize>,
     /// Set when enumeration stopped at a path or depth limit, so the tree
@@ -92,6 +97,7 @@ impl PathTree {
             len: 0,
             block_fn: Vec::new(),
             inline_bindings: FxHashMap::default(),
+            inline_parents: FxHashMap::default(),
             inlined_call_blocks: FxHashSet::default(),
             truncated: false,
         }
@@ -123,10 +129,12 @@ impl PathTree {
         &mut self,
         map: Vec<(DefId, usize)>,
         bindings: FxHashMap<usize, InlineBinding>,
+        parents: FxHashMap<usize, DefId>,
         inlined_calls: FxHashSet<usize>,
     ) {
         self.block_fn = map;
         self.inline_bindings = bindings;
+        self.inline_parents = parents;
         self.inlined_call_blocks = inlined_calls;
     }
 
@@ -144,6 +152,11 @@ impl PathTree {
     /// Argument/return binding for an inlined callee entry block.
     pub fn inline_binding(&self, block: usize) -> Option<&InlineBinding> {
         self.inline_bindings.get(&block)
+    }
+
+    /// The `DefId` of the function that called an inlined callee entry block.
+    pub fn inline_parent(&self, block: usize) -> Option<DefId> {
+        self.inline_parents.get(&block).copied()
     }
 
     /// Whether `block` (a caller block) had its `Call` terminator inlined.

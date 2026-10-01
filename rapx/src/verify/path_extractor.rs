@@ -114,6 +114,7 @@ impl<'tcx> PathExtractor<'tcx> {
                 .map(|b| (b.def_id, b.local_index))
                 .collect(),
             graph.inline_bindings.clone(),
+            graph.inline_parents.clone(),
             graph.inlined_call_blocks.clone(),
         );
         group_by_callee(self.checkpoints, &tree)

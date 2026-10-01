@@ -160,9 +160,20 @@ pub struct PathGraph<'tcx> {
     /// Per-inlined-callee argument binding: maps the callee's entry block
     /// (global index) to the caller's argument locals and destination local.
     pub inline_bindings: FxHashMap<usize, InlineBinding>,
+    /// Per-inlined-callee parent: entry block (global index) → the `DefId` of
+    /// the caller whose `Call` was inlined at that entry.
+    pub inline_parents: FxHashMap<usize, DefId>,
     /// Caller blocks whose `Call` terminator was inlined (their successor edge
     /// now leads into a callee). The slicer skips these calls.
     pub inlined_call_blocks: FxHashSet<usize>,
+    /// Per-function local-index namespace: `def_id` → base offset. The root
+    /// caller uses base `0`; every inlined callee gets a fresh base so its MIR
+    /// locals do not clash with the caller's in the flat constraint maps
+    /// (`block_info`, `disc_info`, `cast_chains`, …). A constraint key `k` in
+    /// the namespace of `def_id` denotes MIR local `k - base`.
+    local_bases: FxHashMap<DefId, usize>,
+    /// Next unused local-namespace base (monotonic counter).
+    next_local_base: usize,
 }
 
 /// Argument/return binding recorded when a callee CFG is inlined.
@@ -174,232 +185,236 @@ pub struct InlineBinding {
     pub dest_local: usize,
 }
 
-impl<'tcx> PathGraph<'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>, def_id: DefId) -> PathGraph<'tcx> {
-        let body = tcx.optimized_mir(def_id);
-        let basicblocks = &body.basic_blocks;
-        let mut cfg_blocks = Vec::<CfgBlock>::new();
-        let mut block_info = Vec::new();
-        let mut disc_info = DiscriminantInfo::default();
-        let mut aggregate_field_sources: FxHashMap<usize, usize> = FxHashMap::default();
-        let mut field_projection_source: FxHashMap<usize, usize> = FxHashMap::default();
-        let mut cast_chains: FxHashMap<usize, usize> = FxHashMap::default();
+/// Scan a function's MIR and collect its per-block constant/discriminant
+/// metadata and global source maps, remapping every MIR local `l` to
+/// `local_base + l`. The root caller uses base `0`; inlined callees use a
+/// fresh base so their locals never collide with the caller's in the flat
+/// constraint maps (see [`PathGraph::local_bases`]).
+#[allow(clippy::type_complexity)]
+fn build_function_info(
+    tcx: TyCtxt<'_>,
+    def_id: DefId,
+    local_base: usize,
+) -> (
+    Vec<BlockConstantInfo>,
+    DiscriminantInfo,
+    FxHashMap<usize, usize>,
+    FxHashMap<usize, usize>,
+    FxHashMap<usize, usize>,
+) {
+    let body = tcx.optimized_mir(def_id);
+    let basicblocks = &body.basic_blocks;
+    let mut block_info = Vec::new();
+    let mut disc_info = DiscriminantInfo::default();
+    let mut aggregate_field_sources: FxHashMap<usize, usize> = FxHashMap::default();
+    let mut field_projection_source: FxHashMap<usize, usize> = FxHashMap::default();
+    let mut cast_chains: FxHashMap<usize, usize> = FxHashMap::default();
 
-        for i in 0..basicblocks.len() {
-            let bb = &basicblocks[BasicBlock::from(i)];
-            let mut cfg_block = CfgBlock::new(def_id, i, bb.is_cleanup);
-            let mut info = BlockConstantInfo::default();
+    for i in 0..basicblocks.len() {
+        let bb = &basicblocks[BasicBlock::from(i)];
+        let mut info = BlockConstantInfo::default();
 
-            for stmt in &bb.statements {
-                if let StatementKind::Assign(assign) = &stmt.kind {
-                    let (place, rvalue) = &**assign;
-                    let dest = place.local.as_usize();
-                    // Writing through (*ptr).field doesn't reassign ptr itself,
-                    // so ptr's constraint should not be cleared.
-                    let is_deref = place
-                        .projection
-                        .iter()
-                        .any(|p| matches!(p, ProjectionElem::Deref));
-                    if !is_deref {
-                        info.assigned_locals.insert(dest);
+        for stmt in &bb.statements {
+            if let StatementKind::Assign(assign) = &stmt.kind {
+                let (place, rvalue) = &**assign;
+                let dest = local_base + place.local.as_usize();
+                // Writing through (*ptr).field doesn't reassign ptr itself,
+                // so ptr's constraint should not be cleared.
+                let is_deref = place
+                    .projection
+                    .iter()
+                    .any(|p| matches!(p, ProjectionElem::Deref));
+                if !is_deref {
+                    info.assigned_locals.insert(dest);
+                }
+                match rvalue {
+                    Rvalue::Use(Operand::Constant(c), ..) => {
+                        let typing_env = TypingEnv::post_analysis(tcx, def_id);
+                        let val = match c.const_.ty().kind() {
+                            TyKind::Bool => c
+                                .const_
+                                .try_eval_bool(tcx, typing_env)
+                                .map(|b| if b { 1 } else { 0 }),
+                            TyKind::Int(_) | TyKind::Uint(_) => {
+                                c.const_.try_eval_bits(tcx, typing_env).map(|v| v as usize)
+                            }
+                            _ => None,
+                        };
+                        if let Some(val) = val {
+                            info.constants.insert(dest, val);
+                        }
                     }
-                    match rvalue {
-                        Rvalue::Use(Operand::Constant(c), ..) => {
-                            let typing_env = TypingEnv::post_analysis(tcx, def_id);
-                            let val = match c.const_.ty().kind() {
-                                TyKind::Bool => c
-                                    .const_
-                                    .try_eval_bool(tcx, typing_env)
-                                    .map(|b| if b { 1 } else { 0 }),
-                                TyKind::Int(_) | TyKind::Uint(_) => {
+                    Rvalue::Use(Operand::Copy(src) | Operand::Move(src), ..) => {
+                        let src_local = local_base + src.local.as_usize();
+                        if let Some(field_proj) = first_field_projection(src) {
+                            let encoded = encode_aggregate_field(src_local, field_proj);
+                            field_projection_source.insert(dest, encoded);
+                        }
+                        info.constraint_copies.insert(dest, src_local);
+                    }
+                    Rvalue::Discriminant(rv_place) => {
+                        let src_local = local_base + rv_place.local.as_usize();
+                        disc_info.source_of.insert(dest, src_local);
+                        if !disc_info.variant_count_of.contains_key(&src_local) {
+                            let src_ty = body.local_decls[rv_place.local].ty;
+                            if let TyKind::Adt(adt_def, _) = src_ty.kind() {
+                                let num = adt_def.variants().len();
+                                if num > 0 {
+                                    disc_info.variant_count_of.insert(src_local, num);
+                                }
+                            }
+                        }
+                    }
+                    Rvalue::Aggregate(kind, operands) => {
+                        if let AggregateKind::Adt(_, _, _, _, _) = kind.as_ref() {
+                            let agg_local = local_base + place.local.as_usize();
+                            for (field_idx, operand) in operands.iter().enumerate() {
+                                if let Operand::Copy(src) | Operand::Move(src) = operand {
+                                    let key = encode_aggregate_field(agg_local, field_idx);
+                                    let src_local = local_base + src.local.as_usize();
+                                    aggregate_field_sources.insert(key, src_local);
+                                }
+                            }
+                        }
+                        let discr = match kind.as_ref() {
+                            AggregateKind::Adt(_, variant_idx, _, _, _) => Some(variant_idx.as_usize()),
+                            _ => None,
+                        };
+                        if let Some(discr) = discr {
+                            info.constants.insert(dest, discr);
+                            if !disc_info.variant_count_of.contains_key(&dest) {
+                                let dest_ty = body.local_decls[place.local].ty;
+                                if let TyKind::Adt(adt_def, _) = dest_ty.kind() {
+                                    let num = adt_def.variants().len();
+                                    if num > 0 {
+                                        disc_info.variant_count_of.insert(dest, num);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Rvalue::BinaryOp(op, operands) if matches!(op, BinOp::AddWithOverflow) => {
+                        let (lhs, rhs): (&Operand<'_>, &Operand<'_>) =
+                            (&operands.0, &operands.1);
+                        if let Some(lhs_local) = match lhs {
+                            Operand::Copy(l) | Operand::Move(l) if l.projection.is_empty() => {
+                                Some(local_base + l.local.as_usize())
+                            }
+                            _ => None,
+                        } {
+                            let incr = match rhs {
+                                Operand::Constant(c) => {
+                                    let typing_env = TypingEnv::post_analysis(tcx, def_id);
                                     c.const_.try_eval_bits(tcx, typing_env).map(|v| v as usize)
                                 }
                                 _ => None,
                             };
-                            if let Some(val) = val {
-                                info.constants.insert(dest, val);
+                            if let Some(incr) = incr {
+                                info.increments.insert(dest, (lhs_local, incr));
                             }
                         }
-                        Rvalue::Use(Operand::Copy(src) | Operand::Move(src), ..) => {
-                            let src_local = src.local.as_usize();
-                            if let Some(field_proj) = first_field_projection(src) {
-                                let encoded = encode_aggregate_field(src_local, field_proj);
-                                field_projection_source.insert(dest, encoded);
-                            }
-                            info.constraint_copies.insert(dest, src_local);
-                        }
-                        Rvalue::Discriminant(rv_place) => {
-                            disc_info.source_of.insert(dest, rv_place.local.as_usize());
-                            let src_local = rv_place.local.as_usize();
-                            if !disc_info.variant_count_of.contains_key(&src_local) {
-                                let src_ty = body.local_decls[rv_place.local].ty;
-                                if let TyKind::Adt(adt_def, _) = src_ty.kind() {
-                                    let num = adt_def.variants().len();
-                                    if num > 0 {
-                                        disc_info.variant_count_of.insert(src_local, num);
-                                    }
-                                }
-                            }
-                        }
-                        Rvalue::Aggregate(kind, operands) => {
-                            if let AggregateKind::Adt(_, _, _, _, _) = kind.as_ref() {
-                                let agg_local = place.local.as_usize();
-                                for (field_idx, operand) in operands.iter().enumerate() {
-                                    if let Operand::Copy(src) | Operand::Move(src) = operand {
-                                        let key = encode_aggregate_field(agg_local, field_idx);
-                                        let src_local = src.local.as_usize();
-                                        aggregate_field_sources.insert(key, src_local);
-                                    }
-                                }
-                            }
-                            let discr = match kind.as_ref() {
-                                AggregateKind::Adt(_, variant_idx, _, _, _) => {
-                                    Some(variant_idx.as_usize())
-                                }
-                                _ => None,
-                            };
-                            if let Some(discr) = discr {
-                                info.constants.insert(dest, discr);
-                                if !disc_info.variant_count_of.contains_key(&dest) {
-                                    let dest_ty = body.local_decls[place.local].ty;
-                                    if let TyKind::Adt(adt_def, _) = dest_ty.kind() {
-                                        let num = adt_def.variants().len();
-                                        if num > 0 {
-                                            disc_info.variant_count_of.insert(dest, num);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Rvalue::BinaryOp(op, operands) if matches!(op, BinOp::AddWithOverflow) => {
-                            let (lhs, rhs): (&Operand<'_>, &Operand<'_>) =
-                                (&operands.0, &operands.1);
-                            if let Some(lhs_local) = match lhs {
-                                Operand::Copy(l) | Operand::Move(l) if l.projection.is_empty() => {
-                                    Some(l.local.as_usize())
-                                }
-                                _ => None,
-                            } {
-                                let incr = match rhs {
-                                    Operand::Constant(c) => {
-                                        let typing_env = TypingEnv::post_analysis(tcx, def_id);
-                                        c.const_.try_eval_bits(tcx, typing_env).map(|v| v as usize)
-                                    }
-                                    _ => None,
-                                };
-                                if let Some(incr) = incr {
-                                    info.increments.insert(dest, (lhs_local, incr));
-                                }
-                            }
-                        }
-                        Rvalue::BinaryOp(op, operands)
-                            if matches!(
-                                op,
-                                BinOp::Lt
-                                    | BinOp::Le
-                                    | BinOp::Gt
-                                    | BinOp::Ge
-                                    | BinOp::Eq
-                                    | BinOp::Ne
-                                    | BinOp::BitAnd
-                            ) =>
-                        {
-                            let (lhs, rhs): (&Operand<'_>, &Operand<'_>) =
-                                (&operands.0, &operands.1);
-                            let lhs_local = match lhs {
-                                Operand::Copy(l) | Operand::Move(l) if l.projection.is_empty() => {
-                                    Some(l.local.as_usize())
-                                }
-                                _ => None,
-                            };
-                            if let Some(lhs_local) = lhs_local {
-                                let rhs_eval = match rhs {
-                                    Operand::Constant(c) => {
-                                        let typing_env = TypingEnv::post_analysis(tcx, def_id);
-                                        c.const_
-                                            .try_eval_bits(tcx, typing_env)
-                                            .map(|v| (v as usize, true))
-                                    }
-                                    Operand::Copy(r) | Operand::Move(r)
-                                        if r.projection.is_empty() =>
-                                    {
-                                        Some((r.local.as_usize(), false))
-                                    }
-                                    _ => None,
-                                };
-                                let Some((rhs_local, rhs_is_constant)) = rhs_eval else {
-                                    continue;
-                                };
-                                info.comparison_sources.insert(
-                                    dest,
-                                    ComparisonSource {
-                                        op: *op,
-                                        lhs_local,
-                                        rhs_local,
-                                        rhs_is_constant,
-                                    },
-                                );
-                                if matches!(op, BinOp::BitAnd)
-                                    && matches!(
-                                        body.local_decls[place.local].ty.kind(),
-                                        TyKind::Bool
-                                    )
-                                {
-                                    info.and_sources.insert(dest, (lhs_local, rhs_local));
-                                }
-                            }
-                        }
-                        Rvalue::BinaryOp(op, operands) if matches!(op, BinOp::Rem) => {
-                            let (lhs, rhs): (&Operand<'_>, &Operand<'_>) =
-                                (&operands.0, &operands.1);
-                            if let Some(lhs_local) = match lhs {
-                                Operand::Copy(l) | Operand::Move(l) if l.projection.is_empty() => {
-                                    Some(l.local.as_usize())
-                                }
-                                _ => None,
-                            } {
-                                let divisor = match rhs {
-                                    Operand::Constant(c) => {
-                                        let typing_env = TypingEnv::post_analysis(tcx, def_id);
-                                        c.const_.try_eval_bits(tcx, typing_env).map(|v| v as usize)
-                                    }
-                                    _ => None,
-                                };
-                                if let Some(divisor) = divisor {
-                                    if divisor != 0 {
-                                        info.remainders.insert(dest, (lhs_local, divisor));
-                                    }
-                                }
-                            }
-                        }
-                        Rvalue::UnaryOp(unop, operand) => {
-                            if matches!(unop, UnOp::Not)
-                                && let Operand::Copy(src) | Operand::Move(src) = operand
-                            {
-                                info.negation_sources.insert(dest, src.local.as_usize());
-                            }
-                        }
-                        Rvalue::Cast(_, operand, _) => {
-                            if let Operand::Copy(src) | Operand::Move(src) = operand
-                                && matches!(
-                                    body.local_decls[place.local].ty.kind(),
-                                    TyKind::RawPtr(..) | TyKind::Int(..) | TyKind::Uint(..)
-                                )
-                            {
-                                cast_chains.insert(dest, src.local.as_usize());
-                            }
-                        }
-                        _ => {} // close match rvalue
                     }
+                    Rvalue::BinaryOp(op, operands)
+                        if matches!(
+                            op,
+                            BinOp::Lt
+                                | BinOp::Le
+                                | BinOp::Gt
+                                | BinOp::Ge
+                                | BinOp::Eq
+                                | BinOp::Ne
+                                | BinOp::BitAnd
+                        ) =>
+                    {
+                        let (lhs, rhs): (&Operand<'_>, &Operand<'_>) =
+                            (&operands.0, &operands.1);
+                        let lhs_local = match lhs {
+                            Operand::Copy(l) | Operand::Move(l) if l.projection.is_empty() => {
+                                Some(local_base + l.local.as_usize())
+                            }
+                            _ => None,
+                        };
+                        if let Some(lhs_local) = lhs_local {
+                            let rhs_eval = match rhs {
+                                Operand::Constant(c) => {
+                                    let typing_env = TypingEnv::post_analysis(tcx, def_id);
+                                    c.const_
+                                        .try_eval_bits(tcx, typing_env)
+                                        .map(|v| (v as usize, true))
+                                }
+                                Operand::Copy(r) | Operand::Move(r)
+                                    if r.projection.is_empty() =>
+                                {
+                                    Some((local_base + r.local.as_usize(), false))
+                                }
+                                _ => None,
+                            };
+                            let Some((rhs_local, rhs_is_constant)) = rhs_eval else {
+                                continue;
+                            };
+                            info.comparison_sources.insert(
+                                dest,
+                                ComparisonSource {
+                                    op: *op,
+                                    lhs_local,
+                                    rhs_local,
+                                    rhs_is_constant,
+                                },
+                            );
+                            if matches!(op, BinOp::BitAnd)
+                                && matches!(body.local_decls[place.local].ty.kind(), TyKind::Bool)
+                            {
+                                info.and_sources.insert(dest, (lhs_local, rhs_local));
+                            }
+                        }
+                    }
+                    Rvalue::BinaryOp(op, operands) if matches!(op, BinOp::Rem) => {
+                        let (lhs, rhs): (&Operand<'_>, &Operand<'_>) =
+                            (&operands.0, &operands.1);
+                        if let Some(lhs_local) = match lhs {
+                            Operand::Copy(l) | Operand::Move(l) if l.projection.is_empty() => {
+                                Some(local_base + l.local.as_usize())
+                            }
+                            _ => None,
+                        } {
+                            let divisor = match rhs {
+                                Operand::Constant(c) => {
+                                    let typing_env = TypingEnv::post_analysis(tcx, def_id);
+                                    c.const_.try_eval_bits(tcx, typing_env).map(|v| v as usize)
+                                }
+                                _ => None,
+                            };
+                            if let Some(divisor) = divisor {
+                                if divisor != 0 {
+                                    info.remainders.insert(dest, (lhs_local, divisor));
+                                }
+                            }
+                        }
+                    }
+                    Rvalue::UnaryOp(unop, operand) => {
+                        if matches!(unop, UnOp::Not)
+                            && let Operand::Copy(src) | Operand::Move(src) = operand
+                        {
+                            info.negation_sources
+                                .insert(dest, local_base + src.local.as_usize());
+                        }
+                    }
+                    Rvalue::Cast(_, operand, _) => {
+                        if let Operand::Copy(src) | Operand::Move(src) = operand
+                            && matches!(
+                                body.local_decls[place.local].ty.kind(),
+                                TyKind::RawPtr(..) | TyKind::Int(..) | TyKind::Uint(..)
+                            )
+                        {
+                            cast_chains.insert(dest, local_base + src.local.as_usize());
+                        }
+                    }
+                    _ => {} // close match rvalue
                 }
             }
+        }
 
-            let Some(terminator) = &bb.terminator else {
-                cfg_blocks.push(cfg_block);
-                block_info.push(info);
-                continue;
-            };
-
+        if let Some(terminator) = &bb.terminator {
             if let TerminatorKind::Call {
                 destination,
                 ref func,
@@ -413,12 +428,41 @@ impl<'tcx> PathGraph<'tcx> {
                     || name.contains("::as_ptr")
                 {
                     info.known_nonnull_locals
-                        .insert(destination.local.as_usize());
+                        .insert(local_base + destination.local.as_usize());
                 }
                 if name.contains("null_mut") || (name.contains("null") && name.contains("ptr::")) {
-                    info.constants.insert(destination.local.as_usize(), 0);
+                    info.constants
+                        .insert(local_base + destination.local.as_usize(), 0);
                 }
             }
+        }
+
+        block_info.push(info);
+    }
+
+    (
+        block_info,
+        disc_info,
+        aggregate_field_sources,
+        field_projection_source,
+        cast_chains,
+    )
+}
+
+impl<'tcx> PathGraph<'tcx> {
+    pub fn new(tcx: TyCtxt<'tcx>, def_id: DefId) -> PathGraph<'tcx> {
+        let body = tcx.optimized_mir(def_id);
+        let basicblocks = &body.basic_blocks;
+        let mut cfg_blocks = Vec::<CfgBlock>::new();
+
+        for i in 0..basicblocks.len() {
+            let bb = &basicblocks[BasicBlock::from(i)];
+            let mut cfg_block = CfgBlock::new(def_id, i, bb.is_cleanup);
+
+            let Some(terminator) = &bb.terminator else {
+                cfg_blocks.push(cfg_block);
+                continue;
+            };
 
             match terminator.kind.clone() {
                 TerminatorKind::Goto { ref target } => {
@@ -514,10 +558,14 @@ impl<'tcx> PathGraph<'tcx> {
             }
 
             cfg_blocks.push(cfg_block);
-            block_info.push(info);
         }
 
         let cfg = ControlFlowGraph::new(def_id, tcx, cfg_blocks);
+        let (block_info, disc_info, aggregate_field_sources, field_projection_source, cast_chains) =
+            build_function_info(tcx, def_id, 0);
+
+        let mut local_bases = FxHashMap::default();
+        local_bases.insert(def_id, 0);
 
         PathGraph {
             cfg,
@@ -527,96 +575,199 @@ impl<'tcx> PathGraph<'tcx> {
             field_projection_source,
             cast_chains,
             inline_bindings: FxHashMap::default(),
+            inline_parents: FxHashMap::default(),
             inlined_call_blocks: FxHashSet::default(),
+            local_bases,
+            next_local_base: body.local_decls.len(),
         }
     }
 
-    /// Inline the CFG of callees with available MIR into this graph so that
-    /// path enumeration covers the callee's branches. Single-level
-    /// (non-recursive): a callee's own calls are left as ordinary call edges.
+    /// Inline the CFG of inlinable callees into this graph so that path
+    /// enumeration covers the callee's branches.
+    ///
+    /// Inlining is recursive *within the local crate*: a local callee's own
+    /// calls are inlined too. Cross-crate callees are inlined only at the level
+    /// where a local function calls them — their bodies are not recursed into,
+    /// so the standard library's internal branchy precondition machinery
+    /// (`is_aligned_to`, `ub_checks`, …) is not pulled in, which would blow up
+    /// path enumeration with branches that have no constraint tracking.
+    ///
+    /// Each callee is otherwise subject to the same shape constraints as
+    /// before: cross-crate callees with MIR are always inlined, and a local
+    /// callee is inlined only when it is small and *transitively branchy* —
+    /// it has a semantic `SwitchInt`, or (transitively) calls a local callee
+    /// that does. This closes the transitivity gap where a branchy helper
+    /// (`post_inc_start`) is reached only through a branch-free caller
+    /// (`next_unchecked`). A purely branch-free accessor is left opaque.
+    /// Intrinsics have no MIR; callees with a builtin model or a slice summary
+    /// are kept opaque because their summary is more precise than their body.
+    ///
+    /// Recursion is bounded by an `expanded` set so that (mutually) recursive
+    /// local functions do not grow the CFG without bound — a back-edge to an
+    /// already-inlined callee is left as an ordinary call edge for the VM's
+    /// fallback handling.
     ///
     /// Opt-in — callers that assume a single-function block space (e.g. alias
     /// analysis) must not call this.
     pub fn inline_callees(&mut self) {
         let tcx = self.tcx();
         let caller_def_id = self.def_id();
-        let caller_count = self.cfg.blocks.len();
 
-        let mut pending: Vec<(usize, DefId)> = Vec::new();
-        for i in 0..caller_count {
-            let Some(term) = self.terminator(i) else {
-                continue;
-            };
-            let TerminatorKind::Call { func, .. } = &term.kind else {
-                continue;
-            };
-            // Cross-crate callees keep their raw trait-method def_id (trait
-            // methods have no MIR and are left to builtin models). Local callees
-            // are resolved to the concrete impl so a user trait method (e.g.
-            // `<MyIter as Iterator>::next`) inlines against its actual MIR.
-            let Some(base_callee) = crate::helpers::mir_utils::dep_callee_def_id(func) else {
-                continue;
-            };
-            let cross_crate = base_callee.as_local().is_none();
-            let callee = if cross_crate {
-                base_callee
-            } else {
-                crate::helpers::mir_utils::dep_callee_resolved_def_id(tcx, caller_def_id, func)
-                    .unwrap_or(base_callee)
-            };
-            let name = tcx.def_path_str(callee);
-            let is_intrinsic = name.contains("::intrinsics::")
-                || name.starts_with("intrinsics::")
-                || name.ends_with("::drop_in_place");
-            let has_fn_sim = crate::verify::call_summary::builtin_models::is_modeled(Some(callee));
-            let is_slice_summary = crate::helpers::mir_utils::is_index_method(tcx, callee)
-                || crate::verify::call_summary::interprocedural::is_slice_get_summary(tcx, callee);
-            // Inlining a callee that itself has a loop (a back-edge) into a
-            // looping caller would nest the loop and blow up path enumeration.
-            // Only inline loop-free local callees.  Branch-free local callees
-            // (trivial getters like `as_ptr`/`as_mut_ptr`/`len`) are already
-            // handled precisely by the VM's recursive `exec_inline_call`, so
-            // only callees with a real `SwitchInt` (which that path rejects)
-            // need CFG inlining to recover branch-sensitive provenance.  Unsafe
-            // callees are inlined too: their call site remains a checkpoint
-            // (the `#[rapx::requires]` is enforced from the pre-captured
-            // checkpoint operands, independent of inlining), while inlining the
-            // body propagates its branch-dependent return value to downstream
-            // checks in the caller.
-            let small_local = !cross_crate
-                && tcx.is_mir_available(callee)
-                && {
-                    let body = tcx.optimized_mir(callee);
-                    let has_backedge = body.basic_blocks.iter_enumerated().any(|(i, bb)| {
-                        bb.terminator().successors().any(|s| s.index() <= i.index())
-                    });
-                    let has_switch = body.basic_blocks.iter_enumerated().any(|(idx, bb)| {
-                        !bb.is_cleanup
-                            && matches!(bb.terminator().kind, TerminatorKind::SwitchInt { .. })
-                            && !crate::helpers::mir_utils::switch_is_debug_assert(tcx, &body, idx)
-                    });
-                    body.basic_blocks.len() <= 16 && !has_backedge && has_switch
+        let mut expanded: FxHashSet<DefId> = FxHashSet::default();
+        expanded.insert(caller_def_id);
+
+        let mut branchy_cache: FxHashMap<DefId, bool> = FxHashMap::default();
+
+        loop {
+            let mut pending: Vec<(usize, DefId)> = Vec::new();
+            for i in 0..self.cfg.blocks.len() {
+                // Only recurse into *local* functions: cross-crate bodies are
+                // inlined but never scanned for further calls.
+                if self.cfg.block(i).def_id.as_local().is_none() {
+                    continue;
+                }
+                let Some(term) = self.terminator(i) else {
+                    continue;
                 };
-            if callee != caller_def_id
-                && tcx.is_mir_available(callee)
-                && !is_intrinsic
-                && !has_fn_sim
-                && !is_slice_summary
-                && (cross_crate || small_local)
-            {
-                pending.push((i, callee));
+                let TerminatorKind::Call { func, target, .. } = &term.kind else {
+                    continue;
+                };
+                // A diverging call (`panic!` / `unreachable!`) has no normal
+                // successor to reconnect through the inlined body, so it is
+                // never inlined.
+                if target.is_none() {
+                    continue;
+                }
+                // Cross-crate callees keep their raw trait-method def_id (trait
+                // methods have no MIR and are left to builtin models). Local
+                // callees are resolved to the concrete impl so a user trait
+                // method (e.g. `<MyIter as Iterator>::next`) inlines against its
+                // actual MIR.
+                let Some(base_callee) = crate::helpers::mir_utils::dep_callee_def_id(func) else {
+                    continue;
+                };
+                let cross_crate = base_callee.as_local().is_none();
+                let callee = if cross_crate {
+                    base_callee
+                } else {
+                    crate::helpers::mir_utils::dep_callee_resolved_def_id(
+                        tcx,
+                        self.cfg.block(i).def_id,
+                        func,
+                    )
+                    .unwrap_or(base_callee)
+                };
+                // Compiler intrinsics (`extern "rust-intrinsic"`) have no MIR and
+                // `drop_in_place` is a MIR shim; both are left as ordinary call
+                // edges rather than inlined.
+                let is_intrinsic = tcx.intrinsic(callee).is_some()
+                    || crate::helpers::mir_utils::is_drop_in_place(callee);
+                let has_fn_sim =
+                    crate::verify::call_summary::builtin_models::is_modeled(Some(callee));
+                let is_slice_summary = crate::helpers::mir_utils::is_index_method(tcx, callee)
+                    || crate::verify::call_summary::interprocedural::is_slice_get_summary(
+                        tcx, callee,
+                    );
+                if !tcx.is_mir_available(callee)
+                    || expanded.contains(&callee)
+                    || is_intrinsic
+                    || has_fn_sim
+                    || is_slice_summary
+                {
+                    continue;
+                }
+                // A local callee is inlined only when it is small and
+                // *transitively branchy*: it has a semantic `SwitchInt`, or it
+                // (transitively) calls a local callee that does. This lets a
+                // branch-free callee like `next_unchecked` — the only caller of
+                // the branchy pointer-advancing helper `post_inc_start` — be
+                // inlined so the branchy helper ends up in the CFG, letting the
+                // element-level `iter_ptr_offset` tracking reconstruct the
+                // loop-carried `offset <= len` invariant instead of the
+                // name-matching `try_iter_next` model. A purely branch-free
+                // accessor (e.g. `get`, whose callees are cross-crate or have
+                // no semantic switch) is left opaque for the VM's more precise
+                // `exec_inline_call`.
+                let small_local = !cross_crate && {
+                    let body = tcx.optimized_mir(callee);
+                    body.basic_blocks.len() <= 16
+                        && Self::transitively_branchy(tcx, callee, &mut branchy_cache)
+                };
+                if cross_crate || small_local {
+                    pending.push((i, callee));
+                }
+            }
+
+            if pending.is_empty() {
+                break;
+            }
+
+            // Mark every pending callee as expanded *before* inlining so a
+            // callee that (transitively) calls itself or another pending callee
+            // is not inlined again on a later iteration.
+            for (_, callee) in &pending {
+                expanded.insert(*callee);
+            }
+
+            for (caller_idx, callee) in pending {
+                self.inline_one(caller_idx, callee);
             }
         }
+    }
 
-        for (caller_idx, callee) in pending {
-            self.inline_one(caller_idx, callee);
+    /// Whether `def_id` has a semantic `SwitchInt`, or (transitively) calls a
+    /// *local* callee that does. A foldable `ub_checks`/debug-assert switch is
+    /// not semantic. Memoized in `cache`; a cycle returns `false`.
+    fn transitively_branchy(
+        tcx: TyCtxt<'_>,
+        def_id: DefId,
+        cache: &mut FxHashMap<DefId, bool>,
+    ) -> bool {
+        if let Some(&v) = cache.get(&def_id) {
+            return v;
         }
+        cache.insert(def_id, false);
+        let body = tcx.optimized_mir(def_id);
+        let mut result = body.basic_blocks.iter_enumerated().any(|(idx, bb)| {
+            !bb.is_cleanup
+                && matches!(bb.terminator().kind, TerminatorKind::SwitchInt { .. })
+                && !crate::helpers::mir_utils::switch_is_debug_assert(tcx, &body, idx)
+        });
+        if !result {
+            for bb in body.basic_blocks.iter() {
+                let Some(term) = bb.terminator.as_ref() else {
+                    continue;
+                };
+                let TerminatorKind::Call { func, .. } = &term.kind else {
+                    continue;
+                };
+                let Some(base) = crate::helpers::mir_utils::dep_callee_def_id(func) else {
+                    continue;
+                };
+                if base.as_local().is_none() {
+                    continue;
+                }
+                let resolved = crate::helpers::mir_utils::dep_callee_resolved_def_id(
+                    tcx, def_id, func,
+                )
+                .unwrap_or(base);
+                if Self::transitively_branchy(tcx, resolved, cache) {
+                    result = true;
+                    break;
+                }
+            }
+        }
+        cache.insert(def_id, result);
+        result
     }
 
     /// Inline a single callee into `caller_idx`, reconnecting the caller's
     /// normal successor edge through the callee body.
     fn inline_one(&mut self, caller_idx: usize, callee: DefId) {
         let tcx = self.tcx();
+        // The caller block may itself be an inlined callee (nested inlining), so
+        // its MIR successor indices must be shifted into the global block space.
+        let caller_base = caller_idx - self.cfg.block(caller_idx).local_index;
         let (caller_target, arg_locals, dest_local) = match self.terminator(caller_idx) {
             Some(term) => match &term.kind {
                 TerminatorKind::Call {
@@ -625,7 +776,7 @@ impl<'tcx> PathGraph<'tcx> {
                     destination,
                     ..
                 } => {
-                    let target = target.map(|t| t.as_usize());
+                    let target = target.map(|t| caller_base + t.as_usize());
                     let arg_locals: Vec<usize> = args
                         .iter()
                         .filter_map(|a| a.node.place().map(|p| p.local.as_usize()))
@@ -643,6 +794,12 @@ impl<'tcx> PathGraph<'tcx> {
         let body = tcx.optimized_mir(callee);
         let base = self.cfg.blocks.len();
         let block_count = body.basic_blocks.len();
+
+        // Build the callee's constant/discriminant metadata under its own local
+        // namespace so its constraint tracking doesn't clash with the caller's.
+        let local_base = self.assign_local_base(callee);
+        let (callee_info, callee_disc, callee_agg, callee_fproj, callee_cast) =
+            build_function_info(tcx, callee, local_base);
 
         for i in 0..block_count {
             let bb = &body.basic_blocks[BasicBlock::from(i)];
@@ -687,8 +844,16 @@ impl<'tcx> PathGraph<'tcx> {
                 }
             }
             self.cfg.blocks.push(cb);
-            self.block_info.push(BlockConstantInfo::default());
         }
+
+        // Append the callee's per-block metadata and merge its global source
+        // maps (all keyed in the callee's own local namespace).
+        self.block_info.extend(callee_info);
+        self.disc_info.source_of.extend(callee_disc.source_of);
+        self.disc_info.variant_count_of.extend(callee_disc.variant_count_of);
+        self.aggregate_field_sources.extend(callee_agg);
+        self.field_projection_source.extend(callee_fproj);
+        self.cast_chains.extend(callee_cast);
 
         // Record the argument binding for the callee entry.
         self.inline_bindings.insert(
@@ -698,6 +863,8 @@ impl<'tcx> PathGraph<'tcx> {
                 dest_local,
             },
         );
+        self.inline_parents
+            .insert(base, self.cfg.block(caller_idx).def_id);
         self.inlined_call_blocks.insert(caller_idx);
 
         // Reconnect the caller's normal successor edge through the callee entry.
@@ -740,17 +907,42 @@ impl<'tcx> PathGraph<'tcx> {
             .unwrap_or(false)
     }
 
-    /// Get the number of variants for a constraint local.
-    /// First checks the pre-populated `variant_count_of` hashmap,
-    /// then falls back to the local's declared type (for ADT locals
-    /// that gained their type through field projections in nested
-    /// destructuring patterns rather than explicit construction).
-    fn get_variant_count(&self, local: usize) -> Option<usize> {
+    /// The local-index base of `def_id`'s MIR locals in the flat constraint
+    /// maps. The root caller is base `0`; inlined callees get a fresh base.
+    fn local_base_of(&self, def_id: DefId) -> usize {
+        self.local_bases.get(&def_id).copied().unwrap_or(0)
+    }
+
+    /// Remap `def_id`'s MIR local `local` into the global constraint namespace.
+    fn remap_local(&self, def_id: DefId, local: usize) -> usize {
+        self.local_base_of(def_id) + local
+    }
+
+    /// Assign a fresh local-namespace base for `def_id` (or return its existing
+    /// base if the function has already been inlined).
+    fn assign_local_base(&mut self, def_id: DefId) -> usize {
+        if let Some(&base) = self.local_bases.get(&def_id) {
+            return base;
+        }
+        let base = self.next_local_base;
+        let local_count = self.tcx().optimized_mir(def_id).local_decls.len();
+        self.local_bases.insert(def_id, base);
+        self.next_local_base = base + local_count;
+        base
+    }
+
+    /// Get the number of variants for a constraint local (in `def_id`'s local
+    /// namespace). First checks the pre-populated `variant_count_of` hashmap,
+    /// then falls back to the local's declared type (for ADT locals that gained
+    /// their type through field projections in nested destructuring patterns
+    /// rather than explicit construction).
+    fn get_variant_count(&self, local: usize, def_id: DefId) -> Option<usize> {
         if let Some(&count) = self.disc_info.variant_count_of.get(&local) {
             return Some(count);
         }
-        let body = self.cfg.tcx.optimized_mir(self.cfg.def_id);
-        let mut ty = body.local_decls[Local::from_usize(local)].ty;
+        let body = self.cfg.tcx.optimized_mir(def_id);
+        let original = local - self.local_base_of(def_id);
+        let mut ty = body.local_decls[Local::from_usize(original)].ty;
         while let TyKind::Ref(_, inner_ty, _) | TyKind::RawPtr(inner_ty, _) = ty.kind() {
             ty = *inner_ty;
         }
@@ -802,9 +994,14 @@ impl<'tcx> PathGraph<'tcx> {
         // assigned_locals only covers statement-level assignments, so
         // terminator-side assignments are handled here.
         if let Some(terminator) = self.terminator(cur) {
+            let local_base = self.local_base_of(self.cfg.block(cur).def_id);
             let assigned = match &terminator.kind {
-                TerminatorKind::Call { destination, .. } => Some(destination.local.as_usize()),
-                TerminatorKind::Yield { resume_arg, .. } => Some(resume_arg.local.as_usize()),
+                TerminatorKind::Call { destination, .. } => {
+                    Some(local_base + destination.local.as_usize())
+                }
+                TerminatorKind::Yield { resume_arg, .. } => {
+                    Some(local_base + resume_arg.local.as_usize())
+                }
                 _ => None,
             };
             if let Some(local) = assigned {
@@ -858,7 +1055,9 @@ impl<'tcx> PathGraph<'tcx> {
             return true;
         }
         let cond_local = match cond {
-            Operand::Copy(p) | Operand::Move(p) => p.local.as_usize(),
+            Operand::Copy(p) | Operand::Move(p) => {
+                self.remap_local(self.cfg.block(cur).def_id, p.local.as_usize())
+            }
             Operand::Constant(c) => {
                 let typing_env =
                     rustc_middle::ty::TypingEnv::post_analysis(self.cfg.tcx, self.cfg.def_id);
@@ -983,16 +1182,13 @@ impl<'tcx> PathGraph<'tcx> {
         // MIR block indices, so they must be shifted into the global space.
         let base = cur - self.cfg.block(cur).local_index;
 
-        // An inlined callee's locals reuse the caller's indices, so its
-        // discriminant/constraint info is not tracked here; conservatively allow
-        // every branch instead of pruning with the caller's (clashing) locals.
-        if self.cfg.block(cur).def_id != self.cfg.def_id {
-            return true;
-        }
-
         match &terminator.kind {
             TerminatorKind::SwitchInt { discr, targets } => {
-                let discr_local = discr.place().map(|p| p.local.as_usize());
+                // The discriminant local is remapped into its function's
+                // namespace so it matches `disc_info`/`constraints` keys.
+                let discr_local = discr
+                    .place()
+                    .map(|p| self.remap_local(self.cfg.block(cur).def_id, p.local.as_usize()));
                 let constraint_local = discr_local
                     .and_then(|l| self.disc_info.source_of.get(&l).copied())
                     .or(discr_local);
@@ -1172,7 +1368,9 @@ impl<'tcx> PathGraph<'tcx> {
                 // and record the newly learned constraint from the taken branch.
                 if next == targets.otherwise().as_usize() {
                     if let Some(local) = constraint_local {
-                        if let Some(num_variants) = self.get_variant_count(local) {
+                        if let Some(num_variants) =
+                            self.get_variant_count(local, self.cfg.block(cur).def_id)
+                        {
                             let all_covered = (0..num_variants)
                                 .all(|v| targets.iter().any(|(tv, _)| tv == v as u128));
                             if all_covered {
@@ -1358,7 +1556,9 @@ impl<'tcx> PathGraph<'tcx> {
         discr_local: usize,
     ) -> Option<usize> {
         let body = self.cfg.tcx.optimized_mir(self.cfg.block(cur).def_id);
-        let mut discr_ty = body.local_decls[Local::from_usize(discr_local)].ty;
+        let def_id = self.cfg.block(cur).def_id;
+        let original = discr_local - self.local_base_of(def_id);
+        let mut discr_ty = body.local_decls[Local::from_usize(original)].ty;
         while let TyKind::Ref(_, inner, _) | TyKind::RawPtr(inner, _) = discr_ty.kind() {
             discr_ty = *inner;
         }

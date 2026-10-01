@@ -165,6 +165,7 @@ static REGISTRY: &[Entry] = &[
     // (`NonNull::new`'s `is_null`, `MaybeUninit::uninit`/`assume_init`).
     // `MaybeUninit::write` marks the slot initialized (`WriteMemory`).
     ED!(api_classify::is_nonnull_checked_new, eff_none),
+    ED!(api_classify::is_nonnull_new_unchecked, eff_new_unchecked),
     ED!(api_classify::is_maybe_uninit_uninit, eff_none),
     ED!(api_classify::is_maybe_uninit_assume_init, eff_none),
     ED!(api_classify::is_maybe_uninit_write, eff_write_mem),
@@ -238,6 +239,13 @@ fn eff_sliceindex_get_unchecked(ctx: &EffCtx<'_, '_>) -> Vec<CallEffect> {
 
 fn eff_alias_arg0(_: &EffCtx<'_, '_>) -> Vec<CallEffect> {
     vec![CallEffect::ReturnAliasArg { arg: 0 }]
+}
+
+/// `NonNull::new_unchecked(ptr)`: a transparent re-wrap that preserves `ptr`'s
+/// value and provenance (element offset included), inheriting non-nullness from
+/// the source rather than asserting it.
+fn eff_new_unchecked(_: &EffCtx<'_, '_>) -> Vec<CallEffect> {
+    vec![CallEffect::ReturnPointerFromArg { arg: 0 }]
 }
 
 fn eff_ptr_add(ctx: &EffCtx<'_, '_>) -> Vec<CallEffect> {

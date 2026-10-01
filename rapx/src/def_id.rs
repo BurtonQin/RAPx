@@ -1107,6 +1107,12 @@ intrinsics! {
         "std::ptr::non_null::NonNull::<T>::new",
         "core::ptr::non_null::NonNull::<T>::new"
     ],
+    nonnull_new_unchecked: &[
+        "std::ptr::NonNull::<T>::new_unchecked",
+        "core::ptr::NonNull::<T>::new_unchecked",
+        "std::ptr::non_null::NonNull::<T>::new_unchecked",
+        "core::ptr::non_null::NonNull::<T>::new_unchecked"
+    ],
     const_ptr_align_offset: &[
         "std::ptr::const_ptr::<impl *const T>::align_offset",
         "core::ptr::const_ptr::<impl *const T>::align_offset"
