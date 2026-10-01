@@ -3067,6 +3067,42 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         None
     }
 
+    /// Resolve a whole-place copy root: `_x = copy _y` / `_x = move _y` (no
+    /// projection) traces `_x` back to `_y`. Used to recover a value parameter's
+    /// materialized fields when the optimizer inserted a copy temporary between
+    /// the caller's argument and the inlined callee's parameter (e.g.
+    /// `get_ext`'s `_2 = copy _1` before `NonZero::get(move _2)`), so that
+    /// `handle_callee_entry`'s field collection can follow the copy chain to the
+    /// local that actually carries the fields.
+    pub(crate) fn find_copy_root(&self, local: Local) -> Option<Local> {
+        use rustc_middle::mir::{Rvalue, StatementKind};
+        for bb in self.body().basic_blocks.iter() {
+            for stmt in &bb.statements {
+                if let StatementKind::Assign(assign) = &stmt.kind {
+                    let (dest, rvalue) = &**assign;
+                    if dest.local == local && dest.projection.is_empty() {
+                        #[cfg(rapx_rvalue_use_with_retag)]
+                        let op = match rvalue {
+                            Rvalue::Use(op, _) => Some(op),
+                            _ => None,
+                        };
+                        #[cfg(not(rapx_rvalue_use_with_retag))]
+                        let op = match rvalue {
+                            Rvalue::Use(op) => Some(op),
+                            _ => None,
+                        };
+                        if let Some(Operand::Copy(p) | Operand::Move(p)) = op
+                            && p.projection.is_empty()
+                        {
+                            return Some(p.local);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// If arg_val is a reference to an Iter or IterMut struct, return the
     /// local index of the referent (so field values can be looked up).
     /// Since len()/is_empty() always take &self, local 1 is the receiver.

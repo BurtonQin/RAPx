@@ -76,14 +76,27 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Collect the caller argument fields from the saved map, so the callee's
         // parameters inherit them (e.g. NonZero's non-zero inner value, and an
         // iterator's `ptr`/`end_or_len`). A whole-place reborrow
-        // (`_7 = &mut (*_1)`) carries its referent's fields, so resolve it too.
+        // (`_7 = &mut (*_1)`) carries its referent's fields, so resolve it too;
+        // likewise a whole-place copy temporary (`_2 = copy _1`) that the
+        // optimizer inserted between the caller's argument and the inlined
+        // callee's parameter — follow both chains so the local that actually
+        // materialized the fields is found.
         let mut arg_fields: Vec<(usize, Vec<usize>, VmValue<'ctx, 'tcx>)> = Vec::new();
         for (i, arg) in arg_locals.iter().enumerate() {
             let caller_local = Local::from_usize(*arg);
-            let mut source_locals = vec![caller_local];
-            if let Some(r) = self.find_whole_reborrow_referent(caller_local) {
-                if r != caller_local {
-                    source_locals.push(r);
+            let mut source_locals: Vec<Local> = Vec::new();
+            let mut seen: FxHashSet<Local> = FxHashSet::default();
+            let mut stack = vec![caller_local];
+            while let Some(cur) = stack.pop() {
+                if !seen.insert(cur) {
+                    continue;
+                }
+                source_locals.push(cur);
+                if let Some(r) = self.find_whole_reborrow_referent(cur) {
+                    stack.push(r);
+                }
+                if let Some(c) = self.find_copy_root(cur) {
+                    stack.push(c);
                 }
             }
             for src in source_locals {
