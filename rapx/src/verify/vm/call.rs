@@ -614,11 +614,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if pp.alloc_id != ep.alloc_id {
             return false;
         }
+        let buffer = ep.alloc_id;
+        let ep_elem = match &ep.offset_kind {
+            Some(OffsetKind::Element(e)) => Some(e.clone()),
+            _ => None,
+        };
         let dest_ty = self.body().local_decls[destination].ty;
         // Compute is_empty from fields/tracked offset (same as is_empty()).
         let sz = self.iter_elem_size(ptr);
         let ep_offset = ep.offset.clone();
-        let remaining = if let Some(off) = self.iter_ptr_offset.get(&local) {
+        let remaining = if let Some((off, _)) = self.solver.iter_ptr_offset.get(&buffer) {
             let base_len = ep_offset.div(&sz);
             let zero = Int::from_u64(self.ctx, 0);
             off.gt(&base_len)
@@ -632,8 +637,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // index (iter_ptr_offset) scaled by the element stride, or the base
         // ptr offset on the first call.
         let zero = Int::from_u64(self.ctx, 0);
-        let cur_off = match self.iter_ptr_offset.get(&local) {
-            Some(prev) => Int::mul(self.ctx, &[prev, &sz]),
+        let cur_off = match self.solver.iter_ptr_offset.get(&buffer) {
+            Some((prev, _)) => Int::mul(self.ctx, &[prev, &sz]),
             None => pp.offset.clone(),
         };
         let old_ptr_val = VmValue {
@@ -655,16 +660,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         };
         // Advance ptr when not empty
         let one_term = Int::from_u64(self.ctx, 1);
-        let new_offset = match self.iter_ptr_offset.get(&local) {
-            Some(prev) => Int::add(self.ctx, &[prev, &one_term]),
-            None => one_term.clone(),
+        let (new_offset, base_len_elem) = match self.solver.iter_ptr_offset.get(&buffer) {
+            Some((prev, base)) => (Int::add(self.ctx, &[prev, &one_term]), base.clone()),
+            None => (one_term.clone(), ep_elem),
         };
         // Assert !is_empty as path condition (remaining > 0)
         self.solver.constraints.push(remaining.gt(&zero));
         // Push: base_len >= tracked_offset
         let base_len = ep_offset.div(&sz);
         self.solver.constraints.push(new_offset.le(&base_len));
-        self.iter_ptr_offset.insert(local, new_offset);
+        self.solver
+            .iter_ptr_offset
+            .insert(buffer, (new_offset, base_len_elem));
         // Return None or old ptr
         let result_val = VmValue {
             term: is_empty.ite(&zero, &old_ptr_val.term),
@@ -2971,7 +2978,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return None;
         }
         let sz = self.iter_elem_size(ptr);
-        if let Some(offset) = self.iter_ptr_offset.get(&local) {
+        if let Some((offset, _)) = self.solver.iter_ptr_offset.get(&ep.alloc_id) {
             let base_len = ep.offset.div(&sz);
             let zero = Int::from_u64(self.ctx, 0);
             Some(
@@ -3016,15 +3023,25 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let self_val = &arg_values[0];
         let some_local = self.find_iter_self_local(self_val);
         let Some(local) = some_local else { return };
+        let Some(buffer) = self.iter_buffer(local) else { return };
         let offset_term = arg_values
             .get(1)
             .map(|v| v.term.clone())
             .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
-        let new_offset = match self.iter_ptr_offset.get(&local) {
-            Some(prev) => Int::add(self.ctx, &[prev, &offset_term]),
-            None => offset_term,
+        let (new_offset, base_len) = match self.solver.iter_ptr_offset.get(&buffer) {
+            Some((prev, base)) => (Int::add(self.ctx, &[prev, &offset_term]), base.clone()),
+            None => {
+                let base = self
+                    .field_value(local, &[1])
+                    .and_then(|end| end.provenance.as_ref())
+                    .and_then(|ep| match &ep.offset_kind {
+                        Some(OffsetKind::Element(e)) => Some(e.clone()),
+                        _ => None,
+                    });
+                (offset_term, base)
+            }
         };
-        self.iter_ptr_offset.insert(local, new_offset);
+        self.solver.iter_ptr_offset.insert(buffer, (new_offset, base_len));
     }
 
     /// Find the local whose symbolic address matches `term` (the address a

@@ -543,12 +543,12 @@ pub(crate) struct LayoutCache<'ctx, 'tcx> {
 
 /// Accumulated solver state for the current path.
 ///
-/// `constraints` is the assertion stream fed to Z3; `layout` and
-/// `not_mask_terms` are term caches that keep generic-layout constants and
-/// alignment-mask terms shared across the path (so Z3 expressions stay compact
-/// and the `S` factor cancels in `InBound`).  All three are path-scoped and
-/// monotonic: they accumulate as the VM steps and are never reset within a
-/// path (or across inlined frames).
+/// `constraints` is the assertion stream fed to Z3; the rest are term caches
+/// that keep generic-layout constants, alignment-mask terms, and iterator
+/// element indices shared across the path (so Z3 expressions stay compact and
+/// the `S` factor cancels in `InBound`).  Everything is path-scoped and
+/// monotonic: it accumulates as the VM steps and is never reset within a path
+/// (or across inlined frames).
 #[derive(Default)]
 pub(crate) struct SolverState<'ctx, 'tcx> {
     /// Accumulated solver constraints along the current path: branch/guard
@@ -576,6 +576,15 @@ pub(crate) struct SolverState<'ctx, 'tcx> {
     /// `quotient → (lhs, rhs)` for each *non-exact* division, recovering the
     /// `len` and divisor (`ts`) operands at a following `us_len = (len / ts) * us`.
     pub(crate) div_roots: FxHashMap<Int<'ctx>, (Int<'ctx>, Int<'ctx>)>,
+
+    /// Per-iterator element index, keyed by the *buffer* the iterator walks
+    /// (`end` field's provenance alloc id, which is frame-independent).  The
+    /// value is `(offset, base_len)`: the current element index and the total
+    /// element count (the end field's `Element` offset, `None` when unknown).
+    /// Caching both keeps `next`/`len`/`is_empty` checks linear
+    /// (`base_len - offset`) instead of a deeply-nested `((base + S) + S) …`
+    /// pointer chain that Z3's NIA cannot reason about.
+    pub(crate) iter_ptr_offset: FxHashMap<AllocId, (Int<'ctx>, Option<Int<'ctx>>)>,
 }
 
 /// The frame-scoped subset of [`VmState`] captured when entering an inlined
@@ -630,15 +639,6 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// [`Self::save_frame`]/[`Self::restore_frame`].
     pub(crate) op_sources: FxHashMap<PlaceKey, BinaryOpSource>,
 
-    /// Cumulative ptr offset for Iter/IterMut field [0] (ptr), keyed by the
-    /// iterator's `self` local. Unlike `op_sources`, this is *path-scoped*: an
-    /// iterator's offset accumulates across loop iterations and inlined
-    /// `&mut self` frames (whose `self` is always local 1), so it must survive
-    /// [`save_frame`]/[`restore_frame`]. `post_inc_start` advances the ptr by
-    /// `n` elements, so we increment this offset instead of nesting symbolic
-    /// additions (which keeps Z3 expressions compact).
-    pub(crate) iter_ptr_offset: FxHashMap<Local, Int<'ctx>>,
-
     // ── Accumulated solver state
     /// Solver constraints and term caches accumulated along the current path.
     pub(crate) solver: SolverState<'ctx, 'tcx>,
@@ -668,7 +668,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             locals: Locals::default(),
             inline: InlineCtx::default(),
             op_sources: FxHashMap::default(),
-            iter_ptr_offset: FxHashMap::default(),
             solver: SolverState::default(),
             path_facts: PathFacts {
                 reenter,
@@ -687,9 +686,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// This is the single source of truth for *what* is frame-scoped: the
     /// local bindings (`values`, `slots`, `local_fields`, `move_sources`) and
     /// the per-frame analysis metadata (`op_sources`), plus the current
-    /// function identity.  `iter_ptr_offset` is deliberately *not* captured —
-    /// it is path-scoped so an iterator's cumulative offset survives inlined
-    /// `&mut self` frames and loop iterations.  Both inline mechanisms
+    /// function identity.  Both inline mechanisms
     /// (`handle_callee_entry` in path replay and `exec_inline_call`) call this,
     /// so they can no longer drift apart.
     pub(crate) fn save_frame(&mut self) -> FrameSnapshot<'ctx, 'tcx> {
@@ -825,6 +822,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Get the value of a specific field within an aggregate local.
     pub(crate) fn field_value(&self, local: Local, path: &[usize]) -> Option<&VmValue<'ctx, 'tcx>> {
         self.locals.local_fields.get(&(local, path.to_vec()))
+    }
+
+    /// The buffer an `Iter`/`IterMut` at `local` walks: the provenance of its
+    /// `end` field.  This is frame-independent (the buffer allocation is
+    /// path-scoped), unlike the `local` itself, so it keys the per-iterator
+    /// element index in [`SolverState::iter_ptr_offset`].
+    pub(crate) fn iter_buffer(&self, local: Local) -> Option<AllocId> {
+        self.field_value(local, &[1])
+            .and_then(|end| end.provenance.as_ref())
+            .map(|ep| ep.alloc_id)
     }
 
     /// The field carrying an owned value's heap pointer (`Box.0.0`/`Vec.0.0`,

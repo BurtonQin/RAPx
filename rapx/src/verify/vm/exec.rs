@@ -4124,9 +4124,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// (the inlined form of `is_empty`: `ptr == end`), express the comparison
     /// element-wise as `iter_ptr_offset == base_len`. The operands may be plain
     /// temporaries (from the `as_ptr`/cast/field-read lowering), so the iterator
-    /// is located by scanning the tracked `iter_ptr_offset` keys for a local
-    /// whose `end` field shares the comparison's allocation. Returns `None` when
-    /// this is not an iterator emptiness comparison.
+    /// is located via the shared buffer allocation (the `end` field's provenance
+    /// alloc id). Returns `None` when this is not an iterator emptiness
+    /// comparison.
     fn iter_ptr_comparison(
         &self,
         op: rustc_middle::mir::BinOp,
@@ -4141,34 +4141,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if lp.alloc_id != rp.alloc_id {
             return None;
         }
-        // Locate the iterator by matching its `end` field's allocation.
-        let mut base_len: Option<Int<'ctx>> = None;
-        let mut local: Option<Local> = None;
-        for &l in self.iter_ptr_offset.keys() {
-            let Some(end) = self.field_value(l, &[1]) else {
-                continue;
-            };
-            let Some(ep) = end.provenance.as_ref() else {
-                continue;
-            };
-            if ep.alloc_id != lp.alloc_id {
-                continue;
-            }
-            if let Some(OffsetKind::Element(e)) = &ep.offset_kind {
-                base_len = Some(e.clone());
-                local = Some(l);
-                break;
-            }
-        }
-        let base_len = base_len?;
-        let local = local?;
-        let zero = Int::from_u64(self.ctx, 0);
-        let offset = self
-            .iter_ptr_offset
-            .get(&local)
-            .cloned()
-            .unwrap_or_else(|| zero.clone());
-        let eq = offset._eq(&base_len);
+        let (offset, base_len) = self.solver.iter_ptr_offset.get(&lp.alloc_id)?;
+        let base_len = base_len.as_ref()?;
+        let eq = offset._eq(base_len);
         Some(if matches!(op, rustc_middle::mir::BinOp::Eq) {
             eq
         } else {
@@ -4219,25 +4194,30 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if !self.is_iter_ref(local_val) {
             return;
         }
+        let Some(buffer) = self.iter_buffer(local) else {
+            return;
+        };
         let one = Int::from_u64(self.ctx, 1);
-        let new_offset = match self.iter_ptr_offset.get(&local) {
-            Some(prev) => Int::add(self.ctx, &[prev, &one]),
-            None => one,
+        let (new_offset, base_len) = match self.solver.iter_ptr_offset.get(&buffer) {
+            Some((prev, base)) => (Int::add(self.ctx, &[prev, &one]), base.clone()),
+            None => {
+                let base = self
+                    .field_value(local, &[1])
+                    .and_then(|end| end.provenance.as_ref())
+                    .and_then(|ep| match &ep.offset_kind {
+                        Some(OffsetKind::Element(e)) => Some(e.clone()),
+                        _ => None,
+                    });
+                (one.clone(), base)
+            }
         };
         // Mirror `try_iter_next`: the tracked offset must never exceed the
         // iterator's length (the inlined `post_inc_start` body itself only
         // mutates `ptr` and does not assert `offset <= len`).
-        let base_len = self
-            .field_value(local, &[1])
-            .and_then(|end| end.provenance.as_ref())
-            .and_then(|ep| match &ep.offset_kind {
-                Some(OffsetKind::Element(e)) => Some(e.clone()),
-                _ => None,
-            });
-        if let Some(e) = base_len {
-            self.solver.constraints.push(new_offset.le(&e));
+        if let Some(e) = &base_len {
+            self.solver.constraints.push(new_offset.le(e));
         }
-        self.iter_ptr_offset.insert(local, new_offset);
+        self.solver.iter_ptr_offset.insert(buffer, (new_offset, base_len));
     }
 
     /// Set non_null invariant on the target value.
