@@ -10,14 +10,13 @@ use crate::compat::FxHashMap;
 use crate::{
     analysis::{Analysis, path::default::PathAnalyzer},
     def_id::*,
+    limit::ALIAS_VISIT_LIMIT,
     utils::source::*,
 };
 use graph::AliasGraph;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::TyCtxt;
 use std::{collections::HashSet, fmt};
-
-pub const VISIT_LIMIT: usize = 80;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct MopAliasPair {
@@ -223,7 +222,7 @@ impl<'tcx> AliasAnalyzer<'tcx> {
             alias_graph.path_graph.find_scc();
             let mut recursion_set = HashSet::default();
             alias_graph.process_function_paths_opt(paths, &mut self.fn_map, &mut recursion_set);
-            if alias_graph.visit_times() > VISIT_LIMIT {
+            if alias_graph.visit_times() > ALIAS_VISIT_LIMIT {
                 rap_trace!("Over visited: {:?}", def_id);
             }
             self.fn_map.insert(def_id, alias_graph.ret_alias);

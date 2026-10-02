@@ -468,21 +468,6 @@ pub(crate) struct BinaryOpSource {
     pub op: rustc_middle::mir::BinOp,
 }
 
-/// Per-frame analysis metadata keyed by `Local`/`PlaceKey`.
-///
-/// `op_sources` records operand sources for guard inference; `iter_ptr_offset`
-/// is the cumulative `Iter`/`IterMut` field-0 pointer offset that keeps Z3
-/// expressions compact.  Both are checkpointed together around a call via
-/// [`VmState::save_frame`]/[`VmState::restore_frame`], so they share one struct
-/// and one lifecycle.
-#[derive(Default)]
-pub(crate) struct AnalysisCtx {
-    /// Operand sources for guard inference: destination → (lhs, rhs) place
-    /// keys with the operator kind of the binary operation that produced the
-    /// destination.
-    pub(crate) op_sources: FxHashMap<PlaceKey, BinaryOpSource>,
-}
-
 /// The object space: every allocation plus the per-allocation contents that are
 /// keyed purely by `AllocId` (fields and byte state).
 ///
@@ -604,7 +589,7 @@ pub(crate) struct SolverState<'ctx, 'tcx> {
 pub(crate) struct FrameSnapshot<'ctx, 'tcx> {
     pub(crate) caller_def_id: DefId,
     pub(crate) locals: Locals<'ctx, 'tcx>,
-    pub(crate) analysis: AnalysisCtx,
+    pub(crate) op_sources: FxHashMap<PlaceKey, BinaryOpSource>,
 }
 
 /// The full symbolic execution state at a program point.
@@ -639,12 +624,14 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     pub(crate) inline: InlineCtx<'ctx, 'tcx>,
 
     // ── Per-frame analysis metadata
-    /// Operand sources for guard inference and iterator pointer offsets,
-    /// checkpointed together around a call.
-    pub(crate) analysis: AnalysisCtx,
+    /// Operand sources for guard inference: destination → (lhs, rhs) place keys
+    /// with the operator kind of the binary operation that produced the
+    /// destination.  Checkpointed around a call via
+    /// [`Self::save_frame`]/[`Self::restore_frame`].
+    pub(crate) op_sources: FxHashMap<PlaceKey, BinaryOpSource>,
 
     /// Cumulative ptr offset for Iter/IterMut field [0] (ptr), keyed by the
-    /// iterator's `self` local. Unlike `analysis`, this is *path-scoped*: an
+    /// iterator's `self` local. Unlike `op_sources`, this is *path-scoped*: an
     /// iterator's offset accumulates across loop iterations and inlined
     /// `&mut self` frames (whose `self` is always local 1), so it must survive
     /// [`save_frame`]/[`restore_frame`]. `post_inc_start` advances the ptr by
@@ -680,7 +667,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             memory: Memory::default(),
             locals: Locals::default(),
             inline: InlineCtx::default(),
-            analysis: AnalysisCtx::default(),
+            op_sources: FxHashMap::default(),
             iter_ptr_offset: FxHashMap::default(),
             solver: SolverState::default(),
             path_facts: PathFacts {
@@ -709,7 +696,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         FrameSnapshot {
             caller_def_id: self.caller_def_id,
             locals: std::mem::take(&mut self.locals),
-            analysis: std::mem::take(&mut self.analysis),
+            op_sources: std::mem::take(&mut self.op_sources),
         }
     }
 
@@ -717,7 +704,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     pub(crate) fn restore_frame(&mut self, snapshot: FrameSnapshot<'ctx, 'tcx>) {
         self.caller_def_id = snapshot.caller_def_id;
         self.locals = snapshot.locals;
-        self.analysis = snapshot.analysis;
+        self.op_sources = snapshot.op_sources;
     }
 
     /// Look up the value bound to a MIR local.

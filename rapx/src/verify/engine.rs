@@ -327,10 +327,11 @@ impl<'tcx> VerifyEngine<'tcx> {
         // calling `post_inc_start` and continuing afterwards) — is not popped
         // from the frame stack until it actually returns.
         let mut active: Vec<(DefId, usize, usize)> = Vec::new();
-        // How many times each callee has been entered so far, to select the
-        // correct entry binding when the same callee is inlined more than once
-        // along a single path.
-        let mut entry_cursor: HashMap<DefId, usize> = HashMap::new();
+        // How many times each (callee, parent) pair has been entered so far, to
+        // select the correct entry binding when the same callee is inlined at
+        // several call sites — possibly under *different* parents — along a
+        // single (loop-unrolled) path.
+        let mut entry_cursor: HashMap<(DefId, DefId), usize> = HashMap::new();
 
         for item in items {
             let cur_def_id = match &item {
@@ -370,35 +371,100 @@ impl<'tcx> VerifyEngine<'tcx> {
                                     out.push(RelevantItem::CalleeExit { dest });
                                 }
                             } else {
-                                // Bind the callee's entry (local block 0) to the
-                                // correct inlining of `cur` on this path. A callee
-                                // called from several call sites has one global
-                                // entry block per site; they are consumed in path
-                                // order. A single call site (possibly re-entered
-                                // via a loop) always reuses its one entry block.
+                                // Descent into a fresh callee `cur`.
+                                let current_parent =
+                                    active.last().map(|(d, _, _)| *d).unwrap_or(caller);
+
+                                // The "effective parent" of an entry block: the
+                                // deepest ancestor (via `inline_parent`) that is
+                                // either the root caller or a currently-active
+                                // frame. Intermediate inlined callees whose blocks
+                                // produced no relevant items are skipped in the
+                                // item stream, so a transition can jump straight
+                                // from a shallow frame to a deep descendant.
+                                let eff_parent = |g: usize| -> DefId {
+                                    let mut p = tree.inline_parent(g);
+                                    while let Some(pd) = p {
+                                        if pd == caller
+                                            || active.iter().any(|(d, _, _)| *d == pd)
+                                        {
+                                            return pd;
+                                        }
+                                        p = local_to_global
+                                            .get(&(pd, 0))
+                                            .and_then(|gs| gs.first().copied())
+                                            .and_then(|pe| tree.inline_parent(pe));
+                                    }
+                                    caller
+                                };
+
+                                // Select `cur`'s entry block whose effective parent
+                                // matches the current innermost frame.
                                 let mut cur_entry: Option<usize> = None;
                                 if let Some(globals) = local_to_global.get(&(cur, 0)) {
-                                    let idx = if globals.len() == 1 {
+                                    let matching: Vec<usize> = globals
+                                        .iter()
+                                        .copied()
+                                        .filter(|&g| eff_parent(g) == current_parent)
+                                        .collect();
+                                    let pool: &[usize] = if matching.is_empty() {
+                                        globals.as_slice()
+                                    } else {
+                                        matching.as_slice()
+                                    };
+                                    let idx = if pool.len() == 1 {
                                         0
                                     } else {
-                                        let cursor = entry_cursor.entry(cur).or_insert(0);
+                                        let cursor =
+                                            entry_cursor.entry((cur, current_parent)).or_insert(0);
                                         let idx = *cursor;
-                                        *cursor = (*cursor + 1).min(globals.len() - 1);
+                                        *cursor = (*cursor + 1).min(pool.len() - 1);
                                         idx
                                     };
-                                    cur_entry = globals.get(idx).copied();
+                                    cur_entry = pool.get(idx).copied();
                                 }
-                                // A descent: pop frames until `cur`'s parent is
-                                // on top (or the stack empties — `cur` is a
-                                // direct child of the caller), then enter `cur`.
-                                let cur_parent =
-                                    cur_entry.and_then(|g| tree.inline_parent(g));
+
+                                // The frame `cur` connects to, and the inlined
+                                // callees skipped between it and `cur`.
+                                let eff = cur_entry.map(&eff_parent).unwrap_or(caller);
+                                let mut skipped: Vec<(DefId, usize)> = Vec::new();
+                                {
+                                    let mut p = cur_entry.and_then(|g| tree.inline_parent(g));
+                                    while let Some(pd) = p {
+                                        if pd == eff {
+                                            break;
+                                        }
+                                        if let Some(pe) = local_to_global
+                                            .get(&(pd, 0))
+                                            .and_then(|gs| gs.first().copied())
+                                        {
+                                            skipped.push((pd, pe));
+                                            p = tree.inline_parent(pe);
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                // Pop down to the connection frame (`eff`; if it is
+                                // the root caller, pop everything).
                                 while let Some(&(top_def, _, _)) = active.last() {
-                                    if Some(top_def) == cur_parent {
+                                    if top_def == eff {
                                         break;
                                     }
                                     let (_, dest, _) = active.pop().unwrap();
                                     out.push(RelevantItem::CalleeExit { dest });
+                                }
+                                // Enter the skipped frames (farthest first), then
+                                // `cur` itself.
+                                for (pd, pe) in skipped.iter().rev() {
+                                    if let Some(binding) = tree.inline_binding(*pe) {
+                                        out.push(RelevantItem::CalleeEntry {
+                                            callee: *pd,
+                                            args: binding.arg_locals.clone(),
+                                        });
+                                        active.push((*pd, binding.dest_local, *pe));
+                                    }
                                 }
                                 if let Some(&global) = cur_entry.as_ref()
                                     && let Some(binding) = tree.inline_binding(global)

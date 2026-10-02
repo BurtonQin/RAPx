@@ -4,6 +4,7 @@ use crate::{
     analysis::alias::default::MopFnAliasMap,
     analysis::path::{PathNode, PathTree},
     def_id::is_drop_fn,
+    limit::SAFEDROP_VISIT_LIMIT,
     utils::source::{get_filename, get_name},
 };
 use rustc_middle::{
@@ -14,8 +15,6 @@ use rustc_middle::{
     ty::{self},
 };
 use rustc_span::{Span, Symbol};
-
-pub const VISIT_LIMIT: usize = 1000;
 
 impl<'tcx> SafeDropGraph<'tcx> {
     fn dfs_safedrop(
@@ -43,7 +42,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
 
         if node.is_path_end {
             self.alias_graph.increment_visit_times();
-            if self.alias_graph.visit_times() > VISIT_LIMIT {
+            if self.alias_graph.visit_times() > SAFEDROP_VISIT_LIMIT {
                 path.pop();
                 return Err(());
             }

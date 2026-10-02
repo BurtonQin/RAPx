@@ -1,5 +1,6 @@
 use super::{MopFnAliasMap, graph::*};
 use crate::def_id::{call_mut, clone, contains, replace, take};
+use crate::limit::MAX_VALUES_PER_PATH;
 use rustc_hir::def_id::DefId;
 use rustc_middle::{
     mir::{Operand, ProjectionElem, TerminatorKind},
@@ -18,8 +19,7 @@ impl<'tcx> AliasGraph<'tcx> {
                 ProjectionElem::Field(field, ty) => {
                     let field_idx = field.as_usize();
                     if !self.values[value_idx].fields.contains_key(&field_idx) {
-                        if self.values.len()
-                            < crate::analysis::points_to::graph::MAX_VALUES_PER_PATH
+                        if self.values.len() < MAX_VALUES_PER_PATH
                         {
                             let ty_env = TypingEnv::post_analysis(self.tcx(), self.def_id());
                             let need_drop = ty.needs_drop(self.tcx(), ty_env);

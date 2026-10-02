@@ -15,12 +15,10 @@ use rustc_middle::ty::{Ty, TyKind};
 use z3::ast::{Ast, Bool, Int};
 
 use crate::compat::{FxHashMap, FxHashSet, Spanned};
+use crate::limit::MAX_INLINE_DEPTH;
 use crate::verify::api_classify;
 use crate::verify::call_summary::{self, CallEffect};
 use super::state::{AllocId, ContentTy, OffsetKind, Provenance, ValueInvariants, VmState, VmValue};
-
-/// Maximum number of nested inlined callees before giving up on inlining.
-const MAX_INLINE_DEPTH: usize = 5;
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Execute a call terminator.
@@ -742,14 +740,15 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
         self.inline.inline_depth += 1;
 
-        // Only inline small, branch-free functions. `inline_execute_body`
-        // follows every `SwitchInt` target without forking state, so a real
-        // branch (e.g. a `match` that returns different pointers per arm)
-        // would have its arms merged and lose precision — which silently marks
-        // unsound callers sound. Keep rejecting `SwitchInt` bodies; branch-free
-        // bodies that merely exceed a small block count are still safe to
-        // inline, so the cap must cover the Box construction helpers used by
-        // constructors (`from_new_internal` is 9 blocks) so the fresh heap
+        // Only inline branch-free functions. `inline_execute_body` follows
+        // every `SwitchInt` target without forking state, so a real branch
+        // (e.g. a `match` that returns different pointers per arm) would have
+        // its arms merged and lose precision — which silently marks unsound
+        // callers sound. A branch-free body of *any* size is safe to inline
+        // (block count is not a soundness gate), so the filters are the
+        // semantic branch (`has_switch`), multi-return (`n_return > 1`), and
+        // arity (`arg_values > 4`) checks. This keeps the `Box` construction
+        // helpers (`from_new_internal`, 9 blocks) reachable so the fresh heap
         // allocation's provenance reaches the returned `NonNull`.
         let callee_body = self.tcx.optimized_mir(callee_def_id);
         let n_return = callee_body
@@ -778,7 +777,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 )
                 && !crate::helpers::mir_utils::switch_is_debug_assert(self.tcx, callee_body, idx)
         });
-        if arg_values.len() > 4 || callee_body.basic_blocks.len() > 16 || n_return > 1 || has_switch
+        if arg_values.len() > 4 || n_return > 1 || has_switch
         {
             self.inline.inline_depth -= 1;
             return false;
@@ -2756,14 +2755,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             CallEffect::DropMemory { pointer_arg } => {
                 // `ManuallyDrop::drop(slot)` / `drop_in_place(x)` frees the heap
-                // allocation behind the argument. A reference argument carries the
-                // *stack* provenance of the referent (penetrate to its heap field);
-                // a value argument (`Box`/`Vec`) carries the heap provenance
-                // directly. Mark the allocation dead; a second drop of an
-                // already-dead allocation is detected downstream via `dead` alone.
+                // allocation behind the argument. A reference/raw-pointer
+                // argument carries the *stack* provenance of the referent
+                // (penetrate to its heap field); a value argument (`Box`/`Vec`)
+                // carries the heap provenance directly. Mark the allocation
+                // dead; a second drop of an already-dead allocation is detected
+                // downstream via `dead` alone.
                 if let Some(arg_val) = args.get(*pointer_arg) {
-                    let alloc_id = if matches!(arg_val.ty.kind(), rustc_middle::ty::TyKind::Ref(..))
-                    {
+                    let alloc_id = if matches!(
+                        arg_val.ty.kind(),
+                        rustc_middle::ty::TyKind::Ref(..)
+                            | rustc_middle::ty::TyKind::RawPtr(..)
+                    ) {
                         self.find_local_by_address(&arg_val.term)
                             .and_then(|r| self.owner_ptr_field(r))
                             .and_then(|v| v.provenance_alloc_id())

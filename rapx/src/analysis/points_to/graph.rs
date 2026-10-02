@@ -6,8 +6,7 @@ use crate::helpers::def_use::{PlaceBaseKey, PlaceKey};
 use super::slot::{AbstractLoc, Slot};
 
 use crate::analysis::alias::default::types::ValueKind;
-
-pub const MAX_VALUES_PER_PATH: usize = 1000;
+use crate::limit::MAX_VALUES_PER_PATH;
 
 /// Unified points-to and value-flow graph.
 ///

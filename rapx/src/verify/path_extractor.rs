@@ -12,9 +12,9 @@
 //!
 //! # Path limit
 //!
-//! To prevent exponential blow-up, path enumeration is capped at `PATH_LIMIT`
-//! (currently 1024) per search. Searches stop producing new paths once the limit
-//! is reached.
+//! To prevent exponential blow-up, path enumeration is capped at
+//! [`PATH_LIMIT`](crate::limit::PATH_LIMIT) (currently 1024) per search.
+//! Searches stop producing new paths once the limit is reached.
 
 use crate::compat::{FxHashMap, FxHashSet};
 use rustc_hir::def_id::DefId;
@@ -26,8 +26,6 @@ use crate::analysis::path::{
 };
 
 use crate::helpers::mir_scan::{Checkpoint, CheckpointLocation};
-
-pub(crate) const PATH_LIMIT: usize = 1024;
 
 /// Enumerates finite, SCC-aware verification paths from the function entry
 /// to each unsafe checkpoint in a single function body.
@@ -57,7 +55,8 @@ pub(crate) const PATH_LIMIT: usize = 1024;
 ///
 /// # Path limit
 ///
-/// Per-checkpoint path count is capped at [`PATH_LIMIT`] (1024) to prevent
+/// Per-checkpoint path count is capped at
+/// [`PATH_LIMIT`](crate::limit::PATH_LIMIT) (1024) to prevent
 /// exponential blow-up in functions with many branches.
 pub(crate) struct PathExtractor<'tcx> {
     /// Compiler type context used for MIR access and name resolution.

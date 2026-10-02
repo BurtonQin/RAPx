@@ -15,18 +15,10 @@ use rustc_span::def_id::DefId;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-/// Maximum number of whole-CFG paths collected before stopping enumeration.
-const WHOLE_CFG_PATH_LIMIT: usize = 4000;
-/// Maximum DFS depth for whole-CFG path enumeration.
-const WHOLE_CFG_PATH_DEPTH_LIMIT: usize = 256;
-/// Bounded cache size for SCC path enumeration.
-const SCC_PATH_CACHE_LIMIT: usize = 2048;
-/// Maximum DFS depth for intra-SCC path enumeration.
-const SCC_MAX_DEPTH: usize = 128;
-/// Maximum number of distinct paths collected per SCC.
-const SCC_MAX_SEEN_PATHS: usize = 128;
-/// Maximum path length within an SCC traversal.
-const SCC_MAX_PATH_LEN: usize = 200;
+use crate::limit::{
+    LOCAL_INLINE_BLOCK_LIMIT, SCC_MAX_DEPTH, SCC_MAX_PATH_LEN, SCC_MAX_SEEN_PATHS,
+    SCC_PATH_CACHE_LIMIT, WHOLE_CFG_PATH_DEPTH_LIMIT, WHOLE_CFG_PATH_LIMIT,
+};
 
 /// Check whether the current entry→entry sub-path introduces a new block
 /// *sequence* (not just new blocks).  Different branch choices inside the SCC
@@ -594,11 +586,13 @@ impl<'tcx> PathGraph<'tcx> {
     ///
     /// Each callee is otherwise subject to the same shape constraints as
     /// before: cross-crate callees with MIR are always inlined, and a local
-    /// callee is inlined only when it is small (`<= 16` basic blocks), so
-    /// branch-free accessors (`get`, `count_ones`, …) also land in the CFG and
-    /// their field provenance is reconstructed element-by-element. Intrinsics
-    /// have no MIR; callees with a builtin model or a slice summary are kept
-    /// opaque because their summary is more precise than their body.
+    /// callee is inlined only when it is small (at most
+    /// [`LOCAL_INLINE_BLOCK_LIMIT`](crate::limit::LOCAL_INLINE_BLOCK_LIMIT) basic
+    /// blocks), so branch-free accessors
+    /// (`get`, `count_ones`, …) also land in the CFG and their field
+    /// provenance is reconstructed element-by-element. Intrinsics
+    /// have no MIR; callees with a builtin model are kept opaque because their
+    /// summary is more precise than their body.
     ///
     /// Recursion is bounded by an `expanded` set so that (mutually) recursive
     /// local functions do not grow the CFG without bound — a back-edge to an
@@ -653,41 +647,32 @@ impl<'tcx> PathGraph<'tcx> {
                     )
                     .unwrap_or(base_callee)
                 };
-                // Compiler intrinsics (`extern "rust-intrinsic"`) have no MIR and
-                // `drop_in_place` is a MIR shim; both are left as ordinary call
-                // edges rather than inlined.
-                let is_intrinsic = tcx.intrinsic(callee).is_some()
-                    || crate::helpers::mir_utils::is_drop_in_place(callee);
                 let has_fn_sim =
                     crate::verify::call_summary::builtin_models::is_modeled(Some(callee));
-                let is_slice_summary = crate::helpers::mir_utils::is_index_method(tcx, callee)
-                    || crate::verify::call_summary::interprocedural::is_slice_get_summary(
-                        tcx, callee,
-                    );
                 // A couple of helpers stay opaque because the VM's
                 // interprocedural execution is more precise than their inlined
                 // body:
                 // - `as_ptr`/`as_mut_ptr` (local re-implementations) lose the
                 //   provenance that `eff_alias_ptr`/`handle_callee_entry`
                 //   otherwise reconstruct from the argument.
-                let is_local_as_ptr = crate::verify::api_classify::is_local_as_ptr(tcx, callee);
+                let is_container_as_ptr =
+                    crate::verify::api_classify::is_container_as_ptr(tcx, callee);
                 if !tcx.is_mir_available(callee)
                     || expanded.contains(&callee)
-                    || is_intrinsic
                     || has_fn_sim
-                    || is_slice_summary
-                    || is_local_as_ptr
+                    || is_container_as_ptr
                 {
                     continue;
                 }
-                // A local callee is inlined only when it is small (a shape
-                // bound that keeps path enumeration tractable). Branch-free
-                // accessors are no longer excluded: their bodies land in the
-                // CFG and the backward slicer/VM reconstruct field provenance
-                // through the inlined call chain.
+                // A local callee is inlined only when it is small (a transitive
+                // shape bound that keeps path enumeration tractable; see
+                // `LOCAL_INLINE_BLOCK_LIMIT`). Branch-free accessors are no
+                // longer excluded: their bodies land in the CFG and the backward
+                // slicer/VM reconstruct field provenance through the inlined
+                // call chain.
                 let small_local = !cross_crate && {
                     let body = tcx.optimized_mir(callee);
-                    body.basic_blocks.len() <= 16
+                    body.basic_blocks.len() <= LOCAL_INLINE_BLOCK_LIMIT
                 };
                 if cross_crate || small_local {
                     pending.push((i, callee));

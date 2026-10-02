@@ -50,37 +50,10 @@ use super::{
 };
 use crate::helpers::mir_scan::Checkpoint;
 
-/// Upper bound for repeat selected by auto mode.
-///
-/// This caps how many times a loop body is unrolled during path enumeration;
-/// loop-heavy functions (e.g. UTF-16 decoders) scale super-linearly with it.
-/// Lower it to speed up verification at the cost of loop sensitivity (bugs that
-/// only manifest after more iterations can be missed).
-pub(crate) const MAX_AUTO_REPEAT: usize = 8;
-
-/// Fallback loop-carried distance used when a sink is loop-sensitive but the
-/// local transfer graph is too imprecise to calculate a better distance.
-///
-/// Three backedges calibrates to `allow_repeat = 2`, which is the first depth
-/// needed by the delayed pointer/state cases in `loop_repeat_threshold`.
-const DEFAULT_LOOP_CARRIED_BACKEDGES: usize = 3;
-
-/// Conservative first numeric witness when an index obligation is known to be
-/// induction-sensitive but the current summary cannot yet recover a concrete
-/// symbolic bound.
-const DEFAULT_NUMERIC_WITNESS_ITERATION: usize = 4;
-
-/// The first repeat depth that reliably exposes the existing delayed
-/// loop-carried pointer/state fixtures.
-const MIN_DATAFLOW_REPEAT: usize = 2;
-
-/// Backedge budget used when an internally branched SCC has loop-carried
-/// assignments into a checked sink.
-///
-/// This calibrates to `allow_repeat = 2`, which is enough to cover the shallow
-/// branch-sensitive SCC fixtures without pushing the enumerator into a large
-/// repeat where path limits may hide lower-depth witnesses.
-const BRANCH_SENSITIVE_BACKEDGES: usize = DEFAULT_LOOP_CARRIED_BACKEDGES;
+use crate::limit::{
+    DEFAULT_LOOP_CARRIED_BACKEDGES, DEFAULT_NUMERIC_WITNESS_ITERATION, MAX_AUTO_REPEAT,
+    MIN_DATAFLOW_REPEAT,
+};
 
 /// User-selected policy for SCC postfix repetition.
 ///
@@ -806,7 +779,7 @@ fn estimate_branch_sensitive_backedges(
                 .is_some_and(|sources| sources.len() > 1)
     });
 
-    (sink_state_reassigned || multi_source_assignment).then_some(BRANCH_SENSITIVE_BACKEDGES)
+    (sink_state_reassigned || multi_source_assignment).then_some(DEFAULT_LOOP_CARRIED_BACKEDGES)
 }
 
 /// Return true when a component contains a real in-loop branch.

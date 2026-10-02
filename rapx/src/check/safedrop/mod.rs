@@ -19,8 +19,8 @@ use crate::{
     },
     utils::source::get_fn_name,
 };
+use crate::limit::SAFEDROP_VISIT_LIMIT;
 use graph::SafeDropGraph;
-use safedrop::*;
 
 use crate::analysis::Analysis;
 
@@ -93,7 +93,7 @@ pub fn query_safedrop<'tcx>(
         rap_debug!("safedrop graph (scc): {}", safedrop_graph);
         safedrop_graph.process_function_paths_opt(paths, fn_map);
         let visit_times = safedrop_graph.alias_graph.visit_times();
-        if visit_times <= VISIT_LIMIT {
+        if visit_times <= SAFEDROP_VISIT_LIMIT {
             safedrop_graph.report_bugs();
         } else if !safedrop_graph.bug_records.is_bug_free() {
             safedrop_graph.report_bugs();

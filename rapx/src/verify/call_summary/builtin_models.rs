@@ -142,6 +142,9 @@ static REGISTRY: &[Entry] = &[
     ED!(api_classify::is_manually_drop_drop, eff_drop_memory),
     // `std::mem::drop` frees the argument's heap allocation.
     ED!(api_classify::is_std_drop, eff_drop_memory),
+    // `drop_in_place::<T>` drops the pointee in place, freeing its heap
+    // allocation (e.g. a `Box`/`Vec` buffer) for the alias/owning checkers.
+    ED!(api_classify::is_drop_in_place, eff_drop_memory),
     // Slice helpers.
     ED!(api_classify::is_split_at, eff_split_at),
     ED!(api_classify::is_from_raw_parts, eff_from_raw_parts),

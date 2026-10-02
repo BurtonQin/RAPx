@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use crate::analysis::alias::observer::NoopAliasObserver;
 use crate::analysis::path::{PathNode, PathTree};
+use crate::limit::ALIAS_VISIT_LIMIT;
 
 use super::alias::ensure_fn_aliases_cached;
 use super::{graph::*, *};
@@ -55,7 +56,7 @@ impl<'tcx> AliasGraph<'tcx> {
 
         if node.is_path_end {
             self.increment_visit_times();
-            if self.visit_times() > VISIT_LIMIT {
+            if self.visit_times() > ALIAS_VISIT_LIMIT {
                 path.pop();
                 return Err(());
             }

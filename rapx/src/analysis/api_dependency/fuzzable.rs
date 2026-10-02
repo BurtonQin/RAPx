@@ -1,5 +1,6 @@
 #[cfg(not(rapx_has_skip_norm_wip))]
 use crate::compat::SkipNormWip;
+use crate::limit::FUZZABLE_MAX_DEPTH;
 #[cfg(rapx_has_attr_ir)]
 use rustc_attr_ir::LangItem;
 #[cfg(all(not(rapx_has_attr_ir), not(rapx_ge_100)))]
@@ -88,9 +89,8 @@ pub fn has_non_exhaustive_attr(tcx: TyCtxt<'_>, adt: ty::AdtDef<'_>) -> bool {
         })
 }
 
-const MAX_DEPTH: usize = 64;
 pub fn is_fuzzable_ty<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>, depth: usize) -> bool {
-    if depth > MAX_DEPTH {
+    if depth > FUZZABLE_MAX_DEPTH {
         return false;
     }
 

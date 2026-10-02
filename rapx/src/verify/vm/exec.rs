@@ -2277,7 +2277,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let dest_pk = PlaceKey::from_mir_place(dest_place);
                 let lhs_pk = crate::helpers::mir_utils::operand_place(lhs_op);
                 let rhs_pk = crate::helpers::mir_utils::operand_place(rhs_op);
-                self.analysis.op_sources.insert(
+                self.op_sources.insert(
                     dest_pk,
                     BinaryOpSource {
                         lhs: lhs_pk,
@@ -3388,7 +3388,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
         // Check if cond is a Ne/Eq comparison of (x % n) or (x & (align-1)) against 0
         if let Some(BinaryOpSource { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
-            self.analysis.op_sources.get(&cond_pk).cloned()
+            self.op_sources.get(&cond_pk).cloned()
         {
             // The lhs is (x % n) / (x & (align-1)), rhs is constant 0
             let inner_pk = match (&lhs_pk, &rhs_pk) {
@@ -3400,7 +3400,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 lhs: div_lhs,
                 rhs: div_rhs,
                 op: inner_op,
-            }) = self.analysis.op_sources.get(&inner_pk).cloned()
+            }) = self.op_sources.get(&inner_pk).cloned()
             {
                 match inner_op {
                     // `x % n == 0`: div_rhs is the concrete divisor constant.
@@ -3455,7 +3455,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // non-nullness; an `Eq` guard (`assert (addr & mask) == 0`, the
         // alignment check) means the value *is* zero, not non-null.
         if let Some(BinaryOpSource { lhs: lhs_pk, rhs: rhs_pk, op }) =
-            self.analysis.op_sources.get(&cond_pk).cloned()
+            self.op_sources.get(&cond_pk).cloned()
         {
             if op != rustc_middle::mir::BinOp::Ne {
                 return;
@@ -3477,7 +3477,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         };
         let pk = PlaceKey::from_mir_place(place);
         if let Some(BinaryOpSource { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
-            self.analysis.op_sources.get(&pk).cloned()
+            self.op_sources.get(&pk).cloned()
         {
             self.mark_guard_pointer(&lhs_pk, &rhs_pk);
         }

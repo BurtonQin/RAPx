@@ -12,6 +12,7 @@ use crate::analysis::api_dependency::utils::{
 use crate::analysis::api_dependency::visit::FnVisitor;
 use crate::analysis::api_dependency::{mono, utils};
 use crate::helpers::def_path::path_str_def_id;
+use crate::limit::MAX_TY_COMPLX;
 use crate::utils::fs::rap_create_file;
 use crate::{rap_debug, rap_info, rap_trace};
 use petgraph::Direction::{self, Incoming};
@@ -31,7 +32,6 @@ use std::io::Write;
 use std::path::Path;
 use std::time;
 
-const MAX_TY_COMPLX: usize = 5;
 const RESOLVE_DEBUG: bool = false;
 
 fn add_return_type_if_reachable<'tcx>(

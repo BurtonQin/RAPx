@@ -12,6 +12,7 @@ use crate::analysis::path::{
     graph::{PathEnumerator, PathGraph},
 };
 use crate::cli::VerifyMode;
+use crate::limit::PATH_LIMIT;
 use crate::helpers::fn_info::{
     FnKind, get_cons, get_mutated_fields, get_muts, get_type, returns_wrapped_self,
 };
@@ -35,7 +36,7 @@ use super::{
     },
     engine::VerifyEngine,
     loop_sensitivity::{LoopSensitivityAnalyzer, RepeatStrategy},
-    path_extractor::{CallGroup, PATH_LIMIT, PathExtractor},
+    path_extractor::{CallGroup, PathExtractor},
     report::{CheckResult, PropertyCheckResult, VerificationReport},
     slicer::RelevantItem,
     target::{

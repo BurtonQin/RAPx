@@ -282,11 +282,11 @@ impl PropertyChecker {
             return;
         }
 
-        // Walk analysis.op_sources (binary producers) for destinations
+        // Walk op_sources (binary producers) for destinations
         // whose term matches target.
         let op_sources: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = {
             let mut src: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = Vec::new();
-            for (pk, src_ops) in vm_state.analysis.op_sources.iter() {
+            for (pk, src_ops) in vm_state.op_sources.iter() {
                 let (lhs, rhs) = (&src_ops.lhs, &src_ops.rhs);
                 if pk
                     .local()
@@ -314,7 +314,7 @@ impl PropertyChecker {
                 continue;
             }
 
-            for (pk, src_ops) in vm_state.analysis.op_sources.iter() {
+            for (pk, src_ops) in vm_state.op_sources.iter() {
                 let (lhs, rhs) = (&src_ops.lhs, &src_ops.rhs);
                 if let Some(dest_local) = pk.local() {
                     if let Some(dest_val) = vm_state.local_value(dest_local) {
@@ -356,7 +356,7 @@ impl PropertyChecker {
                 lhs: div_lhs_pk,
                 rhs: div_rhs_pk,
                 op: _,
-            }) = vm_state.analysis.op_sources.get(lhs_pk).cloned()
+            }) = vm_state.op_sources.get(lhs_pk).cloned()
             {
                 let Some(div_lhs_local) = div_lhs_pk.and_then(|pk| pk.local()) else {
                     continue;

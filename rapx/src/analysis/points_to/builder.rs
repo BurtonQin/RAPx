@@ -6,8 +6,7 @@ use crate::analysis::alias::default::types::{is_not_drop, kind};
 use super::graph::PtsGraph;
 use super::slot::Slot;
 
-const MAX_FIELD_DEPTH: usize = 5;
-const MAX_DEREF_DEPTH: usize = 3;
+use crate::limit::{MAX_DEREF_DEPTH, MAX_FIELD_DEPTH};
 
 /// Build a PtsGraph from a MIR body, pre-registering all locals and their
 /// type-determined field slots up to depth limits.

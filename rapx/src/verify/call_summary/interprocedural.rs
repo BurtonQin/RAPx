@@ -19,6 +19,10 @@ use crate::analysis::dataflow::{DataflowAnalysis, default::DataflowAnalyzer};
 use crate::analysis::path::graph::{PathEnumerator, PathGraph};
 use crate::compat::Spanned;
 use crate::helpers::mir_utils as helpers;
+use crate::limit::{
+    FIELD_LOAD_EFFECT_BLOCK_LIMIT, FROM_RAW_PARTS_WRAPPER_BLOCK_LIMIT,
+    POINTER_ARITH_WRAPPER_BLOCK_LIMIT, SLICE_BOUNDED_RETURN_BLOCK_LIMIT,
+};
 
 use super::{CallContext, CallEffect};
 
@@ -176,7 +180,7 @@ fn pointer_arith_wrapper_probe<'tcx>(
         return None;
     }
     let body = tcx.optimized_mir(callee);
-    if body.basic_blocks.len() > 16 {
+    if body.basic_blocks.len() > POINTER_ARITH_WRAPPER_BLOCK_LIMIT {
         return None;
     }
 
@@ -339,7 +343,7 @@ pub(super) fn try_from_raw_parts_wrapper_effect<'tcx>(
         return None;
     }
     let body = tcx.optimized_mir(callee);
-    if body.basic_blocks.len() > 8 {
+    if body.basic_blocks.len() > FROM_RAW_PARTS_WRAPPER_BLOCK_LIMIT {
         return None;
     }
     let ret = Local::from_usize(0);
@@ -398,7 +402,7 @@ pub(crate) fn try_field_load_effect(tcx: TyCtxt<'_>, callee: DefId) -> Option<Ca
         return None;
     }
     let body = tcx.optimized_mir(callee);
-    if body.basic_blocks.len() > 4 || body.arg_count < 1 {
+    if body.basic_blocks.len() > FIELD_LOAD_EFFECT_BLOCK_LIMIT || body.arg_count < 1 {
         return None;
     }
 
@@ -578,7 +582,7 @@ pub(crate) fn try_slice_bounded_return_effect(
         return None;
     }
     let body = tcx.optimized_mir(callee);
-    if body.basic_blocks.len() > 12 || body.arg_count < 1 {
+    if body.basic_blocks.len() > SLICE_BOUNDED_RETURN_BLOCK_LIMIT || body.arg_count < 1 {
         return None;
     }
 
@@ -718,27 +722,6 @@ pub(crate) fn try_branch_effect(tcx: TyCtxt<'_>, callee: DefId) -> Option<CallEf
         return None;
     }
     Some(CallEffect::ReturnBranchPayload { arg: 0 })
-}
-
-/// Whether `callee` is `slice::get`/`get_mut` (an inherent method returning
-/// `Option<&[T]>`/`Option<&mut [T]>`), which the VM summarizes without
-/// inlining (see `try_slice_get`).  The path graph must not inline it — the
-/// inlined `Some(&self[range])` body does not preserve the sub-slice's
-/// provenance through the `?` operator.
-pub(crate) fn is_slice_get_summary(tcx: TyCtxt<'_>, callee: DefId) -> bool {
-    let Some(assoc) = tcx.opt_associated_item(callee) else {
-        return false;
-    };
-    let name = assoc.name();
-    let name_str = name.as_str();
-    if name_str != "get" && name_str != "get_mut" {
-        return false;
-    }
-    // `slice::get`/`get_mut` return `Option<&[T]>` (or `Option<&[T]>` via a
-    // `SliceIndex::Output` projection alias); identify by the `slice` impl
-    // path rather than normalizing the projection type.
-    let path = tcx.def_path_str(callee);
-    path.contains("::slice::") || path.contains("slice::<impl")
 }
 
 /// Whether block `a` dominates block `b` (every path from the entry to `b`

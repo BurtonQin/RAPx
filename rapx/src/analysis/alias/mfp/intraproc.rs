@@ -222,9 +222,9 @@ impl<'tcx> PlaceInfo {
         ty_env: TypingEnv<'tcx>,
     ) {
         // Limit recursion depth to avoid infinite loops
-        const MAX_FIELD_DEPTH: usize = 5;
-        const MAX_DEREF_DEPTH: usize = 3;
-        if field_depth >= MAX_FIELD_DEPTH || deref_depth >= MAX_DEREF_DEPTH {
+        if field_depth >= crate::limit::MAX_FIELD_DEPTH
+            || deref_depth >= crate::limit::MAX_DEREF_DEPTH
+        {
             return;
         }
 

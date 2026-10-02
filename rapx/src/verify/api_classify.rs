@@ -66,6 +66,13 @@ pub fn is_std_drop(callee: Option<DefId>) -> bool {
     any_of(callee, &[crate::def_id::drop()])
 }
 
+/// Whether `callee` is `drop_in_place::<T>` — the MIR drop shim that drops the
+/// pointee in place and (for an owning pointee like `Box`/`Vec`) frees its
+/// heap allocation.
+pub fn is_drop_in_place(callee: Option<DefId>) -> bool {
+    any_of(callee, &[crate::def_id::drop_in_place()])
+}
+
 // ── Pointer extraction / cast ─────────────────────────────────────
 
 /// Whether `callee` produces a raw pointer (or `NonNull`) alias of its first
@@ -147,7 +154,7 @@ pub fn is_as_ptr_valid(callee: Option<DefId>) -> bool {
 /// this matches by the *self type* — resolved from the method's impl — so it
 /// also catches the std-challenge suites' local re-implementations without the
 /// broad `::as_ptr` name suffix.
-pub fn is_local_as_ptr(tcx: TyCtxt<'_>, callee: DefId) -> bool {
+pub fn is_container_as_ptr(tcx: TyCtxt<'_>, callee: DefId) -> bool {
     let name = tcx.item_name(callee);
     if name.as_str() != "as_ptr" && name.as_str() != "as_mut_ptr" {
         return false;

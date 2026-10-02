@@ -8,6 +8,7 @@ pub mod cli;
 pub(crate) mod compat;
 pub(crate) mod def_id;
 pub(crate) mod graphs;
+pub(crate) mod limit;
 pub mod help;
 pub(crate) mod helpers;
 pub(crate) mod preprocess;
