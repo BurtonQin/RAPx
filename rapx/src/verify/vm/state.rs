@@ -567,15 +567,15 @@ pub(crate) struct SolverState<'ctx, 'tcx> {
     /// can derive `align = -mask` and emit linear bounds for the result.
     pub(crate) not_mask_terms: FxHashSet<Int<'ctx>>,
 
-    /// `(quotient, dividend)` for each *exact* division (`lhs % rhs == 0`),
+    /// `quotient → dividend` for each *exact* division (`lhs % rhs == 0`),
     /// recording which size each `exact_div` symbol divides (e.g. `us` →
     /// `sizeof_T`).  Lets a later `us_len = (len / ts) * us` multiplication
     /// emit the byte bound `us_len * sizeof_U <= len * sizeof_T`.
-    pub(crate) exact_div_roots: Vec<(Int<'ctx>, Int<'ctx>)>,
+    pub(crate) exact_div_roots: FxHashMap<Int<'ctx>, Int<'ctx>>,
 
-    /// `(quotient, lhs, rhs)` for each *non-exact* division, recovering the
+    /// `quotient → (lhs, rhs)` for each *non-exact* division, recovering the
     /// `len` and divisor (`ts`) operands at a following `us_len = (len / ts) * us`.
-    pub(crate) div_roots: Vec<(Int<'ctx>, Int<'ctx>, Int<'ctx>)>,
+    pub(crate) div_roots: FxHashMap<Int<'ctx>, (Int<'ctx>, Int<'ctx>)>,
 }
 
 /// The frame-scoped subset of [`VmState`] captured when entering an inlined

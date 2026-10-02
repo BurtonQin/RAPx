@@ -2785,14 +2785,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // directly, so the later `from_raw_parts_mut` InBound check
                 // (`us_len * sizeof_U`) stays degree-2 rather than the
                 // degree-3 `div * us * sizeof_U` that Z3's NIA cannot rewrite.
-                if let Some((_, div_lhs, div_rhs)) =
-                    self.solver.div_roots.iter().find(|(q, _, _)| *q == *lhs)
+                if let Some((div_lhs, div_rhs)) = self.solver.div_roots.get(lhs)
                 {
-                    if let Some((_, us_dividend)) =
-                        self.solver.exact_div_roots.iter().find(|(q, _)| *q == *rhs)
+                    if let Some(us_dividend) = self.solver.exact_div_roots.get(rhs)
                     {
-                        if let Some((_, ts_dividend)) =
-                            self.solver.exact_div_roots.iter().find(|(q, _)| *q == *div_rhs)
+                        if let Some(ts_dividend) = self.solver.exact_div_roots.get(div_rhs)
                         {
                             let us_len = self.fresh_int("us_len");
                             self.solver
@@ -2825,7 +2822,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .any(|c| *c == lhs.rem(rhs)._eq(&zero));
                 if exact {
                     let q = self.fresh_int("exact_div");
-                    self.solver.exact_div_roots.push((q.clone(), lhs.clone()));
+                    self.solver.exact_div_roots.insert(q.clone(), lhs.clone());
                     q
                 } else {
                     // A *non-exact* division is likewise a fresh variable (the
@@ -2834,7 +2831,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // product of two symbols instead of a `div` term that Z3's
                     // nonlinear solver cannot combine with a multiplier.
                     let q = self.fresh_int("div");
-                    self.solver.div_roots.push((q.clone(), lhs.clone(), rhs.clone()));
+                    self.solver.div_roots.insert(q.clone(), (lhs.clone(), rhs.clone()));
                     q
                 }
             }
