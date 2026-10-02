@@ -147,7 +147,7 @@ impl PropertyChecker {
         // predicate's LHS (typically the loop counter `i` in position).
         // At the assert_unchecked(i < n) point, tracked_offset == i + 1
         // because post_inc_start(1) was just called before the check.
-        for (_, (off, _)) in vm_state.solver.iter_ptr_offset.iter() {
+        for (_, (off, _)) in vm_state.constraints.term_caches.iter_ptr_offset.iter() {
             let one = Int::from_u64(vm_state.ctx, 1);
             solver.assert(&off._eq(&Int::add(vm_state.ctx, &[&lhs, &one])));
         }
@@ -286,7 +286,7 @@ impl PropertyChecker {
         // whose term matches target.
         let op_sources: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = {
             let mut src: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = Vec::new();
-            for (pk, src_ops) in vm_state.op_sources.iter() {
+            for (pk, src_ops) in vm_state.current_frame.op_sources.iter() {
                 let (lhs, rhs) = (&src_ops.lhs, &src_ops.rhs);
                 if pk
                     .local()
@@ -314,7 +314,7 @@ impl PropertyChecker {
                 continue;
             }
 
-            for (pk, src_ops) in vm_state.op_sources.iter() {
+            for (pk, src_ops) in vm_state.current_frame.op_sources.iter() {
                 let (lhs, rhs) = (&src_ops.lhs, &src_ops.rhs);
                 if let Some(dest_local) = pk.local() {
                     if let Some(dest_val) = vm_state.local_value(dest_local) {
@@ -356,7 +356,7 @@ impl PropertyChecker {
                 lhs: div_lhs_pk,
                 rhs: div_rhs_pk,
                 op: _,
-            }) = vm_state.op_sources.get(lhs_pk).cloned()
+            }) = vm_state.current_frame.op_sources.get(lhs_pk).cloned()
             {
                 let Some(div_lhs_local) = div_lhs_pk.and_then(|pk| pk.local()) else {
                     continue;
@@ -395,7 +395,7 @@ impl PropertyChecker {
         let ContractExpr::Len(_) = expr else {
             return None;
         };
-        for (_, val) in vm_state.locals.values.iter() {
+        for (_, val) in vm_state.current_frame.values.iter() {
             let is_iter = match val.ty.kind() {
                 TyKind::Ref(_, pointee, _) => match pointee.kind() {
                     TyKind::Adt(adt_def, _) => api_classify::is_std_iter_or_itermut(adt_def.did()),
@@ -407,7 +407,7 @@ impl PropertyChecker {
                 continue;
             }
             let alloc_id = val.provenance_alloc_id()?;
-            for (&l, lv) in vm_state.locals.values.iter() {
+            for (&l, lv) in vm_state.current_frame.values.iter() {
                 if lv.provenance_alloc_id() != Some(alloc_id) {
                     continue;
                 }
@@ -451,7 +451,7 @@ impl PropertyChecker {
             _ => return None,
         };
         let local = place.local;
-        let local_val = vm_state.locals.values.get(&local)?;
+        let local_val = vm_state.current_frame.values.get(&local)?;
         let is_iter = match local_val.ty.kind() {
             TyKind::Ref(_, pointee, _) => match pointee.kind() {
                 TyKind::Adt(adt_def, _) => api_classify::is_std_iter_or_itermut(adt_def.did()),
@@ -473,7 +473,7 @@ impl PropertyChecker {
         }
         // Fallback: scan all locals for one with same struct alloc.
         let target_alloc = local_val.provenance_alloc_id()?;
-        for (&scan_local, scan_val) in vm_state.locals.values.iter() {
+        for (&scan_local, scan_val) in vm_state.current_frame.values.iter() {
             if scan_val.provenance_alloc_id() != Some(target_alloc) {
                 continue;
             }

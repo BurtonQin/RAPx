@@ -194,7 +194,7 @@ impl PropertyChecker {
         if let Some(known_align) = value.invariants.align_n.as_ref() {
             local.assert(&value.term.rem(known_align)._eq(&zero));
         }
-        for cond in &vm_state.solver.constraints {
+        for cond in &vm_state.constraints.assertions {
             local.assert(cond);
         }
         let negated = value.term.rem(&align_term)._eq(&zero).not();
@@ -253,7 +253,7 @@ impl PropertyChecker {
                 solver.assert(&alloc.base.rem(&alloc.align)._eq(&zero));
             }
         }
-        for cond in &vm_state.solver.constraints {
+        for cond in &vm_state.constraints.assertions {
             solver.assert(cond);
         }
         let align_term = Int::from_u64(vm_state.ctx, align);
@@ -293,7 +293,7 @@ impl PropertyChecker {
         // would circularly "prove" `NonNull` on the pointer being dereferenced.
         let zero = Int::from_u64(vm_state.ctx, 0);
         let local = Solver::new(vm_state.ctx);
-        for cond in &vm_state.solver.constraints {
+        for cond in &vm_state.constraints.assertions {
             local.assert(cond);
         }
         self.smt_check(&local, &value.term._eq(&zero))
@@ -822,7 +822,7 @@ impl PropertyChecker {
         if vm_state.path_facts.saw_next_discriminant {
             let local = Solver::new(vm_state.ctx);
             local.push();
-            for cond in &vm_state.solver.constraints {
+            for cond in &vm_state.constraints.assertions {
                 local.assert(cond);
             }
             if local.check() == SatResult::Unsat {
@@ -840,7 +840,7 @@ impl PropertyChecker {
         local: Local,
     ) -> Vec<AllocId> {
         let mut result = Vec::new();
-        if let Some(id) = vm_state.locals.slots.get(&local) {
+        if let Some(id) = vm_state.current_frame.slots.get(&local) {
             result.push(*id);
         }
         let mut worklist = vec![local];
@@ -878,7 +878,7 @@ impl PropertyChecker {
                         };
                         if let Some(src) = src_local {
                             if visited.insert(src) {
-                                if let Some(id) = vm_state.locals.slots.get(&src) {
+                                if let Some(id) = vm_state.current_frame.slots.get(&src) {
                                     result.push(*id);
                                 }
                                 worklist.push(src);

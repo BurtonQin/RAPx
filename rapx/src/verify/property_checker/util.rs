@@ -662,7 +662,7 @@ impl PropertyChecker {
                 if size == 0 && matches!(ty.kind(), rustc_middle::ty::TyKind::Param(_)) {
                     size = crate::helpers::mir_utils::size_of_generic_param(
                         vm_state.tcx,
-                        vm_state.caller_def_id,
+                        vm_state.current_frame.caller_def_id,
                         *ty,
                     );
                     if size == 0 {

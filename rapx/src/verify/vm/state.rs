@@ -400,18 +400,19 @@ pub(crate) struct ByteInfo<'ctx> {
     pub nul: Option<bool>,
 }
 
-/// State for the two inlined-callee execution mechanisms, which are orthogonal:
+/// Scratch state for the *recursive* inlined-callee mechanism
+/// ([`crate::verify::vm::call::exec_inline_call`]), which unwinds via the Rust
+/// call stack, is bounded by `inline_depth`, and stashes its per-call bindings
+/// in `arg_referents`/`deferred_field_writes`.
 ///
-/// * path replay (`CalleeEntry`/`CalleeExit` items) is iterative and keeps its
-///   saved caller frames on `frames`;
-/// * recursive inlining (`exec_inline_call`) unwinds via the Rust call stack,
-///   is bounded by `inline_depth`, and stashes its per-call scratch bindings in
-///   `arg_referents`/`deferred_field_writes`.
+/// (The *path-replay* mechanism — `CalleeEntry`/`CalleeExit` items — keeps its
+/// saved caller frames on [`VmState::caller_frames`] instead, which lives next to
+/// [`VmState::current_frame`] to form the frame stack.)
 ///
 /// # Deferring `&mut` writes across the inline frame
 ///
 /// While the callee runs, the caller's `local_fields` is parked in the saved
-/// [`FrameSnapshot`], so a write through a `&mut` argument cannot land in it
+/// [`FrameState`], so a write through a `&mut` argument cannot land in it
 /// immediately.  `arg_referents` pre-resolves (before `save_frame`) which caller
 /// local each `&mut` argument points at, and `deferred_field_writes` collects
 /// the writes to replay once the caller is restored:
@@ -433,12 +434,8 @@ pub(crate) struct ByteInfo<'ctx> {
 #[derive(Default)]
 pub(crate) struct InlineCtx<'ctx, 'tcx> {
     /// Current inlining depth (nested inlined callees), bounded by
-    /// `MAX_INLINE_DEPTH`.  Distinct from `frames`: recursive inlining unwinds
-    /// through the Rust call stack and does not push onto `frames`.
+    /// `MAX_INLINE_DEPTH`.
     pub inline_depth: usize,
-    /// Stack of saved caller frames (a [`FrameSnapshot`] each) for inlined-callee
-    /// path execution.
-    pub frames: Vec<FrameSnapshot<'ctx, 'tcx>>,
     /// During `exec_inline_call`, maps each callee argument index to the
     /// *caller* local its value points at (resolved from the reference's
     /// address term before the caller's address map is saved away).  Used by
@@ -472,7 +469,7 @@ pub(crate) struct BinaryOpSource {
 /// keyed purely by `AllocId` (fields and byte state).
 ///
 /// This is the *address/place* layer — the memory that values live in — kept
-/// separate from [`Locals`], which binds MIR locals (names) to values. An
+/// separate from [`FrameState`], which binds MIR locals (names) to values. An
 /// `AllocId` doubles as the index into `allocations` (a fresh id is
 /// `allocations.len()`), so the `AllocId`-keyed field/byte tables stay
 /// consistent with the allocation vector.
@@ -495,72 +492,42 @@ pub(crate) struct Memory<'ctx, 'tcx> {
     pub(crate) fields: FxHashMap<(AllocId, Ty<'tcx>, Vec<usize>), VmValue<'ctx, 'tcx>>,
 }
 
-/// Bindings from MIR locals (names) to values and places.
-///
-/// This is the *value* layer: `values` is the rvalue each local holds, `slots`
-/// is the stack allocation backing each local's place (lvalue identity), and
-/// `local_fields` is a local-keyed map of field values.  `local_fields` answers
-/// "what value does the aggregate *bound to* `local` hold at field `path`?",
-/// which is distinct from [`Memory::fields`], which answers "what value sits at
-/// an address *within* an allocation viewed as a type?" (memory contents).
-#[derive(Default)]
-pub(crate) struct Locals<'ctx, 'tcx> {
-    /// Current value bound to each MIR local (rvalue).
-    pub(crate) values: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
-
-    /// The stack allocation backing each local's place (lvalue identity).
-    pub(crate) slots: FxHashMap<Local, AllocId>,
-
-    /// Field-level value tracking for aggregates: (local, field_indices) → value.
-    /// Example: `(local_3, [0])` is `local_3.0`, `(local_3, [0, 1])` is `local_3.0.1`.
-    /// This is the binding-value layer; see [`Memory::fields`] for the
-    /// alloc-keyed memory-contents layer (pointee decomposition).
-    pub(crate) local_fields: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
-
-    /// Move-alias chain: `local → source` for a whole-place move (`_3 = move _4`).
-    /// Lets `Owning` tell the call's own rebuilt owner (`boxed = move dest`) from
-    /// a *previous* call's owner (also a shallow field, but tracing to a
-    /// different destination).  Frame-scoped like the rest of [`Locals`], so it
-    /// is saved/restored on inline entry/exit.
-    pub(crate) move_sources: FxHashMap<Local, Local>,
-}
-
-/// Shared symbolic layout constants for generic types whose concrete layout is
-/// unknown at verification time (an unconstrained `T`).
-///
-/// One constant per type keeps `ptr.add` strides, `access_bytes` element sizes,
-/// and allocation sizes consistent so that SMT can cancel the `S` factor in
-/// `InBound` (`(mid+n)·S <= len·S ⟺ mid+n <= len`); the alignment constant is
-/// linked to the size by the layout constraint `sizeof_T % align_T == 0`.
-#[derive(Default)]
-pub(crate) struct LayoutCache<'ctx, 'tcx> {
-    /// `sizeof_T` for each generic type, one symbolic constant per type.
-    pub(crate) sizes: FxHashMap<Ty<'tcx>, Int<'ctx>>,
-
-    /// `align_T` for each generic type, one symbolic constant per type.
-    pub(crate) aligns: FxHashMap<Ty<'tcx>, Int<'ctx>>,
-}
-
 /// Accumulated solver state for the current path.
 ///
-/// `constraints` is the assertion stream fed to Z3; the rest are term caches
-/// that keep generic-layout constants, alignment-mask terms, and iterator
-/// element indices shared across the path (so Z3 expressions stay compact and
-/// the `S` factor cancels in `InBound`).  Everything is path-scoped and
-/// monotonic: it accumulates as the VM steps and is never reset within a path
-/// (or across inlined frames).
+/// `assertions` is the assertion stream fed to Z3; `term_caches` holds the
+/// per-phenomenon term-provenance caches that keep expressions compact and
+/// linear.  Everything is path-scoped and monotonic: it accumulates as the VM
+/// steps and is never reset within a path (or across inlined frames).
 #[derive(Default)]
-pub(crate) struct SolverState<'ctx, 'tcx> {
+pub(crate) struct Constraints<'ctx, 'tcx> {
     /// Accumulated solver constraints along the current path: branch/guard
     /// constraints (`SwitchInt`/`Assert`), API preconditions, and symbolic
     /// layout facts (`sizeof_T`, `align_T`).  Asserted into the solver by
     /// [`VmState::assert_all`] and by the property checker's feasibility
     /// queries.
-    pub(crate) constraints: Vec<Bool<'ctx>>,
+    pub(crate) assertions: Vec<Bool<'ctx>>,
 
-    /// The shared symbolic layout constants (`sizeof_T`, `align_T`) for generic
-    /// types whose concrete layout is unknown at verification time.
-    pub(crate) layout: LayoutCache<'ctx, 'tcx>,
+    /// Term-provenance caches that shape terms into a form Z3 can solve.
+    pub(crate) term_caches: TermCaches<'ctx, 'tcx>,
+}
+
+/// Term-provenance caches, one per phenomenon the VM must shape by hand.
+///
+/// Z3's nonlinear integer solver (NIA) cannot rewrite degree-3 products or
+/// deeply-nested pointer chains, so the VM records the *semantic meaning* of a
+/// symbol (what it divides, which iterator it indexes, …) and uses that
+/// provenance later to emit a compact, degree-≤2 term instead.  Each cache is
+/// independent — they share only the path-scoped, monotonic lifetime.
+#[derive(Default)]
+pub(crate) struct TermCaches<'ctx, 'tcx> {
+    /// `sizeof_T` for each generic type, one symbolic constant per type.  Keeps
+    /// `ptr.add` strides, `access_bytes` element sizes, and allocation sizes
+    /// consistent so that SMT can cancel the `S` factor in `InBound`.
+    pub(crate) sizes: FxHashMap<Ty<'tcx>, Int<'ctx>>,
+
+    /// `align_T` for each generic type, one symbolic constant per type; linked
+    /// to the size by the layout constraint `sizeof_T % align_T == 0`.
+    pub(crate) aligns: FxHashMap<Ty<'tcx>, Int<'ctx>>,
 
     /// Terms that are the result of a bitwise `Not` (two's-complement mask).
     /// Used to recognize `x & !(align-1)` alignment patterns in BitAnd so we
@@ -587,17 +554,36 @@ pub(crate) struct SolverState<'ctx, 'tcx> {
     pub(crate) iter_ptr_offset: FxHashMap<AllocId, (Int<'ctx>, Option<Int<'ctx>>)>,
 }
 
-/// The frame-scoped subset of [`VmState`] captured when entering an inlined
-/// callee and restored on exit.
-///
-/// Everything here is keyed by MIR `Local` (the callee reuses the caller's
-/// local indices), so it must be swapped out for the duration of the callee's
-/// execution and swapped back afterwards.  The path-scoped state (`memory`,
-/// `solver`, `path_facts`) is deliberately *not* captured: it accumulates
-/// across the whole path, including inlined frames.
-pub(crate) struct FrameSnapshot<'ctx, 'tcx> {
+/// The frame-scoped subset of [`VmState`]: everything keyed by MIR `Local` /
+/// `PlaceKey`, which the callee reuses, so it must be swapped out for the
+/// duration of an inlined callee and swapped back afterwards.
+pub(crate) struct FrameState<'ctx, 'tcx> {
+    /// The function whose body we execute (the MIR is derived via
+    /// [`VmState::body`]).
     pub(crate) caller_def_id: DefId,
-    pub(crate) locals: Locals<'ctx, 'tcx>,
+
+    /// Current value bound to each MIR local (rvalue).
+    pub(crate) values: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
+
+    /// The stack allocation backing each local's place (lvalue identity).
+    pub(crate) slots: FxHashMap<Local, AllocId>,
+
+    /// Field-level value tracking for aggregates: (local, field_indices) → value.
+    /// Example: `(local_3, [0])` is `local_3.0`, `(local_3, [0, 1])` is `local_3.0.1`.
+    /// This is the binding-value layer; see [`Memory::fields`] for the
+    /// alloc-keyed memory-contents layer (pointee decomposition).
+    pub(crate) local_fields: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
+
+    /// Move-alias chain: `local → source` for a whole-place move (`_3 = move _4`).
+    /// Lets `Owning` tell the call's own rebuilt owner (`boxed = move dest`) from
+    /// a *previous* call's owner (also a shallow field, but tracing to a
+    /// different destination).  Frame-scoped like the rest of [`FrameState`], so
+    /// it is saved/restored on inline entry/exit.
+    pub(crate) move_sources: FxHashMap<Local, Local>,
+
+    /// Operand sources for guard inference: destination → (lhs, rhs) place keys
+    /// with the operator kind of the binary operation that produced the
+    /// destination.
     pub(crate) op_sources: FxHashMap<PlaceKey, BinaryOpSource>,
 }
 
@@ -615,35 +601,28 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// Compiler type context.
     pub(crate) tcx: TyCtxt<'tcx>,
 
-    // ── Current function frame (swapped on inline entry/exit)
-    /// The function whose body we execute (the MIR is derived via [`Self::body`]).
-    pub(crate) caller_def_id: DefId,
+    // ── Frame-scoped state (swapped on inline entry/exit; the exact set
+    //    captured by [`Self::save_frame`])
+    pub(crate) current_frame: FrameState<'ctx, 'tcx>,
 
-    // ── Memory + local bindings (the two-state layers)
+    // ── Path-scoped state (accumulates across the whole path, including
+    //    inlined frames)
+    /// Stack of saved caller frames for path-replay inlining
+    /// (`CalleeEntry`/`CalleeExit` items).  Together with [`Self::current_frame`]
+    /// (the current frame) it forms the call stack: entering an inlined callee
+    /// moves the current frame here, exiting restores it.
+    pub(crate) caller_frames: Vec<FrameState<'ctx, 'tcx>>,
+
     /// The object space: allocations, per-byte state, and per-allocation fields.
     pub(crate) memory: Memory<'ctx, 'tcx>,
 
-    /// Bindings from MIR locals (names) to values, stack slots, and move-alias
-    /// sources.
-    pub(crate) locals: Locals<'ctx, 'tcx>,
+    /// Solver constraints and term caches accumulated along the current path.
+    pub(crate) constraints: Constraints<'ctx, 'tcx>,
 
-    // ── Inlined-callee execution state
-    /// Inlined-callee execution state (depth, frame stack, and per-call
-    /// temporary bindings swapped on entry / restored on exit).
+    /// Recursive-inlining scratch state (depth and per-call temporary bindings
+    /// pushed/popped on inline entry/exit).
     pub(crate) inline: InlineCtx<'ctx, 'tcx>,
 
-    // ── Per-frame analysis metadata
-    /// Operand sources for guard inference: destination → (lhs, rhs) place keys
-    /// with the operator kind of the binary operation that produced the
-    /// destination.  Checkpointed around a call via
-    /// [`Self::save_frame`]/[`Self::restore_frame`].
-    pub(crate) op_sources: FxHashMap<PlaceKey, BinaryOpSource>,
-
-    // ── Accumulated solver state
-    /// Solver constraints and term caches accumulated along the current path.
-    pub(crate) solver: SolverState<'ctx, 'tcx>,
-
-    // ── Per-path facts
     /// Per-path facts (latched while stepping, or derived in [`Self::new`]),
     /// read by the property checker.
     pub(crate) path_facts: PathFacts,
@@ -663,12 +642,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         Self {
             ctx,
             tcx,
-            caller_def_id,
+            current_frame: FrameState {
+                caller_def_id,
+                values: FxHashMap::default(),
+                slots: FxHashMap::default(),
+                local_fields: FxHashMap::default(),
+                move_sources: FxHashMap::default(),
+                op_sources: FxHashMap::default(),
+            },
+            caller_frames: Vec::default(),
             memory: Memory::default(),
-            locals: Locals::default(),
             inline: InlineCtx::default(),
-            op_sources: FxHashMap::default(),
-            solver: SolverState::default(),
+            constraints: Constraints::default(),
             path_facts: PathFacts {
                 reenter,
                 ..PathFacts::default()
@@ -678,46 +663,45 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// The MIR body of the current function, derived from `caller_def_id`.
     pub(crate) fn body(&self) -> &'tcx Body<'tcx> {
-        self.tcx.optimized_mir(self.caller_def_id)
+        self.tcx.optimized_mir(self.current_frame.caller_def_id)
     }
 
     /// Capture the frame-scoped state before switching to an inlined callee.
     ///
-    /// This is the single source of truth for *what* is frame-scoped: the
-    /// local bindings (`values`, `slots`, `local_fields`, `move_sources`) and
-    /// the per-frame analysis metadata (`op_sources`), plus the current
-    /// function identity.  Both inline mechanisms
-    /// (`handle_callee_entry` in path replay and `exec_inline_call`) call this,
-    /// so they can no longer drift apart.
-    pub(crate) fn save_frame(&mut self) -> FrameSnapshot<'ctx, 'tcx> {
-        FrameSnapshot {
-            caller_def_id: self.caller_def_id,
-            locals: std::mem::take(&mut self.locals),
-            op_sources: std::mem::take(&mut self.op_sources),
+    /// This is the single source of truth for *what* is frame-scoped: the whole
+    /// [`FrameState`] (function identity, local bindings, and operand sources).
+    /// Both inline mechanisms (`handle_callee_entry` in path replay and
+    /// `exec_inline_call`) call this, so they can no longer drift apart.
+    pub(crate) fn save_frame(&mut self) -> FrameState<'ctx, 'tcx> {
+        FrameState {
+            caller_def_id: self.current_frame.caller_def_id,
+            values: std::mem::take(&mut self.current_frame.values),
+            slots: std::mem::take(&mut self.current_frame.slots),
+            local_fields: std::mem::take(&mut self.current_frame.local_fields),
+            move_sources: std::mem::take(&mut self.current_frame.move_sources),
+            op_sources: std::mem::take(&mut self.current_frame.op_sources),
         }
     }
 
     /// Restore the frame-scoped state after an inlined callee returns.
-    pub(crate) fn restore_frame(&mut self, snapshot: FrameSnapshot<'ctx, 'tcx>) {
-        self.caller_def_id = snapshot.caller_def_id;
-        self.locals = snapshot.locals;
-        self.op_sources = snapshot.op_sources;
+    pub(crate) fn restore_frame(&mut self, frame: FrameState<'ctx, 'tcx>) {
+        self.current_frame = frame;
     }
 
     /// Look up the value bound to a MIR local.
     pub(crate) fn local_value(&self, local: Local) -> Option<&VmValue<'ctx, 'tcx>> {
-        self.locals.values.get(&local)
+        self.current_frame.values.get(&local)
     }
 
     /// Bind a value to a MIR local.
     pub(crate) fn set_local(&mut self, local: Local, value: VmValue<'ctx, 'tcx>) {
-        self.locals.values.insert(local, value);
+        self.current_frame.values.insert(local, value);
     }
 
     /// Get the symbolic address of a MIR local (its stack allocation's base).
     pub(crate) fn local_address(&mut self, local: Local) -> Int<'ctx> {
         self.ensure_local_allocation(local);
-        let id = self.locals.slots[&local];
+        let id = self.current_frame.slots[&local];
         self.memory.allocations[id.0].base.clone()
     }
 
@@ -821,13 +805,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Get the value of a specific field within an aggregate local.
     pub(crate) fn field_value(&self, local: Local, path: &[usize]) -> Option<&VmValue<'ctx, 'tcx>> {
-        self.locals.local_fields.get(&(local, path.to_vec()))
+        self.current_frame.local_fields.get(&(local, path.to_vec()))
     }
 
     /// The buffer an `Iter`/`IterMut` at `local` walks: the provenance of its
     /// `end` field.  This is frame-independent (the buffer allocation is
     /// path-scoped), unlike the `local` itself, so it keys the per-iterator
-    /// element index in [`SolverState::iter_ptr_offset`].
+    /// element index in [`TermCaches::iter_ptr_offset`].
     pub(crate) fn iter_buffer(&self, local: Local) -> Option<AllocId> {
         self.field_value(local, &[1])
             .and_then(|end| end.provenance.as_ref())
@@ -841,7 +825,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.field_value(local, &[0, 0])
             .filter(|v| v.provenance_alloc_id().is_some())
             .or_else(|| {
-                self.locals
+                self.current_frame
                     .local_fields
                     .iter()
                     .find(|((l, _), v)| *l == local && v.provenance_alloc_id().is_some())
@@ -856,13 +840,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         path: Vec<usize>,
         value: VmValue<'ctx, 'tcx>,
     ) {
-        self.locals.local_fields.insert((local, path), value);
+        self.current_frame.local_fields.insert((local, path), value);
     }
 
     /// The value at a field offset *within an allocation* viewed as `view_ty`.
     ///
     /// This is the memory-contents layer ([`Memory::fields`]), the counterpart
-    /// to [`Self::field_value`]'s binding-value layer ([`Locals::local_fields`]):
+    /// to [`Self::field_value`]'s binding-value layer ([`FrameState::local_fields`]):
     /// `field_value` asks "what value does the aggregate bound to `local` hold
     /// at field `path`?", while `load_field` asks "what value sits at
     /// `base(alloc_id) + offset(path)` interpreted as `view_ty`?".  The viewed
@@ -992,7 +976,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Assert path conditions and invariant constraints into a solver.
     pub(crate) fn assert_all(&self, solver: &z3::Solver<'ctx>) {
-        for cond in &self.solver.constraints {
+        for cond in &self.constraints.assertions {
             solver.assert(cond);
         }
         let zero = Int::from_u64(self.ctx, 0);
@@ -1006,10 +990,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         }
 
-        for (_local, value) in self.locals.values.iter() {
+        for (_local, value) in self.current_frame.values.iter() {
             self.assert_value_constraints(solver, value);
         }
-        for value in self.locals.local_fields.values() {
+        for value in self.current_frame.local_fields.values() {
             self.assert_value_constraints(solver, value);
         }
     }
@@ -1047,9 +1031,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 impl std::fmt::Debug for VmState<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VmState")
-            .field("locals_count", &self.locals.values.len())
+            .field("locals_count", &self.current_frame.values.len())
             .field("allocations_count", &self.memory.allocations.len())
-            .field("constraints", &self.solver.constraints.len())
+            .field("assertions", &self.constraints.assertions.len())
             .finish()
     }
 }
@@ -1127,7 +1111,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Look up the value stored at a MIR place.
     pub(crate) fn value_of_place(&self, place: &Place<'tcx>) -> Option<VmValue<'ctx, 'tcx>> {
         if place.projection.is_empty() {
-            return self.locals.values.get(&place.local).cloned();
+            return self.current_frame.values.get(&place.local).cloned();
         }
         let place_ty = place.ty(self.body(), self.tcx).ty;
 
@@ -1165,7 +1149,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // to field accesses. This handles pointer-wrapper types (Box,
                 // Unique, NonNull) where accessing inner pointer fields yields
                 // the same provenance as the container.
-                if let Some(base_val) = self.locals.values.get(&place.local) {
+                if let Some(base_val) = self.current_frame.values.get(&place.local) {
                     if let Some(ref prov) = base_val.provenance {
                         return Some(VmValue {
                             term: base_val.term.clone(),
@@ -1217,7 +1201,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `decompose_pointee_fields`).  The viewed type (pointee) is part
                 // of the key so reinterpret casts (e.g. `LeafNode` → `InternalNode`)
                 // resolve to the right field view.
-                if let Some(base_val) = self.locals.values.get(&place.local) {
+                if let Some(base_val) = self.current_frame.values.get(&place.local) {
                     if let Some(alloc_id) = base_val.provenance_alloc_id() {
                         let view_ty = crate::helpers::mir_utils::pointee_ty(base_val.ty)
                             .unwrap_or(base_val.ty);
@@ -1232,7 +1216,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Handle Deref + Field projections: follow the dereference chain to
         // get the pointee base, then apply field offsets.
         // E.g. `(*self).ptr` → Deref then Field(0).
-        let mut base = self.locals.values.get(&place.local)?.clone();
+        let mut base = self.current_frame.values.get(&place.local)?.clone();
         for proj in place.projection.iter() {
             match proj.kind() {
                 ProjectionElem::Deref => {
@@ -1266,7 +1250,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             };
                             let elem_sz = self.size_of_ty(inner_ty) as usize;
                             let step = elem_sz.max(1);
-                            if let Some(index_val) = self.locals.values.get(local) {
+                            if let Some(index_val) = self.current_frame.values.get(local) {
                                 if let Some(concrete_idx) = index_val.term.as_u64() {
                                     let offset = concrete_idx as usize * step;
                                     let term = self

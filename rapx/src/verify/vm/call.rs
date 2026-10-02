@@ -194,16 +194,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if api_classify::is_std_ordering(adt_def.did()) {
                     let minus_one = Int::from_i64(self.ctx, -1);
                     let one = Int::from_i64(self.ctx, 1);
-                    self.solver.constraints.push(term.ge(&minus_one));
-                    self.solver.constraints.push(term.le(&one));
+                    self.constraints.assertions.push(term.ge(&minus_one));
+                    self.constraints.assertions.push(term.le(&one));
                 }
             }
             // bool return (bool, Result::ok/err, etc.) — constrain to {0, 1}
             if dest_ty.is_bool() {
                 let zero = Int::from_u64(self.ctx, 0);
                 let one = Int::from_u64(self.ctx, 1);
-                self.solver.constraints.push(term.ge(&zero));
-                self.solver.constraints.push(term.le(&one));
+                self.constraints.assertions.push(term.ge(&zero));
+                self.constraints.assertions.push(term.le(&one));
             }
             self.set_local(
                 destination,
@@ -566,7 +566,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             val.ty = dest_ty;
             val.invariants.non_null = true;
             let zero = Int::from_u64(self.ctx, 0);
-            self.solver.constraints.push(ptr.term._eq(&zero).not());
+            self.constraints.assertions.push(ptr.term._eq(&zero).not());
             self.set_local(destination, val);
         } else {
             // ptr may be null, so the Option may be None — keep it symbolic.
@@ -623,7 +623,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Compute is_empty from fields/tracked offset (same as is_empty()).
         let sz = self.iter_elem_size(ptr);
         let ep_offset = ep.offset.clone();
-        let remaining = if let Some((off, _)) = self.solver.iter_ptr_offset.get(&buffer) {
+        let remaining = if let Some((off, _)) = self.constraints.term_caches.iter_ptr_offset.get(&buffer) {
             let base_len = ep_offset.div(&sz);
             let zero = Int::from_u64(self.ctx, 0);
             off.gt(&base_len)
@@ -637,7 +637,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // index (iter_ptr_offset) scaled by the element stride, or the base
         // ptr offset on the first call.
         let zero = Int::from_u64(self.ctx, 0);
-        let cur_off = match self.solver.iter_ptr_offset.get(&buffer) {
+        let cur_off = match self.constraints.term_caches.iter_ptr_offset.get(&buffer) {
             Some((prev, _)) => Int::mul(self.ctx, &[prev, &sz]),
             None => pp.offset.clone(),
         };
@@ -660,16 +660,17 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         };
         // Advance ptr when not empty
         let one_term = Int::from_u64(self.ctx, 1);
-        let (new_offset, base_len_elem) = match self.solver.iter_ptr_offset.get(&buffer) {
+        let (new_offset, base_len_elem) = match self.constraints.term_caches.iter_ptr_offset.get(&buffer) {
             Some((prev, base)) => (Int::add(self.ctx, &[prev, &one_term]), base.clone()),
             None => (one_term.clone(), ep_elem),
         };
         // Assert !is_empty as path condition (remaining > 0)
-        self.solver.constraints.push(remaining.gt(&zero));
+        self.constraints.assertions.push(remaining.gt(&zero));
         // Push: base_len >= tracked_offset
         let base_len = ep_offset.div(&sz);
-        self.solver.constraints.push(new_offset.le(&base_len));
-        self.solver
+        self.constraints.assertions.push(new_offset.le(&base_len));
+        self.constraints
+            .term_caches
             .iter_ptr_offset
             .insert(buffer, (new_offset, base_len_elem));
         // Return None or old ptr
@@ -698,7 +699,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         args: &[Spanned<Operand<'tcx>>],
         destination: Local,
     ) {
-        if let Some(mut dv) = self.locals.values.get(&destination).cloned() {
+        if let Some(mut dv) = self.current_frame.values.get(&destination).cloned() {
             let dest_ty = dv.ty;
             let pointee_is_byte_like = match dest_ty.kind() {
                 rustc_middle::ty::TyKind::RawPtr(inner, _)
@@ -806,13 +807,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .iter()
             .map(|arg_opt| arg_opt.and_then(|a| self.find_whole_reborrow_referent(a)))
             .collect();
-        let snapshot = self.save_frame();
+        let frame = self.save_frame();
         let saved_inline_arg_referents =
             std::mem::replace(&mut self.inline.arg_referents, inline_arg_referents);
         let saved_deferred_field_writes = std::mem::take(&mut self.inline.deferred_field_writes);
 
         // ── Switch to callee context ──
-        self.caller_def_id = callee_def_id;
+        self.current_frame.caller_def_id = callee_def_id;
 
         // Bind args to callee locals (local_1..local_N are function params)
         for (i, arg_val) in arg_values.iter().enumerate() {
@@ -840,15 +841,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             for src in source_locals {
-                let caller_field_keys: Vec<Vec<usize>> = snapshot
-                    .locals
+                let caller_field_keys: Vec<Vec<usize>> = frame
                     .local_fields
                     .keys()
                     .filter(|(l, _)| *l == src)
                     .map(|(_, f)| f.clone())
                     .collect();
                 for fields in caller_field_keys {
-                    if let Some(fv) = snapshot.locals.local_fields.get(&(src, fields.clone())).cloned() {
+                    if let Some(fv) = frame.local_fields.get(&(src, fields.clone())).cloned() {
                         self.set_field_value(callee_param, fields, fv);
                     }
                 }
@@ -859,7 +859,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.inline_execute_body();
 
         // ── Capture return value and its per-field values ──
-        let return_val = self.locals.values.get(&Local::from_usize(0)).cloned();
+        let return_val = self.current_frame.values.get(&Local::from_usize(0)).cloned();
         crate::rap_debug!(
             "exec_inline_call: callee={:?} return_val={:?}",
             callee_def_id,
@@ -868,7 +868,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 .map(|v| (v.term.to_string(), v.invariants.non_null))
         );
         let return_fields: Vec<(Vec<usize>, VmValue<'ctx, 'tcx>)> = self
-            .locals
+            .current_frame
             .local_fields
             .iter()
             .filter(|((l, _), _)| *l == Local::from_usize(0))
@@ -876,7 +876,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .collect();
 
         // ── Restore caller context ──
-        self.restore_frame(snapshot);
+        self.restore_frame(frame);
 
         // Apply deferred field writes (`(*self).field = val` through a
         // `&mut self` reborrow) collected during the callee's execution, now
@@ -913,7 +913,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // for ADT returns (struct/enum) whose aggregate value carries
                 // no provenance: a later `&raw const (*&field)` + `ptr::read`
                 // must be able to discharge `Init` against the field.
-                if let Some(dest_alloc_id) = self.locals.slots.get(&dest).copied() {
+                if let Some(dest_alloc_id) = self.current_frame.slots.get(&dest).copied() {
                     self.alloc_mut(dest_alloc_id).initialized = true;
                 }
             }
@@ -991,10 +991,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let cond_val = self.value_of_operand(cond);
                     if *expected {
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.solver.constraints.push(cond_val.term._eq(&zero).not());
+                        self.constraints.assertions.push(cond_val.term._eq(&zero).not());
                     } else {
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.solver.constraints.push(cond_val.term._eq(&zero));
+                        self.constraints.assertions.push(cond_val.term._eq(&zero));
                     }
                     // Guard inference for inline callee
                     self.infer_guard_non_null(cond, *expected);
@@ -1030,7 +1030,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     for (value, target) in targets.iter() {
                         let discr_val = self.value_of_operand(discr);
                         let val_term = Int::from_u64(self.ctx, value as u64);
-                        self.solver.constraints.push(discr_val.term._eq(&val_term));
+                        self.constraints.assertions.push(discr_val.term._eq(&val_term));
                         queue.push(target);
                     }
                     let otherwise = targets.otherwise();
@@ -1047,7 +1047,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         func,
                         args,
                         destination.local,
-                        self.caller_def_id,
+                        self.current_frame.caller_def_id,
                     );
                     if let Some(t) = target {
                         queue.push(*t);
@@ -1114,7 +1114,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // `eff_layout_const`; only the generic (symbolic) case needs binding here.
         // `type_layout` reports `(0, 0)` for a generic `T`, so a zero alignment
         // (not a zero *size*, which is a legal ZST) marks the unknown case.
-        if crate::helpers::mir_utils::type_layout(self.tcx, self.caller_def_id, ty)
+        if crate::helpers::mir_utils::type_layout(self.tcx, self.current_frame.caller_def_id, ty)
             .is_some_and(|(align, _)| align > 0)
         {
             return false;
@@ -1184,7 +1184,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let dest_ty = self.body().local_decls[dest].ty;
                     let eq1 = term._eq(&args[1].term);
                     let eq2 = term._eq(&args[2].term);
-                    self.solver.constraints.push(Bool::or(self.ctx, &[&eq1, &eq2]));
+                    self.constraints.assertions.push(Bool::or(self.ctx, &[&eq1, &eq2]));
                     let prov = args[1]
                         .provenance
                         .clone()
@@ -1217,11 +1217,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let mut val = args.get(*arg).cloned().unwrap_or_else(|| VmValue::new(self.fresh_int("replaced"), dest_ty));
                 let arg_local = caller_arg_locals.get(*arg).copied().flatten();
                 let pointee =
-                    arg_local.and_then(|l| self.locals.local_fields.get(&(l, Vec::new())).cloned());
+                    arg_local.and_then(|l| self.current_frame.local_fields.get(&(l, Vec::new())).cloned());
                 if let Some(p) = pointee {
                     val = p;
                 } else if let Some(search) = self
-                    .locals
+                    .current_frame
                     .local_fields
                     .values()
                     .chain(self.memory.fields.values())
@@ -1269,7 +1269,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // and expose them as the deref result's pointee fields.
                     if let Some(arg_local) = caller_arg_locals.get(*arg).copied().flatten() {
                         let keys: Vec<Vec<usize>> = self
-                            .locals
+                            .current_frame
                             .local_fields
                             .keys()
                             .filter(|(l, _)| *l == arg_local)
@@ -1278,7 +1278,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         for path in keys {
                             if path.len() > *peel && path[..*peel].iter().all(|&f| f == 0) {
                                 if let Some(v) =
-                                    self.locals.local_fields.get(&(arg_local, path.clone())).cloned()
+                                    self.current_frame.local_fields.get(&(arg_local, path.clone())).cloned()
                                 {
                                     self.set_field_value(dest, path[*peel..].to_vec(), v);
                                 }
@@ -1324,8 +1324,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .unwrap_or_else(|| alloc_size.div(&elem_sz_term)); // self.len()
 
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.solver.constraints.push(mid_val.term.ge(&zero));
-                    self.solver.constraints.push(mid_val.term.le(&total_len));
+                    self.constraints.assertions.push(mid_val.term.ge(&zero));
+                    self.constraints.assertions.push(mid_val.term.le(&total_len));
 
                     // mid (field 0 length)
                     let mid = mid_val.term.clone();
@@ -1358,16 +1358,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         );
                         let src_bytes = Int::mul(self.ctx, &[&total_len, &elem_sz_term]);
                         if f == 0 {
-                            self.solver.constraints.push(field_size._eq(&mid_bytes));
+                            self.constraints.assertions.push(field_size._eq(&mid_bytes));
                         } else {
                             let remaining = Int::sub(self.ctx, &[&src_bytes, &mid_bytes]);
-                            self.solver.constraints.push(field_size._eq(&remaining));
+                            self.constraints.assertions.push(field_size._eq(&remaining));
                         }
                         self.alloc_mut(alloc_id).initialized = true;
                         if let Some(ref source_prov) = self_val.provenance {
                             self.alloc_mut(alloc_id).parent = Some(source_prov.alloc_id);
                         }
-                        if let Some(ref_dest_alloc_id) = self.locals.slots.get(&dest).copied() {
+                        if let Some(ref_dest_alloc_id) = self.current_frame.slots.get(&dest).copied() {
                             self.alloc_mut(ref_dest_alloc_id).slice_data = Some(alloc_id);
                         }
 
@@ -1525,10 +1525,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let offset = self.fresh_int(&format!("align_to_offset_{}", dest.as_usize()));
                 let zero = Int::from_u64(self.ctx, 0);
                 let ptr_plus_offset = Int::add(self.ctx, &[&self_val.term, &offset]);
-                self.solver.constraints
+                self.constraints.assertions
                     .push(ptr_plus_offset.rem(&align_u)._eq(&zero));
-                self.solver.constraints.push(offset.ge(&zero));
-                self.solver.constraints.push(offset.lt(&align_u));
+                self.constraints.assertions.push(offset.ge(&zero));
+                self.constraints.assertions.push(offset.lt(&align_u));
 
                 // body = len_bytes - offset bytes split into size_u chunks; the
                 // remainder is the suffix. Record the Euclidean identity so that
@@ -1539,9 +1539,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let suffix_bytes = body_bytes.rem(&size_u_term);
                 let mul_term = Int::mul(self.ctx, &[&body_len, &size_u_term]);
                 let sum_term = Int::add(self.ctx, &[&mul_term, &suffix_bytes]);
-                self.solver.constraints.push(body_bytes._eq(&sum_term));
-                self.solver.constraints.push(suffix_bytes.ge(&zero));
-                self.solver.constraints.push(suffix_bytes.lt(&size_u_term));
+                self.constraints.assertions.push(body_bytes._eq(&sum_term));
+                self.constraints.assertions.push(suffix_bytes.ge(&zero));
+                self.constraints.assertions.push(suffix_bytes.lt(&size_u_term));
 
                 // Field lengths in elements.
                 let prefix_len = offset.div(&elem_sz_term);
@@ -1575,7 +1575,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     );
                     self.alloc_mut(alloc_id).initialized = true;
                     self.alloc_mut(alloc_id).parent = Some(src_prov.alloc_id);
-                    if let Some(ref_dest_alloc_id) = self.locals.slots.get(&dest).copied() {
+                    if let Some(ref_dest_alloc_id) = self.current_frame.slots.get(&dest).copied() {
                         self.alloc_mut(ref_dest_alloc_id).slice_data = Some(alloc_id);
                     }
                     let field_val = VmValue {
@@ -1645,7 +1645,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }
                     if src_non_null {
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.solver.constraints.push(val.term._eq(&zero).not());
+                        self.constraints.assertions.push(val.term._eq(&zero).not());
                     }
                     self.set_local(dest, val);
                 }
@@ -1795,18 +1795,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             CallEffect::ReturnNonZero => {
                 let zero = Int::from_u64(self.ctx, 0);
-                if let Some(mut existing) = self.locals.values.get(&dest).cloned() {
+                if let Some(mut existing) = self.current_frame.values.get(&dest).cloned() {
                     existing.invariants.non_null = true;
                     // Record the non-zero fact as a path condition so that a
                     // downstream `ValidNum(result != 0)` obligation (e.g.
                     // `NonZero::new_unchecked` after a bit-preserving operation)
                     // discharges against it.
-                    self.solver.constraints.push(existing.term._eq(&zero).not());
+                    self.constraints.assertions.push(existing.term._eq(&zero).not());
                     self.set_local(dest, existing);
                 } else {
                     let dest_ty = self.body().local_decls[dest].ty;
                     let term = self.fresh_int(&format!("ret_nz_{}", dest.as_usize()));
-                    self.solver.constraints.push(term._eq(&zero).not());
+                    self.constraints.assertions.push(term._eq(&zero).not());
                     self.set_local(
                         dest,
                         VmValue {
@@ -1831,7 +1831,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let zero = Int::from_u64(self.ctx, 0);
                         let term =
                             self.fresh_int(&format!("ret_tup_nz_{}_{}", dest.as_usize(), field));
-                        self.solver.constraints.push(term._eq(&zero).not());
+                        self.constraints.assertions.push(term._eq(&zero).not());
                         self.set_field_value(
                             dest,
                             vec![*field],
@@ -1853,7 +1853,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             CallEffect::ReturnAligned => {
-                if let Some(mut existing) = self.locals.values.get(&dest).cloned() {
+                if let Some(mut existing) = self.current_frame.values.get(&dest).cloned() {
                     // `as_ptr`/`as_mut_ptr`/`into_raw` expose a pointer aligned to
                     // the *pointee* type, so record the symbolic alignment for the
                     // downstream `raw-ptr-deref`/`from_raw_parts` `Align` check.
@@ -1944,10 +1944,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let byte_off = Int::mul(self.ctx, &[&offset, &elem]);
                     let ptr_plus_off = Int::add(self.ctx, &[&ptr_val.term, &byte_off]);
                     let zero = Int::from_u64(self.ctx, 0);
-                    self.solver.constraints
+                    self.constraints.assertions
                         .push(ptr_plus_off.rem(&align_val.term)._eq(&zero));
-                    self.solver.constraints.push(offset.ge(&zero));
-                    self.solver.constraints.push(offset.lt(&align_val.term));
+                    self.constraints.assertions.push(offset.ge(&zero));
+                    self.constraints.assertions.push(offset.lt(&align_val.term));
                 }
                 let val = VmValue::new(offset, dest_ty);
                 self.set_local(dest, val);
@@ -2046,11 +2046,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // (field 1); `len = end_or_len - ptr`.
                 if let Some(iter_ref) = caller_arg_locals.get(*self_arg).copied().flatten() {
                     let iter_local = self
-                        .locals.values
+                        .current_frame.values
                         .get(&iter_ref)
                         .and_then(|v| v.provenance_alloc_id())
                         .and_then(|alloc| {
-                            self.locals.slots
+                            self.current_frame.slots
                                 .iter()
                                 .find(|(_, a)| **a == alloc)
                                 .map(|(l, _)| *l)
@@ -2062,7 +2062,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let (Some(ptr), Some(end)) = (ptr_term, end_term) {
                         let len = Int::sub(self.ctx, &[&end, &ptr]);
                         let payload = self.fresh_int(&format!("scan_idx_{}", dest.as_usize()));
-                        self.solver.constraints.push(payload.lt(&len));
+                        self.constraints.assertions.push(payload.lt(&len));
                         let dest_ty = self.body().local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
@@ -2098,9 +2098,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(slice) = args.get(*arg) {
                     if let Some(len) = self.slice_len_from_value(slice) {
                         let payload = self.fresh_int(&format!("scan_idx_{}", dest.as_usize()));
-                        self.solver.constraints.push(payload.lt(&len));
+                        self.constraints.assertions.push(payload.lt(&len));
                         let zero = Int::from_u64(self.ctx, 0);
-                        self.solver.constraints.push(payload.ge(&zero));
+                        self.constraints.assertions.push(payload.ge(&zero));
                         let dest_ty = self.body().local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
@@ -2123,7 +2123,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(slice) = args.get(*arg) {
                     if let Some(arg_len) = self.slice_len_from_value(slice) {
                         let len = self.fresh_int(&format!("decode_len_{}", dest.as_usize()));
-                        self.solver.constraints.push(len.le(&arg_len));
+                        self.constraints.assertions.push(len.le(&arg_len));
                         let dest_ty = self.body().local_decls[dest].ty;
                         let payload_ty = match dest_ty.kind() {
                             TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
@@ -2150,7 +2150,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `ValidNum(size_of(T)*(len+1) <= isize::MAX)`.
                 let len = self.fresh_int(&format!("strlen_{}", dest.as_usize()));
                 let max = Int::from_i64(self.ctx, i64::MAX);
-                self.solver.constraints.push(len.lt(&max));
+                self.constraints.assertions.push(len.lt(&max));
                 let dest_ty = self.body().local_decls[dest].ty;
                 self.set_local(
                     dest,
@@ -2164,7 +2164,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let term = self.fresh_int(&format!("ret_nz_iff_{}", dest.as_usize()));
                     // `result == 0` iff `arg == 0`, i.e. non-zero is preserved
                     // exactly (bit-preserving ops map 0 -> 0, non-zero -> non-zero).
-                    self.solver.constraints
+                    self.constraints.assertions
                         .push(term._eq(&zero)._eq(&a.term._eq(&zero)));
                     self.set_local(
                         dest,
@@ -2176,7 +2176,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(a) = args.get(*arg) {
                     let zero = Int::from_u64(self.ctx, 0);
                     let term = self.fresh_int(&format!("ret_opt_nz_iff_{}", dest.as_usize()));
-                    self.solver.constraints
+                    self.constraints.assertions
                         .push(term._eq(&zero)._eq(&a.term._eq(&zero)));
                     self.set_field_value(
                         dest,
@@ -2190,7 +2190,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `checked_next_power_of_two`).
                 let zero = Int::from_u64(self.ctx, 0);
                 let term = self.fresh_int(&format!("ret_opt_nz_{}", dest.as_usize()));
-                self.solver.constraints.push(term._eq(&zero).not());
+                self.constraints.assertions.push(term._eq(&zero).not());
                 let payload_ty = args
                     .first()
                     .map(|a| a.ty)
@@ -2308,7 +2308,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let dest_ty = self.body().local_decls[dest].ty;
                     let elem_ty = crate::verify::call_summary::from_raw_parts_elem_ty(
                         self.tcx,
-                        self.caller_def_id,
+                        self.current_frame.caller_def_id,
                         Some(dest),
                     );
                     // A generic element type uses the shared symbolic `sizeof_T`
@@ -2334,7 +2334,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         offset_kind: None,
                     };
                     // If return is a reference, register slice/pointee data
-                    if let Some(ref dest_alloc_id) = self.locals.slots.get(&dest).copied() {
+                    if let Some(ref dest_alloc_id) = self.current_frame.slots.get(&dest).copied() {
                         self.alloc_mut(*dest_alloc_id).slice_data = Some(alloc_id);
                     }
                     // Propagate init status and byte-level tracking from the source pointer.
@@ -2504,7 +2504,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
                     self.alloc_mut(alloc_id).set_slice_len(size_val.term.clone());
-                    let dest_alloc_id = self.locals.slots.get(&dest).copied();
+                    let dest_alloc_id = self.current_frame.slots.get(&dest).copied();
                     if let Some(dest_alloc_id) = dest_alloc_id {
                         self.alloc_mut(dest_alloc_id).slice_data = Some(alloc_id);
                     }
@@ -2576,7 +2576,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .map(|ty| self.align_sym(ty))
                         .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
-                    let dest_alloc_id = self.locals.slots.get(&dest).copied();
+                    let dest_alloc_id = self.current_frame.slots.get(&dest).copied();
                     if let Some(dest_alloc_id) = dest_alloc_id {
                         self.alloc_mut(dest_alloc_id).slice_data = Some(alloc_id);
                     }
@@ -2648,7 +2648,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .and_then(|p| self.alloc(p.alloc_id).slice_len().cloned())
                     .unwrap_or_else(|| Int::from_u64(self.ctx, i64::MAX as u64));
                 let (alloc_id, base) = self.allocate_external(size, heap_align, elem_ty);
-                let dest_alloc_id = self.locals.slots.get(&dest).copied();
+                let dest_alloc_id = self.current_frame.slots.get(&dest).copied();
                 if let Some(ref dest_alloc_id) = dest_alloc_id {
                     self.alloc_mut(*dest_alloc_id).slice_data = Some(alloc_id);
                 }
@@ -2797,7 +2797,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let dest_ty = self.body().local_decls[dest].ty;
                 let term = self.fresh_int(&format!("layout_align_{}", dest.as_usize()));
                 let zero = Int::from_u64(self.ctx, 0);
-                self.solver.constraints.push(term.gt(&zero));
+                self.constraints.assertions.push(term.gt(&zero));
                 self.set_local(
                     dest,
                     VmValue::new(term, dest_ty),
@@ -2818,7 +2818,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let alloc_id = indices_val.provenance_alloc_id().or_else(|| {
                             // Slicer may have dropped the &indices
                             // assignment, losing provenance.  Fall back
-                            self.locals.values.values().find_map(|v| {
+                            self.current_frame.values.values().find_map(|v| {
                                 if v.ty == arr_ty {
                                     v.provenance_alloc_id()
                                 } else {
@@ -2836,14 +2836,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 .collect();
                             byte_offsets.sort_by_key(|(off, _)| *off);
                             for (_, term) in &byte_offsets {
-                                self.solver.constraints.push(term.ge(&zero));
-                                self.solver.constraints.push(term.lt(&len_val.term));
+                                self.constraints.assertions.push(term.ge(&zero));
+                                self.constraints.assertions.push(term.lt(&len_val.term));
                             }
                             for i in 0..byte_offsets.len() {
                                 for j in (i + 1)..byte_offsets.len() {
                                     let ti = &byte_offsets[i].1;
                                     let tj = &byte_offsets[j].1;
-                                    self.solver.constraints.push(ti._eq(tj).not());
+                                    self.constraints.assertions.push(ti._eq(tj).not());
                                 }
                             }
                         }
@@ -2978,7 +2978,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return None;
         }
         let sz = self.iter_elem_size(ptr);
-        if let Some((offset, _)) = self.solver.iter_ptr_offset.get(&ep.alloc_id) {
+        if let Some((offset, _)) = self.constraints.term_caches.iter_ptr_offset.get(&ep.alloc_id) {
             let base_len = ep.offset.div(&sz);
             let zero = Int::from_u64(self.ctx, 0);
             Some(
@@ -3028,7 +3028,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .get(1)
             .map(|v| v.term.clone())
             .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
-        let (new_offset, base_len) = match self.solver.iter_ptr_offset.get(&buffer) {
+        let (new_offset, base_len) = match self.constraints.term_caches.iter_ptr_offset.get(&buffer) {
             Some((prev, base)) => (Int::add(self.ctx, &[prev, &offset_term]), base.clone()),
             None => {
                 let base = self
@@ -3041,7 +3041,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 (offset_term, base)
             }
         };
-        self.solver.iter_ptr_offset.insert(buffer, (new_offset, base_len));
+        self.constraints.term_caches.iter_ptr_offset.insert(buffer, (new_offset, base_len));
     }
 
     /// Find the local whose symbolic address matches `term` (the address a
@@ -3049,7 +3049,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// receiver (often a reborrow temp) back to the referent local that carries
     /// the materialized field values.
     pub(crate) fn find_local_by_address(&self, term: &Int<'ctx>) -> Option<Local> {
-        for (local, id) in &self.locals.slots {
+        for (local, id) in &self.current_frame.slots {
             if self.memory.allocations[id.0].base == *term {
                 return Some(*local);
             }
@@ -3263,7 +3263,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
         // Any local that already materializes the field (covers the receiver
         // parameter / shared reborrow that the mutable reborrow does not copy).
-        for (l, _) in self.locals.local_fields.keys() {
+        for (l, _) in self.current_frame.local_fields.keys() {
             candidates.push(*l);
         }
         let mut found: Option<VmValue<'ctx, 'tcx>> = None;
@@ -3352,9 +3352,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let start = self.fresh_int(&format!("range_start_{}", dest.as_usize()));
         let end = self.fresh_int(&format!("range_end_{}", dest.as_usize()));
         let zero = Int::from_u64(self.ctx, 0);
-        self.solver.constraints.push(start.ge(&zero));
-        self.solver.constraints.push(start.le(&end));
-        self.solver.constraints.push(end.le(&len_term));
+        self.constraints.assertions.push(start.ge(&zero));
+        self.constraints.assertions.push(start.le(&end));
+        self.constraints.assertions.push(end.le(&len_term));
 
         let start_val = VmValue::new(start, field_ty(0));
         let end_val = VmValue::new(end, field_ty(1));
@@ -3425,16 +3425,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.set_field_value(local, cap_path, VmValue::new(cap.clone(), usize_ty));
         self.set_field_value(local, len_path, VmValue::new(len.clone(), usize_ty));
         let zero = Int::from_u64(self.ctx, 0);
-        self.solver.constraints.push(len.ge(&zero));
-        self.solver.constraints.push(len.le(&cap));
-        self.solver.constraints.push(cap.ge(&zero));
+        self.constraints.assertions.push(len.ge(&zero));
+        self.constraints.assertions.push(len.le(&cap));
+        self.constraints.assertions.push(cap.ge(&zero));
         // Language invariant: a Vec's byte length fits in `isize::MAX`, so the
         // `from_raw_parts`/`from_raw_parts_mut` precondition
         // `size_of(T) * len <= isize::MAX` is provable from the materialized
         // fields (`len <= cap` and `cap * elem_size <= isize::MAX`).
         let isize_max = Int::from_u64(self.ctx, isize::MAX as u64);
         let elem_term = Int::from_u64(self.ctx, elem_size.max(1));
-        self.solver.constraints
+        self.constraints.assertions
             .push(Int::mul(self.ctx, &[&cap, &elem_term]).le(&isize_max));
     }
 }

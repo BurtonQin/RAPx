@@ -640,7 +640,7 @@ impl PropertyChecker {
         let rustc_middle::ty::TyKind::Param(param_ty) = ty.kind() else {
             return false;
         };
-        let generics = vm_state.tcx.generics_of(vm_state.caller_def_id);
+        let generics = vm_state.tcx.generics_of(vm_state.current_frame.caller_def_id);
         generics.own_params.iter().any(|p| {
             matches!(p.kind, rustc_middle::ty::GenericParamDefKind::Type { .. })
                 && p.name == param_ty.name
