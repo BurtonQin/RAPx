@@ -670,14 +670,10 @@ impl<'tcx> PathGraph<'tcx> {
                 // - `as_ptr`/`as_mut_ptr` (local re-implementations) lose the
                 //   provenance that `eff_alias_ptr`/`handle_callee_entry`
                 //   otherwise reconstruct from the argument.
-                // - `align_to_offsets` computes `us_len = len / ts * us` from
-                //   symbolic `size_of::<T>()`/`size_of::<U>()` and a `gcd`;
-                //   inlining it makes the later `from_raw_parts_mut` ValidPtr
-                //   bound unprovable.
                 let is_opaque_helper = {
                     let name = tcx.def_path_str(callee);
                     let short = name.rsplit("::").next().unwrap_or(&name);
-                    matches!(short, "as_ptr" | "as_mut_ptr" | "align_to_offsets")
+                    matches!(short, "as_ptr" | "as_mut_ptr")
                 };
                 if !tcx.is_mir_available(callee)
                     || expanded.contains(&callee)

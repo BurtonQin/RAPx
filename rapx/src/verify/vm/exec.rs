@@ -2779,6 +2779,32 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 Int::sub(self.ctx, &[lhs, rhs])
             }
             BinOp::Mul | BinOp::MulWithOverflow | BinOp::MulUnchecked => {
+                // `us_len = (len / ts) * us`: a non-exact division result times
+                // an exact gcd quotient.  Model the product as a fresh symbol
+                // and emit its byte bound `us_len * sizeof_U <= len * sizeof_T`
+                // directly, so the later `from_raw_parts_mut` InBound check
+                // (`us_len * sizeof_U`) stays degree-2 rather than the
+                // degree-3 `div * us * sizeof_U` that Z3's NIA cannot rewrite.
+                if let Some((_, div_lhs, div_rhs)) =
+                    self.solver.div_roots.iter().find(|(q, _, _)| *q == *lhs)
+                {
+                    if let Some((_, us_dividend)) =
+                        self.solver.exact_div_roots.iter().find(|(q, _)| *q == *rhs)
+                    {
+                        if let Some((_, ts_dividend)) =
+                            self.solver.exact_div_roots.iter().find(|(q, _)| *q == *div_rhs)
+                        {
+                            let us_len = self.fresh_int("us_len");
+                            self.solver
+                                .constraints
+                                .push(us_len._eq(&Int::mul(self.ctx, &[lhs, rhs])));
+                            let byte_len = Int::mul(self.ctx, &[&us_len, ts_dividend]);
+                            let byte_bound = Int::mul(self.ctx, &[div_lhs, us_dividend]);
+                            self.solver.constraints.push(byte_len.le(&byte_bound));
+                            return us_len;
+                        }
+                    }
+                }
                 Int::mul(self.ctx, &[lhs, rhs])
             }
             BinOp::Div => {
@@ -2798,9 +2824,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .iter()
                     .any(|c| *c == lhs.rem(rhs)._eq(&zero));
                 if exact {
-                    self.fresh_int("exact_div")
+                    let q = self.fresh_int("exact_div");
+                    self.solver.exact_div_roots.push((q.clone(), lhs.clone()));
+                    q
                 } else {
-                    lhs.div(rhs)
+                    // A *non-exact* division is likewise a fresh variable (the
+                    // caller's Euclidean identity `lhs == q*rhs + rem` links it
+                    // back), so a later `(len/ts) * us` product stays a degree-2
+                    // product of two symbols instead of a `div` term that Z3's
+                    // nonlinear solver cannot combine with a multiplier.
+                    let q = self.fresh_int("div");
+                    self.solver.div_roots.push((q.clone(), lhs.clone(), rhs.clone()));
+                    q
                 }
             }
             BinOp::Rem => lhs.rem(rhs),
