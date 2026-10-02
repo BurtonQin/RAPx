@@ -17,7 +17,8 @@
 //! without the false positives of per-call-site name matching.
 
 use rustc_hir::def_id::DefId;
-use rustc_middle::ty::Ty;
+use rustc_middle::ty::{Ty, TyKind};
+use rustc_middle::ty::TyCtxt;
 
 /// Whether `callee` is `Some` and matches any item in the (Option<DefId>) list.
 fn any_of(callee: Option<DefId>, items: &[Option<DefId>]) -> bool {
@@ -137,6 +138,31 @@ pub(crate) fn is_raw_ptr_cast(callee: Option<DefId>) -> bool {
 /// address (preserving null-ness) and are left to MIR inlining.
 pub fn is_as_ptr_valid(callee: Option<DefId>) -> bool {
     is_as_ptr(callee) && !is_raw_ptr_cast(callee)
+}
+
+/// Whether `callee` is an `as_ptr`/`as_mut_ptr` method on a recognized
+/// pointer-container ADT (`Vec`/`NonNull`/`Box`/`MaybeUninit`/`CString`).
+///
+/// Unlike [`is_as_ptr`] (which matches the std functions by exact full path),
+/// this matches by the *self type* — resolved from the method's impl — so it
+/// also catches the std-challenge suites' local re-implementations without the
+/// broad `::as_ptr` name suffix.
+pub fn is_local_as_ptr(tcx: TyCtxt<'_>, callee: DefId) -> bool {
+    let name = tcx.item_name(callee);
+    if name.as_str() != "as_ptr" && name.as_str() != "as_mut_ptr" {
+        return false;
+    }
+    let Some(self_ty) = crate::helpers::name::get_struct_self_ty(tcx, callee) else {
+        return false;
+    };
+    let TyKind::Adt(adt, _) = self_ty.kind() else {
+        return false;
+    };
+    is_std_vec(adt.did())
+        || is_std_nonnull(adt.did())
+        || is_std_box(adt.did())
+        || is_maybe_uninit_type(adt.did())
+        || is_std_cstring(adt.did())
 }
 
 /// `str::as_bytes`: reinterprets `&str` as `&[u8]` — same data pointer and

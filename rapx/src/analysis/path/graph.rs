@@ -670,17 +670,13 @@ impl<'tcx> PathGraph<'tcx> {
                 // - `as_ptr`/`as_mut_ptr` (local re-implementations) lose the
                 //   provenance that `eff_alias_ptr`/`handle_callee_entry`
                 //   otherwise reconstruct from the argument.
-                let is_opaque_helper = {
-                    let name = tcx.def_path_str(callee);
-                    let short = name.rsplit("::").next().unwrap_or(&name);
-                    matches!(short, "as_ptr" | "as_mut_ptr")
-                };
+                let is_local_as_ptr = crate::verify::api_classify::is_local_as_ptr(tcx, callee);
                 if !tcx.is_mir_available(callee)
                     || expanded.contains(&callee)
                     || is_intrinsic
                     || has_fn_sim
                     || is_slice_summary
-                    || is_opaque_helper
+                    || is_local_as_ptr
                 {
                     continue;
                 }
