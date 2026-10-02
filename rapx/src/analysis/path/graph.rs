@@ -664,24 +664,27 @@ impl<'tcx> PathGraph<'tcx> {
                     || crate::verify::call_summary::interprocedural::is_slice_get_summary(
                         tcx, callee,
                     );
-                // A local pointer-extraction accessor (`as_ptr`/`as_mut_ptr`)
-                // re-implements the std API but is not resolved by
-                // `def_id::*_as_ptr` (those match only the std full path). Its
-                // body is `self.ptr.as_ptr()`: inlining it in the CFG loses the
-                // provenance the VM's interprocedural execution reconstructs
-                // (`exec_inline_call` + `handle_callee_entry`), so keep it
-                // opaque — mirroring how the std `as_ptr` stays modelled.
-                let is_ptr_extraction = {
+                // A couple of helpers stay opaque because the VM's
+                // interprocedural execution is more precise than their inlined
+                // body:
+                // - `as_ptr`/`as_mut_ptr` (local re-implementations) lose the
+                //   provenance that `eff_alias_ptr`/`handle_callee_entry`
+                //   otherwise reconstruct from the argument.
+                // - `align_to_offsets` computes `us_len = len / ts * us` from
+                //   symbolic `size_of::<T>()`/`size_of::<U>()` and a `gcd`;
+                //   inlining it makes the later `from_raw_parts_mut` ValidPtr
+                //   bound unprovable.
+                let is_opaque_helper = {
                     let name = tcx.def_path_str(callee);
                     let short = name.rsplit("::").next().unwrap_or(&name);
-                    matches!(short, "as_ptr" | "as_mut_ptr")
+                    matches!(short, "as_ptr" | "as_mut_ptr" | "align_to_offsets")
                 };
                 if !tcx.is_mir_available(callee)
                     || expanded.contains(&callee)
                     || is_intrinsic
                     || has_fn_sim
                     || is_slice_summary
-                    || is_ptr_extraction
+                    || is_opaque_helper
                 {
                     continue;
                 }

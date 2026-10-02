@@ -190,9 +190,10 @@ unsound_tests! {
     inbound_unsound_11: "verify_units/inbound_unsound_11" => "unsound_range_index_missing_end_guard" => "InBound",
     inbound_unsound_12: "verify_units/inbound_unsound_12" => "unsound_std_range_missing_end_guard" => "InBound",
     // TODO: re-enable once path-limit truncation reports conservatively again.
-    // `unsound_index_past_path_limit` relies on the out-of-bounds path (i=100)
-    // being *truncated* (8192 > 4000) and reported `Unknown`; with the current
-    // "truncated => Proved" policy the bug is silently missed (false negative).
+    // `unsound_index_past_path_limit` relies on the single out-of-bounds path
+    // (`a == 0` -> i=100) being *truncated* (8192 > 4000) and reported
+    // `Unknown`; with the current "truncated => Proved" policy the bug is
+    // silently missed (false negative).
     // inbound_unsound_13: "verify_units/inbound_unsound_13" => "unsound_index_past_path_limit" => "InBound",
 }
 

@@ -2,14 +2,14 @@
 #![register_tool(rapx)]
 #![allow(dead_code)]
 
-// UNSOUND: `i` is 100 whenever `a & 1 == 0`. The twelve `if`s after it give
-// 8192 paths, past the whole-CFG path limit, so the paths through the
-// out-of-bounds side are never enumerated.
+// UNSOUND: `i` is 100 only when `a == 0` — a single value, hence a single
+// out-of-bounds path. The twelve `if`s after it expand the CFG to 8192 paths,
+// past the whole-CFG path limit, so that one path is never enumerated.
 #[rapx::verify]
 pub fn unsound_index_past_path_limit(a: u32) -> u8 {
     let arr = [0u8; 4];
     let mut k = a;
-    let i = if a & 1 != 0 { 0 } else { 100 };
+    let i = if a != 0 { 0 } else { 100 };
     if a & 2 != 0 {
         k = k.wrapping_mul(3);
     }
