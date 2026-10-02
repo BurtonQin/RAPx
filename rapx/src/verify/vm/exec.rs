@@ -84,27 +84,36 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let mut arg_fields: Vec<(usize, Vec<usize>, VmValue<'ctx, 'tcx>)> = Vec::new();
         for (i, arg) in arg_locals.iter().enumerate() {
             let caller_local = Local::from_usize(*arg);
-            let mut source_locals: Vec<Local> = Vec::new();
-            let mut seen: FxHashSet<Local> = FxHashSet::default();
-            let mut stack = vec![caller_local];
-            while let Some(cur) = stack.pop() {
-                if !seen.insert(cur) {
+            let mut source_locals: Vec<(Local, Vec<usize>)> = Vec::new();
+            let mut seen: FxHashSet<(Local, Vec<usize>)> = FxHashSet::default();
+            let mut stack = vec![(caller_local, Vec::new())];
+            while let Some((cur, prefix)) = stack.pop() {
+                if !seen.insert((cur, prefix.clone())) {
                     continue;
                 }
-                source_locals.push(cur);
+                source_locals.push((cur, prefix.clone()));
                 if let Some(r) = self.find_whole_reborrow_referent(cur) {
-                    stack.push(r);
+                    stack.push((r, prefix.clone()));
+                }
+                if let Some((r, fields)) = self.find_field_reborrow_referent(cur) {
+                    let mut new_prefix = prefix.clone();
+                    new_prefix.extend(fields);
+                    stack.push((r, new_prefix));
                 }
                 if let Some(c) = self.find_copy_root(cur) {
-                    stack.push(c);
+                    stack.push((c, prefix.clone()));
                 }
             }
-            for src in source_locals {
+            for (src, prefix) in source_locals {
                 let keys: Vec<Vec<usize>> = snapshot
                     .locals
                     .local_fields
                     .keys()
-                    .filter(|(l, _)| *l == src)
+                    .filter(|(l, f)| {
+                        *l == src
+                            && (prefix.is_empty()
+                                || (f.len() >= prefix.len() && f[..prefix.len()] == prefix[..]))
+                    })
                     .map(|(_, f)| f.clone())
                     .collect();
                 for fields in keys {
@@ -114,7 +123,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .get(&(src, fields.clone()))
                         .cloned()
                     {
-                        arg_fields.push((i + 1, fields, fv));
+                        let stripped = if prefix.is_empty() {
+                            fields
+                        } else {
+                            fields[prefix.len()..].to_vec()
+                        };
+                        arg_fields.push((i + 1, stripped, fv));
                     }
                 }
             }
@@ -127,6 +141,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 self.set_local(Local::from_usize(i + 1), v);
             }
         }
+
         for (callee_param, fields, fv) in arg_fields {
             self.set_field_value(Local::from_usize(callee_param), fields, fv);
         }
@@ -1007,7 +1022,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 ..Default::default()
             }
         };
-        if let Some(&(existing_alloc, ref base)) = elem_alloc.get(&pointee) {
+        // Only raw-pointer fields (e.g. `Iter::end_or_len = ptr + len·sizeof_T`)
+        // reuse the shared per-pointee-type allocation. A `NonNull<T>` field
+        // names a *distinct* heap object (e.g. each `NodeRef.node` points at its
+        // own leaf), so it must get its own allocation rather than a symbolic
+        // offset into a sibling's — otherwise `left_child.node` and
+        // `right_child.node` would alias the same `LeafNode`, losing the per-node
+        // `Init`/`Allocated` provenance.
+        if is_raw_ptr && let Some(&(existing_alloc, ref base)) = elem_alloc.get(&pointee) {
             // Byte-accurate element size (`sizeof_T` for a generic `T`) so the
             // field's offset is a multiple of `align_T` (via the layout
             // constraint `sizeof_T % align_T == 0` established by `align_sym`).

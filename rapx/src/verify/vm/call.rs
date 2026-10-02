@@ -3067,6 +3067,44 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         None
     }
 
+    /// Resolve a *field* reborrow (`_7 = &mut (*_x).field`, projection
+    /// `[Deref, Field(..)*]`) back to its referent local plus the field path.
+    pub(crate) fn find_field_reborrow_referent(
+        &self,
+        local: Local,
+    ) -> Option<(Local, Vec<usize>)> {
+        use rustc_middle::mir::{ProjectionElem, Rvalue, StatementKind};
+        for bb in self.body().basic_blocks.iter() {
+            for stmt in &bb.statements {
+                if let StatementKind::Assign(assign) = &stmt.kind {
+                    let (dest, rvalue) = &**assign;
+                    if dest.local == local && dest.projection.is_empty() {
+                        if let Rvalue::Ref(_, _, place) | Rvalue::RawPtr(_, place) = rvalue {
+                            let mut proj = place.projection.iter();
+                            if !matches!(proj.next().map(|p| p.kind()), Some(ProjectionElem::Deref))
+                            {
+                                continue;
+                            }
+                            let mut fields = Vec::new();
+                            for p in proj {
+                                if let ProjectionElem::Field(f, _) = p.kind() {
+                                    fields.push(f.as_usize());
+                                } else {
+                                    fields.clear();
+                                    break;
+                                }
+                            }
+                            if !fields.is_empty() {
+                                return Some((place.local, fields));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Resolve a whole-place copy root: `_x = copy _y` / `_x = move _y` (no
     /// projection) traces `_x` back to `_y`. Used to recover a value parameter's
     /// materialized fields when the optimizer inserted a copy temporary between

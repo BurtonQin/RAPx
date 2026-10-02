@@ -594,13 +594,11 @@ impl<'tcx> PathGraph<'tcx> {
     ///
     /// Each callee is otherwise subject to the same shape constraints as
     /// before: cross-crate callees with MIR are always inlined, and a local
-    /// callee is inlined only when it is small and *transitively branchy* —
-    /// it has a semantic `SwitchInt`, or (transitively) calls a local callee
-    /// that does. This closes the transitivity gap where a branchy helper
-    /// (`post_inc_start`) is reached only through a branch-free caller
-    /// (`next_unchecked`). A purely branch-free accessor is left opaque.
-    /// Intrinsics have no MIR; callees with a builtin model or a slice summary
-    /// are kept opaque because their summary is more precise than their body.
+    /// callee is inlined only when it is small (`<= 16` basic blocks), so
+    /// branch-free accessors (`get`, `count_ones`, …) also land in the CFG and
+    /// their field provenance is reconstructed element-by-element. Intrinsics
+    /// have no MIR; callees with a builtin model or a slice summary are kept
+    /// opaque because their summary is more precise than their body.
     ///
     /// Recursion is bounded by an `expanded` set so that (mutually) recursive
     /// local functions do not grow the CFG without bound — a back-edge to an
@@ -615,8 +613,6 @@ impl<'tcx> PathGraph<'tcx> {
 
         let mut expanded: FxHashSet<DefId> = FxHashSet::default();
         expanded.insert(caller_def_id);
-
-        let mut branchy_cache: FxHashMap<DefId, bool> = FxHashMap::default();
 
         loop {
             let mut pending: Vec<(usize, DefId)> = Vec::new();
@@ -668,30 +664,35 @@ impl<'tcx> PathGraph<'tcx> {
                     || crate::verify::call_summary::interprocedural::is_slice_get_summary(
                         tcx, callee,
                     );
+                // A local pointer-extraction accessor (`as_ptr`/`as_mut_ptr`)
+                // re-implements the std API but is not resolved by
+                // `def_id::*_as_ptr` (those match only the std full path). Its
+                // body is `self.ptr.as_ptr()`: inlining it in the CFG loses the
+                // provenance the VM's interprocedural execution reconstructs
+                // (`exec_inline_call` + `handle_callee_entry`), so keep it
+                // opaque — mirroring how the std `as_ptr` stays modelled.
+                let is_ptr_extraction = {
+                    let name = tcx.def_path_str(callee);
+                    let short = name.rsplit("::").next().unwrap_or(&name);
+                    matches!(short, "as_ptr" | "as_mut_ptr")
+                };
                 if !tcx.is_mir_available(callee)
                     || expanded.contains(&callee)
                     || is_intrinsic
                     || has_fn_sim
                     || is_slice_summary
+                    || is_ptr_extraction
                 {
                     continue;
                 }
-                // A local callee is inlined only when it is small and
-                // *transitively branchy*: it has a semantic `SwitchInt`, or it
-                // (transitively) calls a local callee that does. This lets a
-                // branch-free callee like `next_unchecked` — the only caller of
-                // the branchy pointer-advancing helper `post_inc_start` — be
-                // inlined so the branchy helper ends up in the CFG, letting the
-                // element-level `iter_ptr_offset` tracking reconstruct the
-                // loop-carried `offset <= len` invariant instead of the
-                // name-matching `try_iter_next` model. A purely branch-free
-                // accessor (e.g. `get`, whose callees are cross-crate or have
-                // no semantic switch) is left opaque for the VM's more precise
-                // `exec_inline_call`.
+                // A local callee is inlined only when it is small (a shape
+                // bound that keeps path enumeration tractable). Branch-free
+                // accessors are no longer excluded: their bodies land in the
+                // CFG and the backward slicer/VM reconstruct field provenance
+                // through the inlined call chain.
                 let small_local = !cross_crate && {
                     let body = tcx.optimized_mir(callee);
                     body.basic_blocks.len() <= 16
-                        && Self::transitively_branchy(tcx, callee, &mut branchy_cache)
                 };
                 if cross_crate || small_local {
                     pending.push((i, callee));
@@ -715,52 +716,6 @@ impl<'tcx> PathGraph<'tcx> {
         }
     }
 
-    /// Whether `def_id` has a semantic `SwitchInt`, or (transitively) calls a
-    /// *local* callee that does. A foldable `ub_checks`/debug-assert switch is
-    /// not semantic. Memoized in `cache`; a cycle returns `false`.
-    fn transitively_branchy(
-        tcx: TyCtxt<'_>,
-        def_id: DefId,
-        cache: &mut FxHashMap<DefId, bool>,
-    ) -> bool {
-        if let Some(&v) = cache.get(&def_id) {
-            return v;
-        }
-        cache.insert(def_id, false);
-        let body = tcx.optimized_mir(def_id);
-        let mut result = body.basic_blocks.iter_enumerated().any(|(idx, bb)| {
-            !bb.is_cleanup
-                && matches!(bb.terminator().kind, TerminatorKind::SwitchInt { .. })
-                && !crate::helpers::mir_utils::switch_is_debug_assert(tcx, &body, idx)
-        });
-        if !result {
-            for bb in body.basic_blocks.iter() {
-                let Some(term) = bb.terminator.as_ref() else {
-                    continue;
-                };
-                let TerminatorKind::Call { func, .. } = &term.kind else {
-                    continue;
-                };
-                let Some(base) = crate::helpers::mir_utils::dep_callee_def_id(func) else {
-                    continue;
-                };
-                if base.as_local().is_none() {
-                    continue;
-                }
-                let resolved = crate::helpers::mir_utils::dep_callee_resolved_def_id(
-                    tcx, def_id, func,
-                )
-                .unwrap_or(base);
-                if Self::transitively_branchy(tcx, resolved, cache) {
-                    result = true;
-                    break;
-                }
-            }
-        }
-        cache.insert(def_id, result);
-        result
-    }
-
     /// Inline a single callee into `caller_idx`, reconnecting the caller's
     /// normal successor edge through the callee body.
     fn inline_one(&mut self, caller_idx: usize, callee: DefId) {
@@ -768,24 +723,30 @@ impl<'tcx> PathGraph<'tcx> {
         // The caller block may itself be an inlined callee (nested inlining), so
         // its MIR successor indices must be shifted into the global block space.
         let caller_base = caller_idx - self.cfg.block(caller_idx).local_index;
-        let (caller_target, arg_locals, dest_local) = match self.terminator(caller_idx) {
+        let (caller_target, caller_unwind, arg_locals, dest_local) = match self.terminator(caller_idx)
+        {
             Some(term) => match &term.kind {
                 TerminatorKind::Call {
                     target,
+                    unwind,
                     args,
                     destination,
                     ..
                 } => {
                     let target = target.map(|t| caller_base + t.as_usize());
+                    let unwind = match unwind {
+                        UnwindAction::Cleanup(t) => Some(caller_base + t.as_usize()),
+                        _ => None,
+                    };
                     let arg_locals: Vec<usize> = args
                         .iter()
                         .filter_map(|a| a.node.place().map(|p| p.local.as_usize()))
                         .collect();
-                    (target, arg_locals, destination.local.as_usize())
+                    (target, unwind, arg_locals, destination.local.as_usize())
                 }
-                _ => (None, Vec::new(), 0),
+                _ => (None, None, Vec::new(), 0),
             },
-            None => (None, Vec::new(), 0),
+            None => (None, None, Vec::new(), 0),
         };
         let Some(target) = caller_target else {
             return;
@@ -825,16 +786,43 @@ impl<'tcx> PathGraph<'tcx> {
                     TerminatorKind::Return => {
                         cb.add_next(target);
                     }
-                    TerminatorKind::Call { target: t, .. } => {
+                    TerminatorKind::UnwindResume => {
+                        // A callee that unwinds re-enters the caller at its
+                        // unwind/cleanup block (the caller's `Cleanup` target of
+                        // the inlined call), never at the normal return target.
+                        if let Some(u) = caller_unwind {
+                            cb.add_next(u);
+                        }
+                    }
+                    TerminatorKind::Call {
+                        target: t,
+                        unwind,
+                        ..
+                    } => {
                         if let Some(t) = t {
                             cb.add_next(base + t.as_usize());
                         }
+                        if let UnwindAction::Cleanup(tt) = unwind {
+                            cb.add_next(base + tt.as_usize());
+                        }
                     }
-                    TerminatorKind::Drop { target: t, .. } => {
+                    TerminatorKind::Drop {
+                        target: t, unwind, ..
+                    } => {
                         cb.add_next(base + t.as_usize());
+                        if let UnwindAction::Cleanup(tt) = unwind {
+                            cb.add_next(base + tt.as_usize());
+                        }
                     }
-                    TerminatorKind::Assert { target: t, .. } => {
+                    TerminatorKind::Assert {
+                        target: t,
+                        unwind,
+                        ..
+                    } => {
                         cb.add_next(base + t.as_usize());
+                        if let UnwindAction::Cleanup(tt) = unwind {
+                            cb.add_next(base + tt.as_usize());
+                        }
                     }
                     TerminatorKind::FalseEdge { real_target, .. }
                     | TerminatorKind::FalseUnwind { real_target, .. } => {

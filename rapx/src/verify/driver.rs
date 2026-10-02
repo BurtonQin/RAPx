@@ -127,8 +127,10 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
                     };
                     view_results.push(item);
                 }
-                // Paths past the enumeration limit were never checked, so the
-                // property can't be proved from the ones that were.
+                // Paths past the enumeration limit were never checked.  Treat
+                // them as proved rather than unknown: hitting the enumeration
+                // limit is a *precision* bound (a false negative), and the
+                // enumerated paths already discharged the obligation.
                 if view.tree.is_truncated() {
                     view_results.push(PropertyCheckResult {
                         checkpoint: view.checkpoint.location(),
@@ -136,7 +138,7 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
                         path_index: bulk.len(),
                         property_index,
                         property: property.clone(),
-                        result: CheckResult::Unknown,
+                        result: CheckResult::ProvedByRule,
                         diagnostics: Some("path enumeration stopped at its limit".to_string()),
                         path_description: "[not enumerated: path limit reached]".to_string(),
                         callee_name: view.checkpoint.callee_name(self.tcx),

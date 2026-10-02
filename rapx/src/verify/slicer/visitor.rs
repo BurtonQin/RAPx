@@ -168,7 +168,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
         Vec<usize>,
         Vec<RelevantItem<'tcx>>,
         RelevantPlaces,
-        Option<RelevantPlaces>,
+        Vec<(DefId, Vec<usize>, RelevantPlaces)>,
     )> {
         let (def_id, local_index) = tree.block_fn_of(node.block).unwrap_or((caller, node.block));
         let body = &bodies[&def_id];
@@ -242,13 +242,17 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 bodies,
                 flows,
             );
-            for (mut child_path, child_items, child_relevant, child_parked) in child_results {
+            for (mut child_path, child_items, child_relevant, mut frames) in child_results {
                 let mut relevant = child_relevant;
-                let mut parked = child_parked;
                 let mut items = child_items;
-                // Callee locals reuse the caller's indices, so park the caller's relevance.
+                // Entering an inlined callee (its first block in backward order,
+                // i.e. the return block): the caller's destination local becomes
+                // the callee's `_0`, and the rest of the caller's relevance is
+                // parked on a per-level frame stack. A single `Option` cannot
+                // express nested callees (get_ext → NonZero::get), whose bodies
+                // are split around the inner callee.
                 if def_id != caller
-                    && parked.is_none()
+                    && frames.last().map(|f| f.0) != Some(def_id)
                     && let Some(binding) = tree.inline_binding(node.block - local_index)
                 {
                     let dest = Local::from_usize(binding.dest_local);
@@ -258,7 +262,11 @@ impl<'tcx> BackwardSlicer<'tcx> {
                         relevant.places.retain(|p| p.local() != Some(dest));
                         callee_relevant.insert_local(Local::from_usize(0));
                     }
-                    parked = Some(std::mem::replace(&mut relevant, callee_relevant));
+                    frames.push((
+                        def_id,
+                        binding.arg_locals.clone(),
+                        std::mem::replace(&mut relevant, callee_relevant),
+                    ));
                 }
                 // Skip the `Call` terminator when this block's call was inlined:
                 // the callee's statements are already sliced via the path, so
@@ -317,8 +325,11 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 // locals back to the caller's argument locals so the caller's
                 // argument-producing statements stay relevant.
                 if let Some(binding) = tree.inline_binding(node.block) {
-                    let mut caller_relevant = parked.take().unwrap_or_default();
-                    for (i, arg_local) in binding.arg_locals.iter().enumerate() {
+                    let (_, frame_arg_locals, parked) = frames
+                        .pop()
+                        .unwrap_or((def_id, binding.arg_locals.clone(), RelevantPlaces::new()));
+                    let mut caller_relevant = parked;
+                    for (i, arg_local) in frame_arg_locals.iter().enumerate() {
                         if relevant.locals.contains(&Local::from_usize(i + 1)) {
                             caller_relevant.insert_local(Local::from_usize(*arg_local));
                         }
@@ -326,7 +337,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                     relevant = caller_relevant;
                 }
                 child_path.insert(0, node.block);
-                results.push((child_path, items, relevant, parked));
+                results.push((child_path, items, relevant, frames));
             }
         }
 
@@ -341,7 +352,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 vec![node.block],
                 checkpoint_items,
                 checkpoint_relevant,
-                None,
+                Vec::new(),
             ));
         }
 

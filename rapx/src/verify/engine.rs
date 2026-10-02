@@ -343,40 +343,51 @@ impl<'tcx> VerifyEngine<'tcx> {
                 if let Some(prev) = prev_def_id {
                     if prev != cur {
                         if cur == caller {
-                            if let Some((_, dest, _)) = active.pop() {
+                            // Returning to the root caller: pop *every* still-active
+                            // frame. Nested inlined callees whose return blocks
+                            // produced no items (a plain `return` has no relevant
+                            // use/def) are skipped in the item stream, so the
+                            // transition can jump several levels at once.
+                            while let Some((_, dest, _)) = active.pop() {
                                 out.push(RelevantItem::CalleeExit { dest });
                             }
                         } else {
-                            // Bind the callee's entry (local block 0) to the
-                            // correct inlining of `cur` on this path. A callee
-                            // called from several call sites has one global
-                            // entry block per site; they are consumed in path
-                            // order. A single call site (possibly re-entered
-                            // via a loop) always reuses its one entry block.
-                            let mut cur_entry: Option<usize> = None;
-                            if let Some(globals) = local_to_global.get(&(cur, 0)) {
-                                let idx = if globals.len() == 1 {
-                                    0
-                                } else {
-                                    let cursor = entry_cursor.entry(cur).or_insert(0);
-                                    let idx = *cursor;
-                                    *cursor = (*cursor + 1).min(globals.len() - 1);
-                                    idx
-                                };
-                                cur_entry = globals.get(idx).copied();
-                            }
-                            // Distinguish an *ascent* (`prev` returns to its
-                            // parent `cur`, e.g. `post_inc_start` → the split
-                            // `next_unchecked`) from a *descent* (`cur` is a
-                            // fresh callee). In an ascent we pop `prev` and do
-                            // NOT re-enter `cur` (it is already active).
-                            let is_ascent = active.last().is_some_and(|(_, _, entry)| {
-                                tree.inline_parent(*entry) == Some(cur)
-                            });
+                            // Distinguish an *ascent* (`prev` returns to an
+                            // already-active `cur`, e.g. `post_inc_start` → the
+                            // split `next_unchecked`) from a *descent* (`cur` is
+                            // a fresh callee). In an ascent we pop frames down to
+                            // `cur` and do NOT re-enter it (it is already active).
+                            // Checking membership (rather than only the top's
+                            // parent) handles multi-level skips where several
+                            // callee return blocks produced no items.
+                            let is_ascent = active.iter().any(|(d, _, _)| *d == cur);
                             if is_ascent {
-                                let (_, dest, _) = active.pop().unwrap();
-                                out.push(RelevantItem::CalleeExit { dest });
+                                while let Some(&(top_def, _, _)) = active.last() {
+                                    if top_def == cur {
+                                        break;
+                                    }
+                                    let (_, dest, _) = active.pop().unwrap();
+                                    out.push(RelevantItem::CalleeExit { dest });
+                                }
                             } else {
+                                // Bind the callee's entry (local block 0) to the
+                                // correct inlining of `cur` on this path. A callee
+                                // called from several call sites has one global
+                                // entry block per site; they are consumed in path
+                                // order. A single call site (possibly re-entered
+                                // via a loop) always reuses its one entry block.
+                                let mut cur_entry: Option<usize> = None;
+                                if let Some(globals) = local_to_global.get(&(cur, 0)) {
+                                    let idx = if globals.len() == 1 {
+                                        0
+                                    } else {
+                                        let cursor = entry_cursor.entry(cur).or_insert(0);
+                                        let idx = *cursor;
+                                        *cursor = (*cursor + 1).min(globals.len() - 1);
+                                        idx
+                                    };
+                                    cur_entry = globals.get(idx).copied();
+                                }
                                 // A descent: pop frames until `cur`'s parent is
                                 // on top (or the stack empties — `cur` is a
                                 // direct child of the caller), then enter `cur`.
