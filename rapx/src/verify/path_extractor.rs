@@ -17,7 +17,7 @@
 //! [`crate::limit::PATH_LIMIT`]). Enumeration stops producing new paths once
 //! the limit is reached and the tree is marked truncated.
 
-use crate::compat::{FxHashMap, FxHashSet};
+use crate::compat::FxHashMap;
 use rustc_hir::def_id::DefId;
 use rustc_middle::{mir::BasicBlock, ty::TyCtxt};
 
@@ -221,20 +221,6 @@ impl Path {
         })
     }
 
-    /// The set of blocks this path passes through, including the checkpoint
-    /// block.  Used to restrict backward propagation to the current path.
-    pub(crate) fn block_set(&self) -> FxHashSet<BasicBlock> {
-        let mut blocks: FxHashSet<BasicBlock> = self
-            .steps
-            .iter()
-            .filter_map(|s| match s {
-                PathStep::Block(b) => Some(*b),
-                _ => None,
-            })
-            .collect();
-        blocks.insert(self.target.block);
-        blocks
-    }
 }
 
 /// One step in a finite verification path.

@@ -48,6 +48,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .map(|a| a.node.place().map(|p| p.local))
             .collect();
 
+        // `<[u8]>::eq` comparison: the result is just a bool, but its *literal*
+        // operand's bytes are the tracked operand's content on the true path.
+        // Write them into the tracked allocation so a later `ValidCStr` can see
+        // the NUL terminator.
+        if crate::helpers::mir_utils::is_eq_call(self.tcx, func) {
+            self.propagate_const_bytes_to_tracked(args);
+        }
+
         // Slice range indexing: `<[T]>::index(range)` / `::index_mut(range)`
         // returns a sub-slice whose length is the range's extent.
         if self.try_slice_index(callee, &arg_values, args, destination) {

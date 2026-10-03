@@ -50,8 +50,6 @@ impl SymbolicVm {
     ) -> VmState<'ctx, 'tcx> {
         let mut state = VmState::new(ctx, tcx, &goal.path, goal.path.target.caller);
         state.execute_items(&goal.items);
-        let path_blocks = goal.path.block_set();
-        state.propagate_from_checkpoint(goal.path.target.block, &path_blocks);
         state
     }
 }
