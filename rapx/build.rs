@@ -23,6 +23,7 @@ fn main() {
     emit_check_cfg("rapx_alias_const_inherent_self");
     emit_check_cfg("rapx_alias_ty_structured_kind");
     emit_check_cfg("rapx_has_deeply_resolve_ignoring_regions");
+    emit_check_cfg("rapx_has_compiler_entrypoint");
 
     emit_cfg("rapx_ge_95", minor >= 95);
     emit_cfg("rapx_ge_99", minor >= 99);
@@ -131,6 +132,15 @@ fn main() {
         rustc_src_contains_path(
             "compiler/rustc_type_ir/src/ty_kind.rs",
             "Projection { def_id",
+        ),
+    );
+    // `rustc_driver::run_compiler` was renamed to `compiler_entrypoint` (with a
+    // `&mut (dyn Callbacks + Send)` callback) in nightly 1.101.
+    emit_cfg(
+        "rapx_has_compiler_entrypoint",
+        rustc_src_contains_path(
+            "compiler/rustc_driver_impl/src/lib.rs",
+            "pub fn compiler_entrypoint",
         ),
     );
 }
