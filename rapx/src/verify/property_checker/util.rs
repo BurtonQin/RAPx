@@ -146,6 +146,7 @@ impl PropertyChecker {
                         field_offset: base_val.field_offset,
                         discriminant: None,
                         bool_cond: None,
+                        binary_op_source: None,
                     });
                 }
                 ContractProjection::ForEach => {
@@ -164,6 +165,7 @@ impl PropertyChecker {
                                 field_offset: base_val.field_offset,
                                 discriminant: None,
                                 bool_cond: None,
+                                binary_op_source: None,
                             });
                         }
                     }
@@ -209,6 +211,7 @@ impl PropertyChecker {
                     field_offset: base_val.field_offset,
                     discriminant: None,
                     bool_cond: None,
+                    binary_op_source: None,
                 });
             }
         }

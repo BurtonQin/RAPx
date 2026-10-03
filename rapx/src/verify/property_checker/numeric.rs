@@ -282,19 +282,15 @@ impl PropertyChecker {
             return;
         }
 
-        // Walk op_sources (binary producers) for destinations
+        // Walk binary-op producers (recorded on the value) for destinations
         // whose term matches target.
         let op_sources: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = {
             let mut src: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = Vec::new();
-            for (pk, src_ops) in vm_state.current_frame.op_sources.iter() {
-                let (lhs, rhs) = (&src_ops.lhs, &src_ops.rhs);
-                if pk
-                    .local()
-                    .and_then(|l| vm_state.local_value(l))
-                    .map(|v| v.term == *target)
-                    .unwrap_or(false)
-                {
-                    src.push((lhs.clone(), rhs.clone()));
+            for val in vm_state.current_frame.local_values.values() {
+                if let Some(src_ops) = &val.binary_op_source {
+                    if val.term == *target {
+                        src.push((src_ops.lhs.clone(), src_ops.rhs.clone()));
+                    }
                 }
             }
             src
@@ -314,24 +310,23 @@ impl PropertyChecker {
                 continue;
             }
 
-            for (pk, src_ops) in vm_state.current_frame.op_sources.iter() {
+            for dest_val in vm_state.current_frame.local_values.values() {
+                let Some(src_ops) = &dest_val.binary_op_source else {
+                    continue;
+                };
                 let (lhs, rhs) = (&src_ops.lhs, &src_ops.rhs);
-                if let Some(dest_local) = pk.local() {
-                    if let Some(dest_val) = vm_state.local_value(dest_local) {
-                        let lhs_local = lhs.as_ref().and_then(|pk| pk.local());
-                        let rhs_local = rhs.as_ref().and_then(|pk| pk.local());
-                        if (lhs_local == Some(local) || rhs_local == Some(local))
-                            && !already_seen.contains(&dest_val.term)
-                        {
-                            already_seen.insert(dest_val.term.clone());
-                            self.inject_div_axioms_for_term(
-                                vm_state,
-                                solver,
-                                &dest_val.term,
-                                depth - 1,
-                            );
-                        }
-                    }
+                let lhs_local = lhs.as_ref().and_then(|pk| pk.local());
+                let rhs_local = rhs.as_ref().and_then(|pk| pk.local());
+                if (lhs_local == Some(local) || rhs_local == Some(local))
+                    && !already_seen.contains(&dest_val.term)
+                {
+                    already_seen.insert(dest_val.term.clone());
+                    self.inject_div_axioms_for_term(
+                        vm_state,
+                        solver,
+                        &dest_val.term,
+                        depth - 1,
+                    );
                 }
             }
         }
@@ -356,7 +351,10 @@ impl PropertyChecker {
                 lhs: div_lhs_pk,
                 rhs: div_rhs_pk,
                 op: _,
-            }) = vm_state.current_frame.op_sources.get(lhs_pk).cloned()
+            }) = lhs_pk
+                .local()
+                .and_then(|l| vm_state.local_value(l))
+                .and_then(|v| v.binary_op_source.clone())
             {
                 let Some(div_lhs_local) = div_lhs_pk.and_then(|pk| pk.local()) else {
                     continue;

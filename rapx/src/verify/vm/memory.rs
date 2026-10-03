@@ -44,6 +44,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 field_offset: false,
                 discriminant: None,
                 bool_cond: None,
+                binary_op_source: None,
             });
         }
 
@@ -187,6 +188,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             field_offset: false,
             discriminant: None,
             bool_cond: None,
+            binary_op_source: None,
         })
     }
 

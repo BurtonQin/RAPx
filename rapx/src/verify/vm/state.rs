@@ -114,6 +114,11 @@ pub(crate) struct VmValue<'ctx, 'tcx> {
     /// `ite(cond, 1, 0) != 0`, which the SMT solver often fails to unfold.
     /// `None` for non-comparison values.
     pub bool_cond: Option<Bool<'ctx>>,
+    /// When this value is a `BinaryOp` result: the operands and operator that
+    /// produced it, for guard inference (tracing a switch/assert guard back to
+    /// the pointer it null-checks/alignment-checks) and division-axiom
+    /// injection.  `None` otherwise.
+    pub binary_op_source: Option<BinaryOpSource>,
 }
 
 impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
@@ -126,6 +131,7 @@ impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
             field_offset: false,
             discriminant: None,
             bool_cond: None,
+            binary_op_source: None,
         }
     }
 
@@ -573,11 +579,6 @@ pub(crate) struct FrameState<'ctx, 'tcx> {
 
     /// The stack allocation backing each local's place (lvalue identity).
     pub(crate) local_alloc: FxHashMap<Local, AllocId>,
-
-    /// Operand sources for guard inference: destination → (lhs, rhs) place keys
-    /// with the operator kind of the binary operation that produced the
-    /// destination.
-    pub(crate) op_sources: FxHashMap<PlaceKey, BinaryOpSource>,
 }
 
 /// The full symbolic execution state at a program point.
@@ -640,7 +641,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 local_values: FxHashMap::default(),
                 field_values: FxHashMap::default(),
                 local_alloc: FxHashMap::default(),
-                op_sources: FxHashMap::default(),
             },
             caller_frames: Vec::default(),
             memory: Memory::default(),
@@ -670,7 +670,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             local_values: std::mem::take(&mut self.current_frame.local_values),
             field_values: std::mem::take(&mut self.current_frame.field_values),
             local_alloc: std::mem::take(&mut self.current_frame.local_alloc),
-            op_sources: std::mem::take(&mut self.current_frame.op_sources),
         }
     }
 
@@ -1113,6 +1112,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     field_offset,
                     discriminant: None,
                     bool_cond: None,
+                    binary_op_source: None,
                 }
             }
             #[cfg(rapx_ge_95)]
@@ -1174,6 +1174,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             field_offset: false,
                             discriminant: None,
                             bool_cond: None,
+                            binary_op_source: None,
                         });
                     }
                 }
@@ -1280,6 +1281,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         field_offset: false,
                                         discriminant: None,
                                         bool_cond: None,
+                                        binary_op_source: None,
                                     });
                                 } else {
                                     let mut chain = self.fresh_int("arr_elem");
@@ -1297,6 +1299,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         field_offset: false,
                                         discriminant: None,
                                         bool_cond: None,
+                                        binary_op_source: None,
                                     });
                                 }
                             }

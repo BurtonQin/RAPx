@@ -263,6 +263,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 field_offset: false,
                                 discriminant: None,
                                 bool_cond: None,
+                                binary_op_source: None,
                             },
                         );
                         // For Vec: materialize `buf.cap` ([0, 1]) and `len`
@@ -289,6 +290,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 field_offset: false,
                                 discriminant: None,
                                 bool_cond: None,
+                                binary_op_source: None,
                             },
                         );
                         continue;
@@ -309,6 +311,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 field_offset: false,
                                 discriminant: None,
                                 bool_cond: None,
+                                binary_op_source: None,
                             },
                         );
                         continue;
@@ -371,6 +374,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         field_offset: false,
                                         discriminant: None,
                                         bool_cond: None,
+                                        binary_op_source: None,
                                     },
                                 );
                             }
@@ -391,6 +395,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     field_offset: false,
                                     discriminant: None,
                                     bool_cond: None,
+                                    binary_op_source: None,
                                 },
                             );
                         }
@@ -416,6 +421,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     field_offset: false,
                                     discriminant: None,
                                     bool_cond: None,
+                                    binary_op_source: None,
                                 },
                             );
                             continue;
@@ -435,6 +441,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             field_offset: false,
                             discriminant: None,
                             bool_cond: None,
+                            binary_op_source: None,
                         },
                     );
                     continue;
@@ -532,6 +539,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 field_offset: false,
                                 discriminant: None,
                                 bool_cond: None,
+                                binary_op_source: None,
                             },
                         );
                         continue;
@@ -563,6 +571,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             field_offset: false,
                             discriminant: None,
                             bool_cond: None,
+                            binary_op_source: None,
                         },
                     );
 
@@ -686,6 +695,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                             field_offset: false,
                                             discriminant: None,
                                             bool_cond: None,
+                                            binary_op_source: None,
                                         },
                                     );
                                 }
@@ -714,6 +724,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             field_offset: false,
                             discriminant: None,
                             bool_cond: None,
+                            binary_op_source: None,
                         },
                     );
                     continue;
@@ -742,6 +753,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             field_offset: false,
                             discriminant: None,
                             bool_cond: None,
+                            binary_op_source: None,
                         },
                     );
                     continue;
@@ -819,6 +831,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             field_offset: false,
                             discriminant: None,
                             bool_cond: None,
+                            binary_op_source: None,
                         },
                     );
                     continue;
@@ -835,6 +848,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         field_offset: false,
                         discriminant: None,
                         bool_cond: None,
+                        binary_op_source: None,
                     },
                 );
                 continue;
@@ -860,6 +874,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     field_offset: false,
                     discriminant: None,
                     bool_cond: None,
+                    binary_op_source: None,
                 },
             );
         }
@@ -908,6 +923,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         field_offset: false,
                                         discriminant: None,
                                         bool_cond: None,
+                                        binary_op_source: None,
                                     },
                                 );
                             }
@@ -980,6 +996,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 field_offset: false,
                 discriminant: None,
                 bool_cond: None,
+                binary_op_source: None,
             },
         );
     }
@@ -1060,6 +1077,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     field_offset: false,
                     discriminant: None,
                     bool_cond: None,
+                    binary_op_source: None,
                 },
             );
         } else {
@@ -1122,6 +1140,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     field_offset: false,
                     discriminant: None,
                     bool_cond: None,
+                    binary_op_source: None,
                 },
             );
         }
@@ -1183,6 +1202,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         field_offset: false,
                         discriminant: None,
                         bool_cond: None,
+                        binary_op_source: None,
                     },
                 );
             }
@@ -1241,6 +1261,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         field_offset: false,
                         discriminant: None,
                         bool_cond: None,
+                        binary_op_source: None,
                     },
                 );
                 self.decompose_pointee_fields(
@@ -1278,6 +1299,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         field_offset: false,
                         discriminant: None,
                         bool_cond: None,
+                        binary_op_source: None,
                     },
                 );
             } else if let TyKind::Array(elem_ty, const_len) = field_ty.kind() {
@@ -1315,6 +1337,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         field_offset: false,
                         discriminant: None,
                         bool_cond: None,
+                        binary_op_source: None,
                     },
                 );
             }
@@ -1827,6 +1850,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         field_offset: false,
                         discriminant: None,
                         bool_cond: None,
+                        binary_op_source: None,
                     };
                     self.propagate_byte_values_to_ref(place, &val);
                     self.propagate_field_values_to_ref(place, dest_place.local);
@@ -1853,6 +1877,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         field_offset: false,
                         discriminant: None,
                         bool_cond: None,
+                        binary_op_source: None,
                     }
                 }
             }
@@ -1880,6 +1905,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         field_offset: false,
                         discriminant: None,
                         bool_cond: None,
+                        binary_op_source: None,
                     }
                 } else {
                     let term = self.fresh_int("rawptr_addr");
@@ -1894,6 +1920,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         field_offset: false,
                         discriminant: None,
                         bool_cond: None,
+                        binary_op_source: None,
                     }
                 }
             }
@@ -1904,17 +1931,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let term = self.eval_binary_op(*op, &lhs.term, &rhs.term);
                 let provenance = self.provenance_for_binary_op(*op, &lhs, &rhs);
                 let invariants = self.invariants_for_binary_op(*op, &lhs, &rhs, &provenance);
-                let dest_pk = PlaceKey::from_mir_place(dest_place);
                 let lhs_pk = crate::helpers::mir_utils::operand_place(lhs_op);
                 let rhs_pk = crate::helpers::mir_utils::operand_place(rhs_op);
-                self.current_frame.op_sources.insert(
-                    dest_pk,
-                    BinaryOpSource {
-                        lhs: lhs_pk,
-                        rhs: rhs_pk,
-                        op: *op,
-                    },
-                );
                 // Carry the direct boolean condition alongside the ite-encoded
                 // result so `switchInt`/`Assert` can record a precise path
                 // condition (e.g. `offset <= len - 16`) instead of
@@ -1988,6 +2006,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             field_offset: false,
                             discriminant: None,
                             bool_cond: None,
+                            binary_op_source: None,
                         };
                         self.set_field_value(dest_place.local, vec![0], result_val);
                         let overflow_term = self.fresh_int("overflow_flag");
@@ -2003,6 +2022,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     field_offset: false,
                     discriminant: None,
                     bool_cond: cmp_cond,
+                    binary_op_source: Some(BinaryOpSource {
+                        lhs: lhs_pk,
+                        rhs: rhs_pk,
+                        op: *op,
+                    }),
                 }
             }
             Rvalue::UnaryOp(op, operand) => {
@@ -2027,6 +2051,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     field_offset: false,
                     discriminant: None,
                     bool_cond: None,
+                    binary_op_source: None,
                 }
             }
             Rvalue::Cast(_kind, operand, cast_ty) => {
@@ -2098,6 +2123,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     field_offset: src_val.field_offset,
                     discriminant: None,
                     bool_cond: None,
+                    binary_op_source: None,
                 }
             }
             Rvalue::Aggregate(_kind, operands) => {
@@ -2139,6 +2165,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         field_offset: false,
                         discriminant: None,
                         bool_cond: None,
+                        binary_op_source: None,
                     };
                 }
                 let term = self.fresh_int("aggregate");
@@ -2282,6 +2309,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     field_offset: false,
                     discriminant: None,
                     bool_cond: None,
+                    binary_op_source: None,
                 }
             }
             Rvalue::Discriminant(place) => {
@@ -2334,6 +2362,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     field_offset: false,
                     discriminant: None,
                     bool_cond: None,
+                    binary_op_source: None,
                 }
             }
             Rvalue::CopyForDeref(place) => {
@@ -2382,6 +2411,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     field_offset: false,
                     discriminant: None,
                     bool_cond: None,
+                    binary_op_source: None,
                 }
             }
         }
@@ -3002,6 +3032,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.infer_guard_align(cond, expected);
     }
 
+    /// The binary-op source recorded on the value bound to `pk`'s local, if any.
+    fn op_source_of(&self, pk: &PlaceKey) -> Option<&BinaryOpSource> {
+        let local = pk.local()?;
+        self.current_frame
+            .local_values
+            .get(&local)?
+            .binary_op_source
+            .as_ref()
+    }
+
     /// Infer alignment constraints from guards of the form `(x % n) == 0`.
     pub(crate) fn infer_guard_align(&mut self, cond: &Operand<'tcx>, expected: bool) {
         if !expected {
@@ -3015,7 +3055,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
         // Check if cond is a Ne/Eq comparison of (x % n) or (x & (align-1)) against 0
         if let Some(BinaryOpSource { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
-            self.current_frame.op_sources.get(&cond_pk).cloned()
+            self.op_source_of(&cond_pk).cloned()
         {
             // The lhs is (x % n) / (x & (align-1)), rhs is constant 0
             let inner_pk = match (&lhs_pk, &rhs_pk) {
@@ -3027,7 +3067,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 lhs: div_lhs,
                 rhs: div_rhs,
                 op: inner_op,
-            }) = self.current_frame.op_sources.get(&inner_pk).cloned()
+            }) = self.op_source_of(&inner_pk).cloned()
             {
                 match inner_op {
                     // `x % n == 0`: div_rhs is the concrete divisor constant.
@@ -3082,7 +3122,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // non-nullness; an `Eq` guard (`assert (addr & mask) == 0`, the
         // alignment check) means the value *is* zero, not non-null.
         if let Some(BinaryOpSource { lhs: lhs_pk, rhs: rhs_pk, op }) =
-            self.current_frame.op_sources.get(&cond_pk).cloned()
+            self.op_source_of(&cond_pk).cloned()
         {
             if op != rustc_middle::mir::BinOp::Ne {
                 return;
@@ -3104,7 +3144,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         };
         let pk = PlaceKey::from_mir_place(place);
         if let Some(BinaryOpSource { lhs: lhs_pk, rhs: rhs_pk, op: _ }) =
-            self.current_frame.op_sources.get(&pk).cloned()
+            self.op_source_of(&pk).cloned()
         {
             self.mark_guard_pointer(&lhs_pk, &rhs_pk);
         }
@@ -3400,6 +3440,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             field_offset: false,
             discriminant: None,
             bool_cond: None,
+            binary_op_source: None,
         }
     }
 
