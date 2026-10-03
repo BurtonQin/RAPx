@@ -574,14 +574,6 @@ pub(crate) struct FrameState<'ctx, 'tcx> {
     /// The stack allocation backing each local's place (lvalue identity).
     pub(crate) local_alloc: FxHashMap<Local, AllocId>,
 
-    /// Ownership-transfer chain: `dest → source` for a whole-place move
-    /// (`_3 = move _4` transfers `_4`'s ownership to `_3`).  Lets `Owning` tell
-    /// the call's own rebuilt owner (`boxed = move dest`) from a *previous*
-    /// call's owner (also a shallow field, but tracing to a different
-    /// destination).  Frame-scoped like the rest of [`FrameState`], so it is
-    /// saved/restored on inline entry/exit.
-    pub(crate) owner_transfers: FxHashMap<Local, Local>,
-
     /// Operand sources for guard inference: destination → (lhs, rhs) place keys
     /// with the operator kind of the binary operation that produced the
     /// destination.
@@ -648,7 +640,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 local_values: FxHashMap::default(),
                 field_values: FxHashMap::default(),
                 local_alloc: FxHashMap::default(),
-                owner_transfers: FxHashMap::default(),
                 op_sources: FxHashMap::default(),
             },
             caller_frames: Vec::default(),
@@ -679,7 +670,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             local_values: std::mem::take(&mut self.current_frame.local_values),
             field_values: std::mem::take(&mut self.current_frame.field_values),
             local_alloc: std::mem::take(&mut self.current_frame.local_alloc),
-            owner_transfers: std::mem::take(&mut self.current_frame.owner_transfers),
             op_sources: std::mem::take(&mut self.current_frame.op_sources),
         }
     }
@@ -832,6 +822,30 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .find(|((l, _), v)| *l == local && v.provenance_alloc_id().is_some())
                     .map(|(_, v)| v)
             })
+    }
+
+    /// Invalidate `local`'s owner-field provenance (mark it moved-out after a
+    /// whole-place move), so a later `Owning` check does not treat it as a
+    /// second owner of the heap allocation it no longer owns.
+    pub(crate) fn invalidate_owner_field(&mut self, local: Local) {
+        let owner_path = if self
+            .field_value(local, &[0, 0])
+            .is_some_and(|v| v.provenance_alloc_id().is_some())
+        {
+            Some(vec![0, 0])
+        } else {
+            self.current_frame
+                .field_values
+                .iter()
+                .find(|((l, _), v)| *l == local && v.provenance_alloc_id().is_some())
+                .map(|((_, path), _)| path.clone())
+        };
+        if let Some(path) = owner_path {
+            if let Some(mut fv) = self.field_value(local, &path).cloned() {
+                fv.provenance = None;
+                self.set_field_value(local, path, fv);
+            }
+        }
     }
 
     /// Set the value of a specific field within an aggregate local.

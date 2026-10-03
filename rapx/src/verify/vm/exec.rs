@@ -1366,8 +1366,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let mut value = value;
             value.invariants.init = true;
             self.set_local(place.local, value);
-            // Record a whole-place move (`_3 = move _4`) so `Owning` can trace
-            // the move-alias chain back to the destination.
+            // On a whole-place move (`_3 = move _4`), ownership moves to `dest`:
+            // invalidate `source`'s owner-field provenance so a later `Owning`
+            // check does not treat the moved-out source as a second owner.
             let moved_from = match rvalue {
                 #[cfg(rapx_rvalue_use_with_retag)]
                 Rvalue::Use(operand, _) => match operand {
@@ -1382,7 +1383,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 _ => None,
             };
             if let Some(src) = moved_from {
-                self.current_frame.owner_transfers.insert(place.local, src);
+                self.invalidate_owner_field(src);
             }
             // Propagate field values for aggregate copies (e.g. `_4 = copy _1`)
             // so downstream field accesses (NonZero::get -> self.0) resolve to

@@ -99,11 +99,15 @@ impl PropertyChecker {
         // `p`'s term often points at the owner's address (e.g. `s.as_mut_ptr()`
         // yields a term `addr__1` for `s`). Trace it back to the owner local and
         // report a second owner directly, without needing its field provenance.
+        // A moved-out source still has the same term but its owner-field
+        // provenance has been invalidated, so it is not counted as an owner.
         if let Some(owner) = vm_state.find_local_by_address(&value.term) {
             if live.contains(&owner)
                 && Some(owner) != dest_local
                 && Some(owner) != raw_local
-                && !traces_to_dest(vm_state, owner, dest_local)
+                && vm_state
+                    .owner_ptr_field(owner)
+                    .is_some_and(|f| f.provenance_alloc_id() == Some(alloc_id))
             {
                 let oty = vm_state.body().local_decls[owner].ty;
                 if oty.needs_drop(vm_state.tcx, typing_env) {
@@ -122,12 +126,6 @@ impl PropertyChecker {
             if !ty.needs_drop(vm_state.tcx, typing_env) {
                 continue;
             }
-            // A move alias of the destination (`boxed = move dest`) is the owner
-            // just rebuilt by this call. A *previous* call's owner is also a
-            // shallow field but traces to a different destination.
-            if traces_to_dest(vm_state, *local, dest_local) {
-                continue;
-            }
             for ((l, _path), val) in &vm_state.current_frame.field_values {
                 if *l != *local {
                     continue;
@@ -142,25 +140,4 @@ impl PropertyChecker {
     }
 }
 
-/// Whether `local` is a move alias of `dest` (or of a local that is), following
-/// the whole-place move chain (`_3 = move _4`).
-fn traces_to_dest<'ctx, 'tcx>(
-    vm_state: &VmState<'ctx, 'tcx>,
-    mut local: rustc_middle::mir::Local,
-    dest: Option<rustc_middle::mir::Local>,
-) -> bool {
-    let mut seen = std::collections::HashSet::new();
-    loop {
-        if Some(local) == dest {
-            return true;
-        }
-        if !seen.insert(local) {
-            // Defensive: a cycle in the move chain is unexpected, but stop.
-            return false;
-        }
-        match vm_state.current_frame.owner_transfers.get(&local) {
-            Some(src) => local = *src,
-            None => return false,
-        }
-    }
-}
+
