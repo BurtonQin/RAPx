@@ -12,7 +12,6 @@ use crate::analysis::path::{
     graph::{PathEnumerator, PathGraph},
 };
 use crate::cli::VerifyMode;
-use crate::limit::PATH_LIMIT;
 use crate::helpers::fn_info::{
     FnKind, get_cons, get_mutated_fields, get_muts, get_type, returns_wrapped_self,
 };
@@ -459,7 +458,7 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
                 let _ = all_paths.walk_prefixes(
                     return_block.as_usize(),
                     &mut |prefix: &[usize]| -> bool {
-                        if tree.len() >= PATH_LIMIT {
+                        if tree.len() >= crate::limit::path_limit() {
                             return false;
                         }
                         tree.insert(prefix);
@@ -494,7 +493,7 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
                 let _ = all_paths.walk_prefixes(
                     exit_block.as_usize(),
                     &mut |prefix: &[usize]| -> bool {
-                        if tree.len() >= PATH_LIMIT {
+                        if tree.len() >= crate::limit::path_limit() {
                             return false;
                         }
                         tree.insert(prefix);

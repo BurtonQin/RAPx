@@ -66,6 +66,11 @@ pub struct VerifyArgs {
     /// interpreted relative to that crate. Applies to all verification modes.
     #[arg(long)]
     pub module: Option<String>,
+    /// Cap on the number of paths collected per checkpoint (defaults to the
+    /// built-in `PATH_LIMIT`). Lower it to speed up verification at the cost of
+    /// path coverage (paths past the cap are treated as proved).
+    #[arg(long)]
+    pub path_limit: Option<usize>,
     /// Print all contract resolutions for every verification target: each
     /// unsafe callee with its resolved contracts, and the caller's own
     /// contracts (expanded form).  Useful for debugging missing or unexpected

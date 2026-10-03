@@ -286,8 +286,12 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
             crate_name,
             module,
             debug_contracts,
+            path_limit,
             ..
         }) => {
+            if let Some(n) = path_limit {
+                crate::limit::set_path_limit(*n);
+            }
             if *prepare_targets {
                 PrepareTargets::new(
                     tcx,

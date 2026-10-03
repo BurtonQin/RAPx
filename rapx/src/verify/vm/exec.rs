@@ -62,7 +62,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 RelevantItem::ContractFact { property } => {
                     self.assert_contract_fact(property);
                 }
-                RelevantItem::Forget => {}
+                RelevantItem::UnknownCall => {}
             }
         }
     }

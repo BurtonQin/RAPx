@@ -59,8 +59,15 @@ fn run_with_args(dir: &str, args: &[&str]) -> String {
     let _lock = LockGuard::new(project_path.join(".rapx-test.lock"));
 
     let mut command = cargo_rapx_command();
+    command.args(args);
+    // CI can lower the path cap via `VERIFY_PATH_LIMIT` to speed up the
+    // full regression suite (paths past the cap are treated as proved).
+    if args.first() == Some(&"verify") {
+        if let Ok(limit) = std::env::var("VERIFY_PATH_LIMIT") {
+            command.arg("--path-limit").arg(&limit);
+        }
+    }
     let output = command
-        .args(args)
         .current_dir(&project_path)
         .output()
         .expect("Failed to execute cargo rapx");

@@ -17,7 +17,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::limit::{
     LOCAL_INLINE_BLOCK_LIMIT, SCC_MAX_DEPTH, SCC_MAX_PATH_LEN, SCC_MAX_SEEN_PATHS,
-    SCC_PATH_CACHE_LIMIT, WHOLE_CFG_PATH_DEPTH_LIMIT, WHOLE_CFG_PATH_LIMIT,
+    SCC_PATH_CACHE_LIMIT, WHOLE_CFG_PATH_DEPTH_LIMIT,
 };
 
 /// Check whether the current entry→entry sub-path introduces a new block
@@ -1736,6 +1736,9 @@ impl<'g, 'tcx> PathEnumerator<'g, 'tcx> {
     /// Enumerate whole-CFG paths allowing each SCC postfix segment to repeat
     /// up to `postfix_repeat` additional times. `postfix_repeat = 0` gives
     /// the same result as `enumerate_paths`.
+    ///
+    /// Enumeration stops once [`crate::limit::path_limit`] paths are
+    /// collected and the tree is marked truncated.
     pub fn enumerate_paths_repeat(&mut self, postfix_repeat: usize) -> PathTree {
         let mut tree = PathTree::new();
 
@@ -1938,7 +1941,9 @@ impl<'g, 'tcx> PathEnumerator<'g, 'tcx> {
         if current >= self.graph.cfg.blocks.len() {
             return;
         }
-        if depth > WHOLE_CFG_PATH_DEPTH_LIMIT || tree.len() >= WHOLE_CFG_PATH_LIMIT {
+        if depth > WHOLE_CFG_PATH_DEPTH_LIMIT
+            || tree.len() >= crate::limit::path_limit()
+        {
             tree.mark_truncated();
             return;
         }
@@ -1955,7 +1960,7 @@ impl<'g, 'tcx> PathEnumerator<'g, 'tcx> {
             }
 
             for seg in segments {
-                if tree.len() >= WHOLE_CFG_PATH_LIMIT {
+                if tree.len() >= crate::limit::path_limit() {
                     tree.mark_truncated();
                     break;
                 }

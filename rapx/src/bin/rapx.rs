@@ -20,7 +20,7 @@ fn run_complier(callback: &mut RapCallback) {
     let handler = EarlyDiagCtxt::new(ErrorOutputType::default());
     rustc_driver::init_rustc_env_logger(&handler);
     rustc_driver::install_ice_hook("bug_report_url", |_| ());
-    rustc_driver::run_compiler(&args, callback);
+    rustc_driver::compiler_entrypoint(&args, callback);
     rap_trace!("The arg for compilation is {:?}", args);
 }
 

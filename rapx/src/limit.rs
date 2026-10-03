@@ -15,13 +15,29 @@
 // Path enumeration
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Cap on the number of extracted verification paths per search
-/// ([`crate::verify::path_extractor::PathExtractor`]). Searches stop producing
-/// new paths once this many have been collected.
-pub(crate) const PATH_LIMIT: usize = 1024;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Maximum number of whole-CFG paths collected before stopping enumeration.
-pub(crate) const WHOLE_CFG_PATH_LIMIT: usize = 4000;
+/// Maximum number of paths collected per search — both whole-CFG enumeration
+/// and per-checkpoint prefix collection. Overridable via the `--path-limit`
+/// CLI flag.
+pub(crate) const PATH_LIMIT: usize = 4000;
+
+/// Runtime override for [`PATH_LIMIT`], set from `--path-limit`. `0` means
+/// "not overridden" (the default above applies).
+static PATH_LIMIT_OVERRIDE: AtomicUsize = AtomicUsize::new(0);
+
+/// Set the `--path-limit` override; `0` restores [`PATH_LIMIT`].
+pub(crate) fn set_path_limit(n: usize) {
+    PATH_LIMIT_OVERRIDE.store(n, Ordering::Relaxed);
+}
+
+/// The effective path cap (override, or [`PATH_LIMIT`]).
+pub(crate) fn path_limit() -> usize {
+    match PATH_LIMIT_OVERRIDE.load(Ordering::Relaxed) {
+        0 => PATH_LIMIT,
+        n => n,
+    }
+}
 
 /// Maximum DFS depth for whole-CFG path enumeration.
 pub(crate) const WHOLE_CFG_PATH_DEPTH_LIMIT: usize = 256;

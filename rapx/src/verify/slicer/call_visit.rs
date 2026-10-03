@@ -48,7 +48,7 @@ pub(crate) fn visit<'tcx>(
 
     if defs.intersects(relevant) {
         if summary.unsupported {
-            items.push(RelevantItem::Forget);
+            items.push(RelevantItem::UnknownCall);
         }
         items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
         relevant.remove_all(&defs);
@@ -69,7 +69,7 @@ pub(crate) fn visit<'tcx>(
     );
     if dest_is_ptr && summary.must_write_args.is_empty() {
         if summary.unsupported {
-            items.push(RelevantItem::Forget);
+            items.push(RelevantItem::UnknownCall);
         }
         items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
         relevant.remove_all(&defs);
@@ -87,7 +87,7 @@ pub(crate) fn visit<'tcx>(
         || (summary.unsupported && arg_uses.intersects(relevant))
     {
         if summary.unsupported {
-            items.push(RelevantItem::Forget);
+            items.push(RelevantItem::UnknownCall);
         }
         items.push(RelevantItem::Terminator { def_id, block, switch_succ: None });
         relevant.extend(call_args_uses_at(args, &summary.must_write_args));

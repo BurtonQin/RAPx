@@ -6,6 +6,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  VERIFY_PATH_LIMIT: "128"
 
 jobs:
   latest:
