@@ -1331,25 +1331,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         checkpoint_block: BasicBlock,
         path_blocks: &FxHashSet<BasicBlock>,
     ) {
-        if path_blocks.is_empty() {
-            self.propagate_pass(checkpoint_block, None, false);
-            return;
-        }
-
-        self.propagate_pass(checkpoint_block, Some(path_blocks), false);
-        if !self.path_facts.reenter {
-            self.propagate_pass(checkpoint_block, Some(path_blocks), true);
-        }
-    }
-
-    fn propagate_pass(
-        &mut self,
-        checkpoint_block: BasicBlock,
-        path_blocks: Option<&FxHashSet<BasicBlock>>,
-        use_only: bool,
-    ) {
-        // Walk backwards through all reachable predecessors to fill in
-        // provenance chains the slicer may have omitted (e.g. `_tmp = self.ptr`).
+        // Walk backwards through reachable predecessors to fill in call effects
+        // the backward slicer may have pruned: constant-byte materialization
+        // (e.g. `as_ptr()` on `b"ok\0"`), `as_ptr` provenance fallback, and byte
+        // propagation across comparison calls (`<[u8]>::eq`).
+        let limit_blocks = !path_blocks.is_empty();
         let mut visited = FxHashSet::default();
         let mut worklist: Vec<BasicBlock> = vec![checkpoint_block];
         let mut max_depth = 32usize;
@@ -1361,30 +1347,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             if !visited.insert(block) {
                 continue;
             }
-            if let Some(blocks) = path_blocks {
-                if !blocks.contains(&block) {
-                    continue;
-                }
+            if limit_blocks && !path_blocks.contains(&block) {
+                continue;
             }
             for pred in self.body().basic_blocks.predecessors()[block].to_vec() {
-                if path_blocks.is_none_or(|b| b.contains(&pred)) {
+                if !limit_blocks || path_blocks.contains(&pred) {
                     worklist.push(pred);
                 }
-            }
-            for stmt in &self.body().basic_blocks[block].statements {
-                if let StatementKind::Assign(assign) = &stmt.kind {
-                    let (dest, rvalue) = &**assign;
-                    if dest.projection.is_empty() {
-                        if use_only && !Self::is_propagate_use_kind(rvalue) {
-                            continue;
-                        }
-                        self.propagate_single_assign(dest.local, rvalue);
-                    }
-                }
-            }
-            // In use_only pass, skip terminator handling
-            if use_only {
-                continue;
             }
             // Also try to materialize constant bytes from call terminators
             // (e.g. as_ptr() on a constant byte array). The backward slicer
@@ -1442,248 +1411,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if self.current_frame.values.contains_key(&dest) {
                     if crate::helpers::mir_utils::is_eq_call(self.tcx, func) {
                         self.propagate_const_bytes_to_tracked(args);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Check if an rvalue kind should be re-propagated in the use-only pass
-    /// (Use/Cast/CopyForDeref — forward-propagate existing provenance).
-    fn is_propagate_use_kind(rvalue: &Rvalue<'tcx>) -> bool {
-        matches!(
-            rvalue,
-            Rvalue::Use(..) | Rvalue::Cast(..) | Rvalue::CopyForDeref(..)
-        )
-    }
-
-    /// Propagate a single MIR assignment to fill in provenance for previously
-    /// uninitialised locals.  Pointer-carrying assignments (casts, reborrows,
-    /// projected/pointer copies) are kept by the slicer, so only a destination
-    /// the slicer still pruned (e.g. the return slot `_0`) is filled here.
-    fn propagate_single_assign(&mut self, dest_local: Local, rvalue: &Rvalue<'tcx>) {
-        // Skip when the destination already holds a value (from `init_parameters`
-        // pre-population or forward execution); only a still-missing destination
-        // is filled from the source.
-        if self.current_frame.values.contains_key(&dest_local) {
-            return;
-        }
-
-        let src_local = match rvalue {
-            #[cfg(rapx_rvalue_use_with_retag)]
-            Rvalue::Use(operand, _) => crate::helpers::mir_utils::extract_local(operand),
-            #[cfg(not(rapx_rvalue_use_with_retag))]
-            Rvalue::Use(operand) => crate::helpers::mir_utils::extract_local(operand),
-            Rvalue::Cast(_, operand, _) => crate::helpers::mir_utils::extract_local(operand),
-            Rvalue::CopyForDeref(place) if place.projection.is_empty() => Some(place.local),
-            _ => None,
-        };
-
-        if let Some(src) = src_local {
-            if let Some(src_val) = self.current_frame.values.get(&src).cloned() {
-                let dest_ty = self.body().local_decls[dest_local].ty;
-                let is_cast = matches!(rvalue, Rvalue::Cast(..));
-                let is_ptr_arith = matches!(
-                    rvalue,
-                    Rvalue::BinaryOp(
-                        BinOp::Add
-                            | BinOp::AddWithOverflow
-                            | BinOp::AddUnchecked
-                            | BinOp::Sub
-                            | BinOp::SubWithOverflow
-                            | BinOp::SubUnchecked
-                            | BinOp::Offset,
-                        _
-                    )
-                );
-                self.set_local(
-                    dest_local,
-                    VmValue {
-                        term: src_val.term,
-                        ty: dest_ty,
-                        provenance: src_val.provenance,
-                        invariants: ValueInvariants {
-                            in_bounds: src_val.invariants.in_bounds,
-                            align_n: if is_cast || is_ptr_arith {
-                                src_val.invariants.align_n
-                            } else {
-                                None
-                            },
-                            ..src_val.invariants
-                        },
-                        field_offset: src_val.field_offset,
-                        discriminant: None,
-                        bool_cond: None,
-                    },
-                );
-            }
-            return;
-        }
-
-        // Handle projected-places: Use/CopyForDeref of a place with projections
-        // (e.g. `_2 = (*_1).0` or `_2 = _1.ptr`).  Trace through field and deref
-        // projections to find the ultimate source local and its provenance.
-        let src_place = match rvalue {
-            #[cfg(rapx_rvalue_use_with_retag)]
-            Rvalue::Use(Operand::Copy(p) | Operand::Move(p), _) => Some(p),
-            #[cfg(not(rapx_rvalue_use_with_retag))]
-            Rvalue::Use(Operand::Copy(p) | Operand::Move(p)) => Some(p),
-            Rvalue::CopyForDeref(p) => Some(p),
-            _ => None,
-        };
-
-        if let Some(place) = src_place {
-            if !place.projection.is_empty() {
-                if let Some(val) = self.value_of_place(place) {
-                    let dest_ty = self.body().local_decls[dest_local].ty;
-                    self.set_local(
-                        dest_local,
-                        VmValue {
-                            term: val.term,
-                            ty: dest_ty,
-                            provenance: val.provenance,
-                            invariants: val.invariants,
-                            field_offset: false,
-                            discriminant: None,
-                            bool_cond: None,
-                        },
-                    );
-                }
-            }
-            return;
-        }
-
-        // Ref: &place → propagate address + provenance
-        if let Rvalue::Ref(_, _, place) = rvalue {
-            if let Some(addr) = self.address_of_place(place) {
-                let dest_ty = self.body().local_decls[dest_local].ty;
-                let alloc_align = addr
-                    .provenance
-                    .as_ref()
-                    .map(|p| self.alloc(p.alloc_id).align.clone())
-                    .filter(|a| a.simplify().as_u64() != Some(1));
-                let has_deref = place
-                    .projection
-                    .iter()
-                    .any(|p| matches!(p.kind(), rustc_middle::mir::ProjectionElem::Deref));
-                let src_ty = self.body().local_decls[place.local].ty;
-                let is_from_raw_parts_like =
-                    matches!(src_ty.kind(), rustc_middle::ty::TyKind::RawPtr(_, _));
-                let is_slice_ref =
-                    if let rustc_middle::ty::TyKind::Ref(_, inner, _) = dest_ty.kind() {
-                        matches!(inner.kind(), rustc_middle::ty::TyKind::Slice(_))
-                    } else {
-                        false
-                    };
-                let src_in_bounds = if is_slice_ref && is_from_raw_parts_like && has_deref {
-                    addr.is_pointer()
-                } else {
-                    self.current_frame.values
-                        .get(&place.local)
-                        .is_some_and(|v| v.invariants.in_bounds)
-                };
-                self.set_local(
-                    dest_local,
-                    VmValue {
-                        term: addr.term,
-                        ty: dest_ty,
-                        provenance: addr.provenance,
-                        invariants: ValueInvariants {
-                            non_null: true,
-                            init: true,
-                            in_bounds: src_in_bounds,
-                            align_n: alloc_align,
-                        },
-                        field_offset: false,
-                        discriminant: None,
-                        bool_cond: None,
-                    },
-                );
-            }
-            return;
-        }
-
-        // RawPtr: &raw place → propagate address + provenance
-        if let Rvalue::RawPtr(_, place) = rvalue {
-            if let Some(addr) = self.address_of_place(place) {
-                let dest_ty = self.body().local_decls[dest_local].ty;
-                let alloc_align = addr
-                    .provenance
-                    .as_ref()
-                    .map(|p| self.alloc(p.alloc_id).align.clone())
-                    .filter(|a| a.simplify().as_u64() != Some(1));
-                let src_in_bounds = self
-                    .current_frame.values
-                    .get(&place.local)
-                    .is_some_and(|v| v.invariants.in_bounds);
-                self.set_local(
-                    dest_local,
-                    VmValue {
-                        term: addr.term,
-                        ty: dest_ty,
-                        provenance: addr.provenance,
-                        invariants: ValueInvariants {
-                            non_null: true,
-                            in_bounds: src_in_bounds,
-                            align_n: alloc_align,
-                            ..Default::default()
-                        },
-                        field_offset: false,
-                        discriminant: None,
-                        bool_cond: None,
-                    },
-                );
-            }
-            return;
-        }
-
-        // BinaryOp Add/Sub/Offset: lhs provenance → dest
-        if let Rvalue::BinaryOp(op, pair) = rvalue {
-            let (lhs_op, rhs_op) = &**pair;
-            if matches!(
-                op,
-                BinOp::Add
-                    | BinOp::AddWithOverflow
-                    | BinOp::AddUnchecked
-                    | BinOp::Sub
-                    | BinOp::SubWithOverflow
-                    | BinOp::SubUnchecked
-                    | BinOp::Offset
-            ) {
-                let lhs = crate::helpers::mir_utils::extract_local(lhs_op);
-                let rhs = crate::helpers::mir_utils::extract_local(rhs_op);
-                if let Some(src) = lhs {
-                    if let Some(src_val) = self.current_frame.values.get(&src).cloned() {
-                        let rhs_val = rhs
-                            .and_then(|r| self.current_frame.values.get(&r))
-                            .map(|v| VmValue::new(v.term.clone(), v.ty))
-                            .unwrap_or(VmValue {
-                                term: Int::from_u64(self.ctx, 0),
-                                ty: self.body().local_decls[dest_local].ty,
-                                provenance: None,
-                                invariants: ValueInvariants::default(),
-                                field_offset: false,
-                                discriminant: None,
-                                bool_cond: None,
-                            });
-                        let prov = self.provenance_for_binary_op(*op, &src_val, &rhs_val);
-                        let dest_ty = self.body().local_decls[dest_local].ty;
-                        self.set_local(
-                            dest_local,
-                            VmValue {
-                                term: src_val.term,
-                                ty: dest_ty,
-                                provenance: prov,
-                                invariants: ValueInvariants {
-                                    in_bounds: false,
-                                    align_n: src_val.invariants.align_n,
-                                    ..src_val.invariants
-                                },
-                                field_offset: false,
-                                discriminant: None,
-                                bool_cond: None,
-                            },
-                        );
                     }
                 }
             }
