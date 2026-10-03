@@ -47,7 +47,7 @@ impl<'tcx> AliasGraph<'tcx> {
             return;
         }
         let lv_val = self.projection(*place);
-        self.clear_move_sources(lv_val);
+        self.clear_owner_transfers(lv_val);
 
         match rvalue {
             Rvalue::Use(operand, ..) => match operand {
@@ -60,7 +60,7 @@ impl<'tcx> AliasGraph<'tcx> {
                 }
                 Operand::Move(rv_place) => {
                     if let Some((rv_val, rv_pts)) = self.resolve_operand(rv_place) {
-                        self.move_sources.insert(lv_val, rv_val);
+                        self.owner_transfers.insert(lv_val, rv_val);
                         obs.on_value_use(self, rv_val, span, false);
                         if obs.track_all_moves()
                             || self.pts_graph.slot_kind(rv_pts) == ValueKind::RawPtr
@@ -228,7 +228,7 @@ impl<'tcx> AliasGraph<'tcx> {
         if merge_slots.is_empty() {
             return;
         }
-        self.clear_move_sources(merge_slots[0].0);
+        self.clear_owner_transfers(merge_slots[0].0);
 
         // UAF check for arguments (skip return-value slot at index 0)
         for &(val_idx, _) in merge_slots.iter().skip(1) {

@@ -23,11 +23,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             // provenance. For Box/Vec parameters, the value tracks the heap
             // allocation while slots tracks the stack location.
             let provenance = self
-                .current_frame.values
+                .current_frame.local_values
                 .get(&place.local)
                 .and_then(|v| v.provenance.clone())
                 .or_else(|| {
-                    self.current_frame.slots
+                    self.current_frame.local_alloc
                         .get(&place.local)
                         .copied()
                         .map(|alloc_id| Provenance {
@@ -49,7 +49,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
         let mut term = self.local_address(place.local);
         let mut provenance: Option<Provenance<'ctx>> = self
-            .current_frame.slots
+            .current_frame.local_alloc
             .get(&place.local)
             .copied()
             .map(|alloc_id| Provenance {
@@ -74,7 +74,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     _ => current_ty,
                 };
                 let elem_sz = Int::from_u64(self.ctx, self.size_of_ty(elem_ty).max(1));
-                if let Some(val) = self.current_frame.values.get(&local) {
+                if let Some(val) = self.current_frame.local_values.get(&local) {
                     if let Some(idx) = val.term.simplify().as_u64() {
                         let scaled = Int::mul(self.ctx, &[&Int::from_u64(self.ctx, idx), &elem_sz]);
                         term = Int::add(self.ctx, &[&term, &scaled]);
@@ -155,7 +155,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 ProjectionElem::Deref => {
                     field_path.clear();
-                    let pointed = self.current_frame.values.get(&place.local)?;
+                    let pointed = self.current_frame.local_values.get(&place.local)?;
                     term = pointed.term.clone();
                     provenance = pointed.provenance.clone();
                     // For fat pointers (aggregates without provenance),
@@ -192,7 +192,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Lazily create a stack allocation for a MIR local if one doesn't exist.
     pub(crate) fn ensure_local_allocation(&mut self, local: Local) {
-        if self.current_frame.slots.contains_key(&local) {
+        if self.current_frame.local_alloc.contains_key(&local) {
             return;
         }
         let ty = self.body().local_decls[local].ty;
@@ -238,26 +238,26 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             alloc.set_slice_len(len);
         }
         self.memory.allocations.push(alloc);
-        self.current_frame.slots.insert(local, id);
+        self.current_frame.local_alloc.insert(local, id);
     }
 
     pub(crate) fn field_offset_in_bytes(&self, ty: Ty<'tcx>, field_idx: usize) -> u64 {
         crate::helpers::mir_utils::field_offset_in_bytes(
             self.tcx,
-            self.current_frame.caller_def_id,
+            self.current_frame.current_def_id,
             ty,
             field_idx,
         )
     }
 
     pub(crate) fn size_of_ty(&self, ty: Ty<'tcx>) -> u64 {
-        crate::helpers::mir_utils::layout_of_ty(self.tcx, self.current_frame.caller_def_id, ty)
+        crate::helpers::mir_utils::layout_of_ty(self.tcx, self.current_frame.current_def_id, ty)
             .map(|l| l.size.bytes())
             .unwrap_or(0)
     }
 
     pub(crate) fn align_of_ty(&self, ty: Ty<'tcx>) -> u64 {
-        crate::helpers::mir_utils::layout_of_ty(self.tcx, self.current_frame.caller_def_id, ty)
+        crate::helpers::mir_utils::layout_of_ty(self.tcx, self.current_frame.current_def_id, ty)
             .map(|l| l.align.abi.bytes())
             .unwrap_or(1)
     }
@@ -382,7 +382,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Lower bound from the trait bounds (0 for an unconstrained `T`): any
         // implementor is at least this aligned.
         let min_a =
-            crate::helpers::mir_utils::min_align_of_generic_param(self.tcx, self.current_frame.caller_def_id, ty);
+            crate::helpers::mir_utils::min_align_of_generic_param(self.tcx, self.current_frame.current_def_id, ty);
         if min_a > 1 {
             self.constraints.assertions
                 .push(a.ge(&Int::from_u64(self.ctx, min_a)));
@@ -391,7 +391,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // implementor is at most this aligned, which is what lets a cross-cast
         // from a *more* aligned source (`&[U]` -> `*const T`) be discharged.
         let max_a =
-            crate::helpers::mir_utils::max_align_of_generic_param(self.tcx, self.current_frame.caller_def_id, ty);
+            crate::helpers::mir_utils::max_align_of_generic_param(self.tcx, self.current_frame.current_def_id, ty);
         if max_a > 0 {
             self.constraints.assertions
                 .push(a.le(&Int::from_u64(self.ctx, max_a)));
@@ -444,7 +444,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return a.clone();
         }
         let min_a =
-            crate::helpers::mir_utils::min_align_of_generic_param(self.tcx, self.current_frame.caller_def_id, ty);
+            crate::helpers::mir_utils::min_align_of_generic_param(self.tcx, self.current_frame.current_def_id, ty);
         Int::from_u64(self.ctx, min_a.max(1))
     }
 

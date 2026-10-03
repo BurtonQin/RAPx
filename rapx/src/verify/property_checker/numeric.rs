@@ -395,7 +395,7 @@ impl PropertyChecker {
         let ContractExpr::Len(_) = expr else {
             return None;
         };
-        for (_, val) in vm_state.current_frame.values.iter() {
+        for (_, val) in vm_state.current_frame.local_values.iter() {
             let is_iter = match val.ty.kind() {
                 TyKind::Ref(_, pointee, _) => match pointee.kind() {
                     TyKind::Adt(adt_def, _) => api_classify::is_std_iter_or_itermut(adt_def.did()),
@@ -407,7 +407,7 @@ impl PropertyChecker {
                 continue;
             }
             let alloc_id = val.provenance_alloc_id()?;
-            for (&l, lv) in vm_state.current_frame.values.iter() {
+            for (&l, lv) in vm_state.current_frame.local_values.iter() {
                 if lv.provenance_alloc_id() != Some(alloc_id) {
                     continue;
                 }
@@ -451,7 +451,7 @@ impl PropertyChecker {
             _ => return None,
         };
         let local = place.local;
-        let local_val = vm_state.current_frame.values.get(&local)?;
+        let local_val = vm_state.current_frame.local_values.get(&local)?;
         let is_iter = match local_val.ty.kind() {
             TyKind::Ref(_, pointee, _) => match pointee.kind() {
                 TyKind::Adt(adt_def, _) => api_classify::is_std_iter_or_itermut(adt_def.did()),
@@ -473,7 +473,7 @@ impl PropertyChecker {
         }
         // Fallback: scan all locals for one with same struct alloc.
         let target_alloc = local_val.provenance_alloc_id()?;
-        for (&scan_local, scan_val) in vm_state.current_frame.values.iter() {
+        for (&scan_local, scan_val) in vm_state.current_frame.local_values.iter() {
             if scan_val.provenance_alloc_id() != Some(target_alloc) {
                 continue;
             }

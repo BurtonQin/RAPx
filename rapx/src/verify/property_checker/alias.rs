@@ -111,7 +111,7 @@ impl PropertyChecker {
                 }
             }
         }
-        for (local, _val) in &vm_state.current_frame.values {
+        for (local, _val) in &vm_state.current_frame.local_values {
             if Some(*local) == dest_local {
                 continue;
             }
@@ -128,7 +128,7 @@ impl PropertyChecker {
             if traces_to_dest(vm_state, *local, dest_local) {
                 continue;
             }
-            for ((l, _path), val) in &vm_state.current_frame.local_fields {
+            for ((l, _path), val) in &vm_state.current_frame.field_values {
                 if *l != *local {
                     continue;
                 }
@@ -158,7 +158,7 @@ fn traces_to_dest<'ctx, 'tcx>(
             // Defensive: a cycle in the move chain is unexpected, but stop.
             return false;
         }
-        match vm_state.current_frame.move_sources.get(&local) {
+        match vm_state.current_frame.owner_transfers.get(&local) {
             Some(src) => local = *src,
             None => return false,
         }

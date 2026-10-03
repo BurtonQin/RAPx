@@ -29,7 +29,7 @@ pub struct AliasGraph<'tcx> {
 
     /// Tracks Move operand destinations → source value indices.
     /// Used by SafeDrop to propagate drop info through move chains.
-    pub move_sources: FxHashMap<usize, usize>,
+    pub owner_transfers: FxHashMap<usize, usize>,
 
     pub ret_alias: MopFnAliasPairs,
     pub arg_size: usize,
@@ -62,7 +62,7 @@ impl<'tcx> AliasGraph<'tcx> {
             visit_times: 0,
             values,
             pts_graph: PtsGraph::new(),
-            move_sources: FxHashMap::default(),
+            owner_transfers: FxHashMap::default(),
             ret_alias: MopFnAliasPairs::new(arg_size),
             arg_size,
             span: body.span,
@@ -108,8 +108,8 @@ impl<'tcx> AliasGraph<'tcx> {
     }
 
     /// Drops the move edges into and out of a value that is being reassigned.
-    pub fn clear_move_sources(&mut self, value_idx: usize) {
-        self.move_sources
+    pub fn clear_owner_transfers(&mut self, value_idx: usize) {
+        self.owner_transfers
             .retain(|&dest, &mut src| dest != value_idx && src != value_idx);
     }
 

@@ -840,7 +840,7 @@ impl PropertyChecker {
         local: Local,
     ) -> Vec<AllocId> {
         let mut result = Vec::new();
-        if let Some(id) = vm_state.current_frame.slots.get(&local) {
+        if let Some(id) = vm_state.current_frame.local_alloc.get(&local) {
             result.push(*id);
         }
         let mut worklist = vec![local];
@@ -878,7 +878,7 @@ impl PropertyChecker {
                         };
                         if let Some(src) = src_local {
                             if visited.insert(src) {
-                                if let Some(id) = vm_state.current_frame.slots.get(&src) {
+                                if let Some(id) = vm_state.current_frame.local_alloc.get(&src) {
                                     result.push(*id);
                                 }
                                 worklist.push(src);

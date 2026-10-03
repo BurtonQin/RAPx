@@ -145,12 +145,12 @@ fn push_drop_through_move(
     value_idx: usize,
     drop_spot: LocalSpot,
 ) {
-    if let Some(&src) = graph.move_sources.get(&value_idx) {
+    if let Some(&src) = graph.owner_transfers.get(&value_idx) {
         if !drop_record[src].is_dropped {
             drop_record[src] = DropRecord::new(src, true, drop_spot);
         }
     }
-    for (&dest, &src) in graph.move_sources.iter() {
+    for (&dest, &src) in graph.owner_transfers.iter() {
         if src == value_idx && !drop_record[dest].is_dropped {
             drop_record[dest] = DropRecord::new(dest, true, drop_spot);
         }

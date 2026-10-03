@@ -707,7 +707,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         args: &[Spanned<Operand<'tcx>>],
         destination: Local,
     ) {
-        if let Some(mut dv) = self.current_frame.values.get(&destination).cloned() {
+        if let Some(mut dv) = self.current_frame.local_values.get(&destination).cloned() {
             let dest_ty = dv.ty;
             let pointee_is_byte_like = match dest_ty.kind() {
                 rustc_middle::ty::TyKind::RawPtr(inner, _)
@@ -821,7 +821,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let saved_deferred_field_writes = std::mem::take(&mut self.inline.deferred_field_writes);
 
         // ── Switch to callee context ──
-        self.current_frame.caller_def_id = callee_def_id;
+        self.current_frame.current_def_id = callee_def_id;
 
         // Bind args to callee locals (local_1..local_N are function params)
         for (i, arg_val) in arg_values.iter().enumerate() {
@@ -830,7 +830,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.set_local(callee_local, arg_val.clone());
         }
 
-        // Propagate local_fields from caller arg locals into the callee
+        // Propagate field_values from caller arg locals into the callee
         // context so that inline body can access struct fields (e.g.
         // Iter::ptr / end_or_len for len/is_empty computations).
         for (i, caller_arg_opt) in caller_arg_locals.iter().enumerate() {
@@ -850,13 +850,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             for src in source_locals {
                 let caller_field_keys: Vec<Vec<usize>> = frame
-                    .local_fields
+                    .field_values
                     .keys()
                     .filter(|(l, _)| *l == src)
                     .map(|(_, f)| f.clone())
                     .collect();
                 for fields in caller_field_keys {
-                    if let Some(fv) = frame.local_fields.get(&(src, fields.clone())).cloned() {
+                    if let Some(fv) = frame.field_values.get(&(src, fields.clone())).cloned() {
                         self.set_field_value(callee_param, fields, fv);
                     }
                 }
@@ -867,7 +867,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.inline_execute_body();
 
         // ── Capture return value and its per-field values ──
-        let return_val = self.current_frame.values.get(&Local::from_usize(0)).cloned();
+        let return_val = self.current_frame.local_values.get(&Local::from_usize(0)).cloned();
         crate::rap_debug!(
             "exec_inline_call: callee={:?} return_val={:?}",
             callee_def_id,
@@ -877,7 +877,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         );
         let return_fields: Vec<(Vec<usize>, VmValue<'ctx, 'tcx>)> = self
             .current_frame
-            .local_fields
+            .field_values
             .iter()
             .filter(|((l, _), _)| *l == Local::from_usize(0))
             .map(|((_, path), val)| (path.clone(), val.clone()))
@@ -888,7 +888,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
         // Apply deferred field writes (`(*self).field = val` through a
         // `&mut self` reborrow) collected during the callee's execution, now
-        // that the caller's `local_fields` is live again.
+        // that the caller's `field_values` is live again.
         for (local, path, value) in std::mem::take(&mut self.inline.deferred_field_writes) {
             self.set_field_value(local, path, value);
         }
@@ -921,7 +921,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // for ADT returns (struct/enum) whose aggregate value carries
                 // no provenance: a later `&raw const (*&field)` + `ptr::read`
                 // must be able to discharge `Init` against the field.
-                if let Some(dest_alloc_id) = self.current_frame.slots.get(&dest).copied() {
+                if let Some(dest_alloc_id) = self.current_frame.local_alloc.get(&dest).copied() {
                     self.alloc_mut(dest_alloc_id).initialized = true;
                 }
             }
@@ -1055,7 +1055,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         func,
                         args,
                         destination.local,
-                        self.current_frame.caller_def_id,
+                        self.current_frame.current_def_id,
                     );
                     if let Some(t) = target {
                         queue.push(*t);
@@ -1122,7 +1122,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // `eff_layout_const`; only the generic (symbolic) case needs binding here.
         // `type_layout` reports `(0, 0)` for a generic `T`, so a zero alignment
         // (not a zero *size*, which is a legal ZST) marks the unknown case.
-        if crate::helpers::mir_utils::type_layout(self.tcx, self.current_frame.caller_def_id, ty)
+        if crate::helpers::mir_utils::type_layout(self.tcx, self.current_frame.current_def_id, ty)
             .is_some_and(|(align, _)| align > 0)
         {
             return false;
@@ -1214,7 +1214,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             CallEffect::ReturnDerefArg { arg } => {
                 // `mem::replace(dest, src)` returns `*dest`: the pointee value,
                 // not the `&mut` reference. Prefer the materialized pointee
-                // (`local_fields` at the empty path, set by
+                // (`field_values` at the empty path, set by
                 // `propagate_field_values_to_ref` for `&mut self.field`); then
                 // recover the old field value from the materialized field maps;
                 // finally, when the borrow chain was dropped by the slicer and no
@@ -1225,12 +1225,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let mut val = args.get(*arg).cloned().unwrap_or_else(|| VmValue::new(self.fresh_int("replaced"), dest_ty));
                 let arg_local = caller_arg_locals.get(*arg).copied().flatten();
                 let pointee =
-                    arg_local.and_then(|l| self.current_frame.local_fields.get(&(l, Vec::new())).cloned());
+                    arg_local.and_then(|l| self.current_frame.field_values.get(&(l, Vec::new())).cloned());
                 if let Some(p) = pointee {
                     val = p;
                 } else if let Some(search) = self
                     .current_frame
-                    .local_fields
+                    .field_values
                     .values()
                     .chain(self.memory.fields.values())
                     .find(|v| v.ty == dest_ty && v.is_pointer())
@@ -1278,7 +1278,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let Some(arg_local) = caller_arg_locals.get(*arg).copied().flatten() {
                         let keys: Vec<Vec<usize>> = self
                             .current_frame
-                            .local_fields
+                            .field_values
                             .keys()
                             .filter(|(l, _)| *l == arg_local)
                             .map(|(_, p)| p.clone())
@@ -1286,7 +1286,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         for path in keys {
                             if path.len() > *peel && path[..*peel].iter().all(|&f| f == 0) {
                                 if let Some(v) =
-                                    self.current_frame.local_fields.get(&(arg_local, path.clone())).cloned()
+                                    self.current_frame.field_values.get(&(arg_local, path.clone())).cloned()
                                 {
                                     self.set_field_value(dest, path[*peel..].to_vec(), v);
                                 }
@@ -1375,7 +1375,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         if let Some(ref source_prov) = self_val.provenance {
                             self.alloc_mut(alloc_id).parent = Some(source_prov.alloc_id);
                         }
-                        if let Some(ref_dest_alloc_id) = self.current_frame.slots.get(&dest).copied() {
+                        if let Some(ref_dest_alloc_id) = self.current_frame.local_alloc.get(&dest).copied() {
                             self.alloc_mut(ref_dest_alloc_id).slice_data = Some(alloc_id);
                         }
 
@@ -1583,7 +1583,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     );
                     self.alloc_mut(alloc_id).initialized = true;
                     self.alloc_mut(alloc_id).parent = Some(src_prov.alloc_id);
-                    if let Some(ref_dest_alloc_id) = self.current_frame.slots.get(&dest).copied() {
+                    if let Some(ref_dest_alloc_id) = self.current_frame.local_alloc.get(&dest).copied() {
                         self.alloc_mut(ref_dest_alloc_id).slice_data = Some(alloc_id);
                     }
                     let field_val = VmValue {
@@ -1803,7 +1803,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             CallEffect::ReturnNonZero => {
                 let zero = Int::from_u64(self.ctx, 0);
-                if let Some(mut existing) = self.current_frame.values.get(&dest).cloned() {
+                if let Some(mut existing) = self.current_frame.local_values.get(&dest).cloned() {
                     existing.invariants.non_null = true;
                     // Record the non-zero fact as a path condition so that a
                     // downstream `ValidNum(result != 0)` obligation (e.g.
@@ -1861,7 +1861,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             CallEffect::ReturnAligned => {
-                if let Some(mut existing) = self.current_frame.values.get(&dest).cloned() {
+                if let Some(mut existing) = self.current_frame.local_values.get(&dest).cloned() {
                     // `as_ptr`/`as_mut_ptr`/`into_raw` expose a pointer aligned to
                     // the *pointee* type, so record the symbolic alignment for the
                     // downstream `raw-ptr-deref`/`from_raw_parts` `Align` check.
@@ -2054,11 +2054,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // (field 1); `len = end_or_len - ptr`.
                 if let Some(iter_ref) = caller_arg_locals.get(*self_arg).copied().flatten() {
                     let iter_local = self
-                        .current_frame.values
+                        .current_frame.local_values
                         .get(&iter_ref)
                         .and_then(|v| v.provenance_alloc_id())
                         .and_then(|alloc| {
-                            self.current_frame.slots
+                            self.current_frame.local_alloc
                                 .iter()
                                 .find(|(_, a)| **a == alloc)
                                 .map(|(l, _)| *l)
@@ -2316,7 +2316,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let dest_ty = self.body().local_decls[dest].ty;
                     let elem_ty = crate::verify::call_summary::from_raw_parts_elem_ty(
                         self.tcx,
-                        self.current_frame.caller_def_id,
+                        self.current_frame.current_def_id,
                         Some(dest),
                     );
                     // A generic element type uses the shared symbolic `sizeof_T`
@@ -2342,7 +2342,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         offset_kind: None,
                     };
                     // If return is a reference, register slice/pointee data
-                    if let Some(ref dest_alloc_id) = self.current_frame.slots.get(&dest).copied() {
+                    if let Some(ref dest_alloc_id) = self.current_frame.local_alloc.get(&dest).copied() {
                         self.alloc_mut(*dest_alloc_id).slice_data = Some(alloc_id);
                     }
                     // Propagate init status and byte-level tracking from the source pointer.
@@ -2450,7 +2450,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // read `(_1.0).0` and cast it to `*const`/`*mut T` — inherit the
                 // heap pointer's provenance (rustc 1.95 lowers `&raw **b` to
                 // exactly this field read + transmute).  Record it both on the
-                // local (`local_fields`, for direct `_1.0.0` reads) and on the
+                // local (`field_values`, for direct `_1.0.0` reads) and on the
                 // heap allocation (`memory.fields`, for `(*&box).0.0`
                 // deref-reads through a reborrow).
                 let nn_field = VmValue {
@@ -2512,7 +2512,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
                     self.alloc_mut(alloc_id).set_slice_len(size_val.term.clone());
-                    let dest_alloc_id = self.current_frame.slots.get(&dest).copied();
+                    let dest_alloc_id = self.current_frame.local_alloc.get(&dest).copied();
                     if let Some(dest_alloc_id) = dest_alloc_id {
                         self.alloc_mut(dest_alloc_id).slice_data = Some(alloc_id);
                     }
@@ -2584,7 +2584,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .map(|ty| self.align_sym(ty))
                         .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
-                    let dest_alloc_id = self.current_frame.slots.get(&dest).copied();
+                    let dest_alloc_id = self.current_frame.local_alloc.get(&dest).copied();
                     if let Some(dest_alloc_id) = dest_alloc_id {
                         self.alloc_mut(dest_alloc_id).slice_data = Some(alloc_id);
                     }
@@ -2656,7 +2656,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .and_then(|p| self.alloc(p.alloc_id).slice_len().cloned())
                     .unwrap_or_else(|| Int::from_u64(self.ctx, i64::MAX as u64));
                 let (alloc_id, base) = self.allocate_external(size, heap_align, elem_ty);
-                let dest_alloc_id = self.current_frame.slots.get(&dest).copied();
+                let dest_alloc_id = self.current_frame.local_alloc.get(&dest).copied();
                 if let Some(ref dest_alloc_id) = dest_alloc_id {
                     self.alloc_mut(*dest_alloc_id).slice_data = Some(alloc_id);
                 }
@@ -2826,7 +2826,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let alloc_id = indices_val.provenance_alloc_id().or_else(|| {
                             // Slicer may have dropped the &indices
                             // assignment, losing provenance.  Fall back
-                            self.current_frame.values.values().find_map(|v| {
+                            self.current_frame.local_values.values().find_map(|v| {
                                 if v.ty == arr_ty {
                                     v.provenance_alloc_id()
                                 } else {
@@ -3057,7 +3057,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// receiver (often a reborrow temp) back to the referent local that carries
     /// the materialized field values.
     pub(crate) fn find_local_by_address(&self, term: &Int<'ctx>) -> Option<Local> {
-        for (local, id) in &self.current_frame.slots {
+        for (local, id) in &self.current_frame.local_alloc {
             if self.memory.allocations[id.0].base == *term {
                 return Some(*local);
             }
@@ -3271,7 +3271,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
         // Any local that already materializes the field (covers the receiver
         // parameter / shared reborrow that the mutable reborrow does not copy).
-        for (l, _) in self.current_frame.local_fields.keys() {
+        for (l, _) in self.current_frame.field_values.keys() {
             candidates.push(*l);
         }
         let mut found: Option<VmValue<'ctx, 'tcx>> = None;

@@ -106,7 +106,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             for (src, prefix) in source_locals {
                 let keys: Vec<Vec<usize>> = frame
-                    .local_fields
+                    .field_values
                     .keys()
                     .filter(|(l, f)| {
                         *l == src
@@ -117,7 +117,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .collect();
                 for fields in keys {
                     if let Some(fv) = frame
-                        .local_fields
+                        .field_values
                         .get(&(src, fields.clone()))
                         .cloned()
                     {
@@ -132,10 +132,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         }
 
-        self.current_frame.caller_def_id = callee;
+        self.current_frame.current_def_id = callee;
 
         for (i, arg) in arg_locals.iter().enumerate() {
-            if let Some(v) = frame.values.get(&Local::from_usize(*arg)).cloned() {
+            if let Some(v) = frame.local_values.get(&Local::from_usize(*arg)).cloned() {
                 self.set_local(Local::from_usize(i + 1), v);
             }
         }
@@ -150,10 +150,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Exit an inlined callee: capture the callee's return value, restore the
     /// caller context, and write the return value to the caller's destination.
     fn handle_callee_exit(&mut self, dest: usize) {
-        let ret = self.current_frame.values.get(&Local::from_usize(0)).cloned();
+        let ret = self.current_frame.local_values.get(&Local::from_usize(0)).cloned();
         let ret_fields: Vec<(Vec<usize>, VmValue<'ctx, 'tcx>)> = self
             .current_frame
-            .local_fields
+            .field_values
             .iter()
             .filter(|((l, _), _)| *l == Local::from_usize(0))
             .map(|((_, f), v)| (f.clone(), v.clone()))
@@ -176,7 +176,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.set_local(Local::from_usize(dest), v);
             // The callee returned a fully-constructed value, so the caller's
             // destination stack slot is initialized.
-            if let Some(dest_alloc_id) = self.current_frame.slots.get(&Local::from_usize(dest)).copied()
+            if let Some(dest_alloc_id) = self.current_frame.local_alloc.get(&Local::from_usize(dest)).copied()
             {
                 self.alloc_mut(dest_alloc_id).initialized = true;
             }
@@ -195,7 +195,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Pre-allocate ALL locals and set initial values
         for local_idx in 1..local_count {
             let local = Local::from_usize(local_idx);
-            if self.current_frame.values.contains_key(&local) {
+            if self.current_frame.local_values.contains_key(&local) {
                 continue;
             }
             let decl = &self.body().local_decls[local];
@@ -451,7 +451,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .then(|| {
                             crate::verify::vm::region::fn_arg_ty(
                                 self.tcx,
-                                self.current_frame.caller_def_id,
+                                self.current_frame.current_def_id,
                                 local_idx - 1,
                             )
                         })
@@ -495,7 +495,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         } else {
                             crate::helpers::mir_utils::size_of_generic_param(
                                 self.tcx,
-                                self.current_frame.caller_def_id,
+                                self.current_frame.current_def_id,
                                 *elem_ty,
                             )
                             .max(1)
@@ -782,7 +782,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     };
                     self.alloc_mut(alloc_id).set_slice_len(n_term);
                     self.alloc_mut(alloc_id).initialized = true;
-                    self.current_frame.slots.insert(local, alloc_id);
+                    self.current_frame.local_alloc.insert(local, alloc_id);
                     if let Some(n) = n {
                         for i in 0..n {
                             let off = i * step;
@@ -891,10 +891,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         _ => None,
                     });
                     if let Some(src_local) = src {
-                        if let Some(src_val) = self.current_frame.values.get(&src_local) {
+                        if let Some(src_val) = self.current_frame.local_values.get(&src_local) {
                             let has_better_prov = src_val.is_pointer()
                                 && src_val.invariants.non_null
-                                && self.current_frame.values.get(&dest_local).is_none_or(|d| {
+                                && self.current_frame.local_values.get(&dest_local).is_none_or(|d| {
                                     d.provenance.is_none() || !d.invariants.non_null
                                 });
                             if has_better_prov {
@@ -922,7 +922,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // just those in the signature) makes the read-only `*_sym_read` fallback
         // dead.
         let mut warmed: FxHashSet<Ty<'tcx>> = FxHashSet::default();
-        for param in self.tcx.generics_of(self.current_frame.caller_def_id).own_params.iter() {
+        for param in self.tcx.generics_of(self.current_frame.current_def_id).own_params.iter() {
             if let rustc_middle::ty::GenericParamDefKind::Type { .. } = param.kind {
                 warmed.insert(rustc_middle::ty::Ty::new_param(
                     self.tcx,
@@ -1382,7 +1382,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 _ => None,
             };
             if let Some(src) = moved_from {
-                self.current_frame.move_sources.insert(place.local, src);
+                self.current_frame.owner_transfers.insert(place.local, src);
             }
             // Propagate field values for aggregate copies (e.g. `_4 = copy _1`)
             // so downstream field accesses (NonZero::get -> self.0) resolve to
@@ -1436,7 +1436,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if only_field || (only_field_deref && has_deref_src) {
                     let keys: Vec<Vec<usize>> = self
                         .current_frame
-                        .local_fields
+                        .field_values
                         .keys()
                         .filter(|(l, _)| *l == sp.local)
                         .map(|(_, f)| f.clone())
@@ -1460,7 +1460,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
         } else if !has_deref {
-            // Field projection (no Deref): update local_fields for the base local.
+            // Field projection (no Deref): update field_values for the base local.
             let field_indices: Vec<usize> = place
                 .projection
                 .iter()
@@ -1503,7 +1503,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // `&mut self` (and other reference parameters) materialize
                     // their pointee's scalar fields keyed by the *reference*
                     // local itself, so a `(*self).field = val` write must land
-                    // in `local_fields[(self, field)]` directly.  (This is what
+                    // in `field_values[(self, field)]` directly.  (This is what
                     // makes a struct-invariant re-proof see `self.len += 1`.)
                     if self.field_value(place.local, &field_indices).is_some() {
                         let is_iter_field = field_indices == [0];
@@ -1519,7 +1519,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // reference/reborrow temp) back to the local it points at,
                     // matching its address term against the known local
                     // addresses.
-                    let pointed = self.current_frame.values.get(&place.local).cloned();
+                    let pointed = self.current_frame.local_values.get(&place.local).cloned();
                     if let Some(pointed) = pointed {
                         if let Some(referent) = self.find_local_by_address(&pointed.term) {
                             let mut write_value = value;
@@ -1529,7 +1529,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             // Inline frame: the caller's address map is saved
                             // away, so resolve through the precomputed
                             // `&mut self` referent and defer the write until the
-                            // caller's `local_fields` is restored.
+                            // caller's `field_values` is restored.
                             if let Some(referent) =
                                 self.inline.arg_referents.get(arg_idx).copied().flatten()
                             {
@@ -1551,10 +1551,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Prefer the value's provenance (pointee alloc) over slots
         // (reference alloc) for ref/ptr parameters.
         let Some(alloc_id) = self
-            .current_frame.values
+            .current_frame.local_values
             .get(&place.local)
             .and_then(|v| v.provenance_alloc_id())
-            .or_else(|| self.current_frame.slots.get(&place.local).copied())
+            .or_else(|| self.current_frame.local_alloc.get(&place.local).copied())
         else {
             return;
         };
@@ -1637,7 +1637,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
         let has_index_with_concrete = place.projection.iter().any(|p| {
             if let rustc_middle::mir::ProjectionElem::Index(local) = p {
-                self.current_frame.values
+                self.current_frame.local_values
                     .get(&local)
                     .and_then(|v| v.term.simplify().as_u64())
                     .is_some()
@@ -1785,7 +1785,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let src_in_bounds = if is_slice_ref && is_from_raw_parts_like && has_deref {
                         addr.is_pointer()
                     } else {
-                        self.current_frame.values
+                        self.current_frame.local_values
                             .get(&place.local)
                             .is_some_and(|v| v.invariants.in_bounds)
                     };
@@ -1863,7 +1863,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .map(|p| self.alloc(p.alloc_id).align.clone())
                         .filter(|a| a.simplify().as_u64() != Some(1));
                     let source_in_bounds = self
-                        .current_frame.values
+                        .current_frame.local_values
                         .get(&place.local)
                         .is_some_and(|v| v.invariants.in_bounds);
                     VmValue {
@@ -1973,7 +1973,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }
                 }
                 // For tuple-returning binary ops (AddWithOverflow, MulWithOverflow),
-                // populate local_fields so that .0 (result) and .1 (overflow flag)
+                // populate field_values so that .0 (result) and .1 (overflow flag)
                 // are properly tracked. Without this, field access falls through
                 // to cloning the base term, mixing the arithmetic result with the
                 // boolean overflow flag and corrupting path conditions.
@@ -2127,7 +2127,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let field_val = self.value_of_operand(operands.iter().next().unwrap());
                     let dest_local = dest_place.local;
                     self.set_field_value(dest_local, vec![0], field_val.clone());
-                    if let Some(alloc_id) = self.current_frame.slots.get(&dest_local).copied() {
+                    if let Some(alloc_id) = self.current_frame.local_alloc.get(&dest_local).copied() {
                         self.alloc_mut(alloc_id).initialized = true;
                     }
                     return VmValue {
@@ -2142,7 +2142,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 let term = self.fresh_int("aggregate");
                 let dest_local = dest_place.local;
-                let dest_alloc_id = self.current_frame.slots.get(&dest_local).copied();
+                let dest_alloc_id = self.current_frame.local_alloc.get(&dest_local).copied();
                 let is_byte_array = crate::helpers::mir_utils::is_u8_array_or_slice(dest_ty);
                 let field_types: Vec<_> = self.aggregate_field_tys(dest_ty);
                 let mut byte_offset = 0usize;
@@ -2179,7 +2179,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             if op_place.projection.is_empty() {
                                 let nested: Vec<(Vec<usize>, VmValue<'ctx, 'tcx>)> = self
                                     .current_frame
-                                    .local_fields
+                                    .field_values
                                     .iter()
                                     .filter(|((l, _), _)| *l == op_place.local)
                                     .map(|((_, p), v)| (p.clone(), v.clone()))
@@ -2854,18 +2854,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     fn exec_storage_live(&mut self, local: Local) {
         self.ensure_local_allocation(local);
-        let alloc_id = self.current_frame.slots[&local];
+        let alloc_id = self.current_frame.local_alloc[&local];
         self.alloc_mut(alloc_id).dead = false;
     }
 
     fn exec_storage_dead(&mut self, local: Local) {
-        if let Some(alloc_id) = self.current_frame.slots.get(&local).copied() {
+        if let Some(alloc_id) = self.current_frame.local_alloc.get(&local).copied() {
             self.alloc_mut(alloc_id).dead = true;
         }
     }
 
     pub(crate) fn exec_drop(&mut self, place: &Place<'tcx>) {
-        if let Some(alloc_id) = self.current_frame.slots.get(&place.local).copied() {
+        if let Some(alloc_id) = self.current_frame.local_alloc.get(&place.local).copied() {
             self.alloc_mut(alloc_id).dead = true;
             // Cascade to heap data allocations (see exec_storage_dead).
             let mut worklist: Vec<AllocId> = vec![alloc_id];
@@ -2892,7 +2892,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 destination,
                 ..
             } => {
-                let caller_id = self.current_frame.caller_def_id;
+                let caller_id = self.current_frame.current_def_id;
                 self.exec_call(func, args, destination.local, caller_id);
             }
             TerminatorKind::SwitchInt { discr, targets } => {
@@ -3041,7 +3041,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // generic `T`), so `align = mask + 1`.
                     rustc_middle::mir::BinOp::BitAnd => {
                         if let Some(rhs_local) = div_rhs.as_ref().and_then(|pk| pk.local()) {
-                            if let Some(rhs_val) = self.current_frame.values.get(&rhs_local) {
+                            if let Some(rhs_val) = self.current_frame.local_values.get(&rhs_local) {
                                 let one = Int::from_u64(self.ctx, 1);
                                 let align = Int::add(self.ctx, &[&rhs_val.term, &one]);
                                 self.mark_align_n(&div_lhs, align);
@@ -3057,7 +3057,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     fn mark_align_n(&mut self, src_pk: &Option<PlaceKey>, align: Int<'ctx>) {
         if let Some(src_pk) = src_pk {
             if let Some(local) = src_pk.local() {
-                if let Some(mut val) = self.current_frame.values.get(&local).cloned() {
+                if let Some(mut val) = self.current_frame.local_values.get(&local).cloned() {
                     val.invariants.align_n = Some(align);
                     self.set_local(local, val);
                 }
@@ -3112,7 +3112,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     fn mark_guard_pointer(&mut self, lhs: &Option<PlaceKey>, rhs: &Option<PlaceKey>) {
         for pk in [lhs, rhs].into_iter().flatten() {
             if let Some(local) = pk.local() {
-                if let Some(mut val) = self.current_frame.values.get(&local).cloned() {
+                if let Some(mut val) = self.current_frame.local_values.get(&local).cloned() {
                     val.invariants.non_null = true;
                     self.set_local(local, val);
                 }
@@ -3285,7 +3285,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // at the byte buffer it owns).
                 let id = self.contract_alloc_id_field_aware(property).or_else(|| {
                     let local = self.contract_target_local(property)?;
-                    self.current_frame.values.get(&local)?.provenance_alloc_id()
+                    self.current_frame.local_values.get(&local)?.provenance_alloc_id()
                 });
                 if let Some(id) = id {
                     self.alloc_mut(id).dead = false;
@@ -3441,7 +3441,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let Some(local) = self.contract_target_local(property) else {
                 return;
             };
-            let Some(val) = self.current_frame.values.get(&local).cloned() else {
+            let Some(val) = self.current_frame.local_values.get(&local).cloned() else {
                 return;
             };
             if let Some(alloc_id) = val.provenance_alloc_id() {
@@ -3455,7 +3455,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             };
             if field_path.is_empty() {
                 // Whole pointer parameter: exact size.
-                let Some(val) = self.current_frame.values.get(&local).cloned() else {
+                let Some(val) = self.current_frame.local_values.get(&local).cloned() else {
                     return;
                 };
                 if self.mark_alloc_live_keep(&val, elem_ty) {
@@ -3553,7 +3553,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     fn contract_target_value(&mut self, property: &Property<'tcx>) -> Option<VmValue<'ctx, 'tcx>> {
         let (local, path) = self.contract_field_path(property)?;
         if path.is_empty() {
-            self.current_frame.values.get(&local).cloned()
+            self.current_frame.local_values.get(&local).cloned()
         } else {
             self.field_value(local, &path).cloned()
         }
@@ -3588,7 +3588,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         }
         if field_path.is_empty() {
-            self.current_frame.values.get(&local)?.provenance_alloc_id()
+            self.current_frame.local_values.get(&local)?.provenance_alloc_id()
         } else {
             self.field_value(local, &field_path)?.provenance_alloc_id()
         }
@@ -3816,7 +3816,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// `interpreter_iter_len` can express `len = initial_len - offset`
     /// instead of nested `(end - (ptr + sz + sz + ...)) / sz`.
     fn track_iter_ptr_update(&mut self, local: Local) {
-        let local_val = match self.current_frame.values.get(&local) {
+        let local_val = match self.current_frame.local_values.get(&local) {
             Some(v) => v,
             None => return,
         };
@@ -3868,7 +3868,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let Some(fe_local) = fe_place.base.try_to_local() else {
             return;
         };
-        let fe_val = match self.current_frame.values.get(&fe_local).cloned() {
+        let fe_val = match self.current_frame.local_values.get(&fe_local).cloned() {
             Some(v) => v,
             None => return,
         };
@@ -3894,7 +3894,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             Some(PropertyArg::Expr(ContractExpr::Place(cp))) => cp.base.try_to_local(),
             _ => None,
         };
-        let slice_val = slice_local.and_then(|loc| self.current_frame.values.get(&loc));
+        let slice_val = slice_local.and_then(|loc| self.current_frame.local_values.get(&loc));
         let slice_alloc_id = slice_val.and_then(|sl_val| sl_val.provenance_alloc_id());
         let data_size = slice_alloc_id.map(|da_id| self.alloc(da_id).size.clone());
         let elem_sz = slice_alloc_id
@@ -3944,7 +3944,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return;
         };
         let Some(da_id) = self
-            .current_frame.values
+            .current_frame.local_values
             .get(&slice_local)
             .and_then(|v| v.provenance_alloc_id())
         else {
@@ -4149,7 +4149,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
         if let Some((local, path)) = self.contract_field_path(property) {
             let existing = if path.is_empty() {
-                self.current_frame.values.get(&local).cloned()
+                self.current_frame.local_values.get(&local).cloned()
             } else {
                 self.field_value(local, &path).cloned()
             };
@@ -4448,7 +4448,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let empty_proj = source_place.projection.is_empty();
         let keys: Vec<Vec<usize>> = self
             .current_frame
-            .local_fields
+            .field_values
             .keys()
             .filter(|(l, _)| *l == source_place.local)
             .map(|(_, p)| p.clone())
@@ -4465,7 +4465,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 };
                 if let Some(v) = self
                     .current_frame
-                    .local_fields
+                    .field_values
                     .get(&(source_place.local, path.clone()))
                     .cloned()
                 {
@@ -4483,7 +4483,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         source_place: &Place<'tcx>,
         ref_val: &VmValue<'ctx, 'tcx>,
     ) {
-        let Some(src_alloc_id) = self.current_frame.slots.get(&source_place.local).copied() else {
+        let Some(src_alloc_id) = self.current_frame.local_alloc.get(&source_place.local).copied() else {
             return;
         };
         let Some(ref_alloc_id) = ref_val.provenance_alloc_id() else {
