@@ -11,7 +11,7 @@ use crate::verify::contract::{
 };
 use crate::verify::def_use::PlaceKey;
 use crate::verify::report::CheckResult;
-use crate::verify::vm::state::{BinaryOpSource, VmState};
+use crate::verify::vm::state::VmState;
 use rustc_hash::FxHashSet;
 use rustc_middle::mir::Operand;
 use rustc_middle::ty::TyKind;
@@ -287,9 +287,9 @@ impl PropertyChecker {
         let op_sources: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = {
             let mut src: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = Vec::new();
             for val in vm_state.current_frame.local_values.values() {
-                if let Some(src_ops) = &val.binary_op_source {
+                if let Some((lhs, rhs, _)) = val.source.operands() {
                     if val.term == *target {
-                        src.push((src_ops.lhs.clone(), src_ops.rhs.clone()));
+                        src.push((lhs.clone(), rhs.clone()));
                     }
                 }
             }
@@ -311,10 +311,9 @@ impl PropertyChecker {
             }
 
             for dest_val in vm_state.current_frame.local_values.values() {
-                let Some(src_ops) = &dest_val.binary_op_source else {
+                let Some((lhs, rhs, _)) = dest_val.source.operands() else {
                     continue;
                 };
-                let (lhs, rhs) = (&src_ops.lhs, &src_ops.rhs);
                 let lhs_local = lhs.as_ref().and_then(|pk| pk.local());
                 let rhs_local = rhs.as_ref().and_then(|pk| pk.local());
                 if (lhs_local == Some(local) || rhs_local == Some(local))
@@ -347,14 +346,10 @@ impl PropertyChecker {
             };
 
             // Check if lhs is itself a Div / Rem result
-            if let Some(BinaryOpSource {
-                lhs: div_lhs_pk,
-                rhs: div_rhs_pk,
-                op: _,
-            }) = lhs_pk
+            if let Some((div_lhs_pk, div_rhs_pk)) = lhs_pk
                 .local()
                 .and_then(|l| vm_state.local_value(l))
-                .and_then(|v| v.binary_op_source.clone())
+                .and_then(|v| v.source.operands().map(|(l, r, _)| (l.clone(), r.clone())))
             {
                 let Some(div_lhs_local) = div_lhs_pk.and_then(|pk| pk.local()) else {
                     continue;

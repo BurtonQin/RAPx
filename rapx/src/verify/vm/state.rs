@@ -97,28 +97,9 @@ pub(crate) struct VmValue<'ctx, 'tcx> {
     pub provenance: Option<Provenance<'ctx>>,
     /// Known constraints on this value.
     pub invariants: ValueInvariants<'ctx>,
-    /// Source tag: this scalar is a compile-time field offset (`offset_of!`).
-    /// Propagated to a pointer's provenance when used as an `add`/`byte_add`
-    /// offset.  It is origin information, not an SMT-assertable invariant, so it
-    /// lives on `VmValue` rather than in `ValueInvariants`.
-    pub field_offset: bool,
-    /// Symbolic discriminant (variant index) for an ADT value whose variant is
-    /// known symbolically (e.g. `Iterator::next` returns `Some(x) iff
-    /// !is_empty`).  `None` for non-enum values or unknown variants.  Used by
-    /// `Rvalue::Discriminant` so `switchInt` branches stay tied to the real
-    /// condition instead of a fresh unconstrained symbol.
-    pub discriminant: Option<Int<'ctx>>,
-    /// Direct boolean condition for a comparison result (Le/Lt/Ge/Gt/Eq/Ne),
-    /// recorded alongside the ite-encoded `term` so `switchInt`/`Assert` can
-    /// emit a precise path condition (`offset <= len`) instead of
-    /// `ite(cond, 1, 0) != 0`, which the SMT solver often fails to unfold.
-    /// `None` for non-comparison values.
-    pub bool_cond: Option<Bool<'ctx>>,
-    /// When this value is a `BinaryOp` result: the operands and operator that
-    /// produced it, for guard inference (tracing a switch/assert guard back to
-    /// the pointer it null-checks/alignment-checks) and division-axiom
-    /// injection.  `None` otherwise.
-    pub binary_op_source: Option<BinaryOpSource>,
+    /// Extra semantics (field offset, discriminant, comparison, or binary-op
+    /// source); see [`ValueSource`].
+    pub source: ValueSource<'ctx>,
 }
 
 impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
@@ -128,10 +109,7 @@ impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
             ty,
             provenance: None,
             invariants: ValueInvariants::default(),
-            field_offset: false,
-            discriminant: None,
-            bool_cond: None,
-            binary_op_source: None,
+            source: ValueSource::None,
         }
     }
 
@@ -142,17 +120,23 @@ impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
 
     /// Symbolic enum discriminant, if known.
     pub(crate) fn discriminant(&self) -> Option<&Int<'ctx>> {
-        self.discriminant.as_ref()
+        match &self.source {
+            ValueSource::Discriminant(d) => Some(d),
+            _ => None,
+        }
     }
 
     /// Direct boolean condition of a comparison result, if any.
     pub(crate) fn bool_cond(&self) -> Option<&Bool<'ctx>> {
-        self.bool_cond.as_ref()
+        match &self.source {
+            ValueSource::Comparison { cond, .. } => Some(cond),
+            _ => None,
+        }
     }
 
     /// Whether this scalar is a compile-time `offset_of!` field offset.
     pub(crate) fn is_field_offset(&self) -> bool {
-        self.field_offset
+        matches!(self.source, ValueSource::FieldOffset)
     }
 
     /// Whether this value is a pointer (carries provenance).
@@ -457,18 +441,59 @@ pub(crate) struct InlineCtx<'ctx, 'tcx> {
     pub deferred_field_writes: Vec<(Local, Vec<usize>, VmValue<'ctx, 'tcx>)>,
 }
 
-/// The operands a place was produced from, for guard inference (tracing a
-/// switch/assert guard back to the pointer it null-checks or alignment-checks)
-/// and division-axiom injection (following dataflow edges to reach `Div`/`Rem`
-/// results).
+/// The extra semantics attached to a value, beyond its term/type/provenance.
 ///
-/// The operator kind lets guard inference tell null-check guards (`Ne`) from
-/// alignment/equality guards (`Eq`/`Rem`/`BitAnd`).
+/// A single value carries at most one of these: it is either a plain value, an
+/// `offset_of!` field offset, a symbolic enum discriminant, a comparison
+/// result, or a non-comparison binary-op result.  The operands/operator are
+/// used for guard inference (tracing a switch/assert guard back to the pointer
+/// it null-checks/alignment-checks) and division-axiom injection (following
+/// dataflow edges to reach `Div`/`Rem` results).
 #[derive(Clone, Debug)]
-pub(crate) struct BinaryOpSource {
-    pub lhs: Option<PlaceKey>,
-    pub rhs: Option<PlaceKey>,
-    pub op: rustc_middle::mir::BinOp,
+pub(crate) enum ValueSource<'ctx> {
+    /// No extra semantics.
+    None,
+    /// A compile-time `offset_of!` field offset.
+    FieldOffset,
+    /// A symbolic enum discriminant (variant index).
+    Discriminant(Int<'ctx>),
+    /// A comparison result (`Eq`/`Ne`/`Le`/`Lt`/`Ge`/`Gt`): the operands and
+    /// the direct boolean condition (`offset <= len`) carried alongside the
+    /// ite-encoded term.
+    Comparison {
+        lhs: Option<PlaceKey>,
+        rhs: Option<PlaceKey>,
+        op: rustc_middle::mir::BinOp,
+        cond: Bool<'ctx>,
+    },
+    /// A non-comparison binary-op result (`Add`/`Sub`/…/`Div`/`Rem`): the
+    /// operands and operator.
+    BinaryOp {
+        lhs: Option<PlaceKey>,
+        rhs: Option<PlaceKey>,
+        op: rustc_middle::mir::BinOp,
+    },
+}
+
+impl<'ctx> ValueSource<'ctx> {
+    /// The `(lhs, rhs, op)` of a binary-op/comparison result, if this value is
+    /// one.
+    pub(crate) fn operands(&self) -> Option<(&Option<PlaceKey>, &Option<PlaceKey>, rustc_middle::mir::BinOp)> {
+        match self {
+            ValueSource::Comparison { lhs, rhs, op, .. } => Some((lhs, rhs, *op)),
+            ValueSource::BinaryOp { lhs, rhs, op } => Some((lhs, rhs, *op)),
+            _ => None,
+        }
+    }
+
+    /// Just the field-offset part of this source: `FieldOffset` if it is one,
+    /// otherwise `None`.
+    pub(crate) fn field_offset_only(&self) -> ValueSource<'ctx> {
+        match self {
+            ValueSource::FieldOffset => ValueSource::FieldOffset,
+            _ => ValueSource::None,
+        }
+    }
 }
 
 /// The object space: every allocation plus the per-allocation contents that are
@@ -1109,10 +1134,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     ty,
                     provenance: None,
                     invariants: ValueInvariants::default(),
-                    field_offset,
-                    discriminant: None,
-                    bool_cond: None,
-                    binary_op_source: None,
+                    source: if field_offset {
+                        ValueSource::FieldOffset
+                    } else {
+                        ValueSource::None
+                    },
                 }
             }
             #[cfg(rapx_ge_95)]
@@ -1171,10 +1197,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             ty: place_ty,
                             provenance: Some(prov.clone()),
                             invariants: base_val.invariants.clone(),
-                            field_offset: false,
-                            discriminant: None,
-                            bool_cond: None,
-                            binary_op_source: None,
+                            source: ValueSource::None,
                         });
                     }
                 }
@@ -1278,10 +1301,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         ty: place_ty,
                                         provenance: None,
                                         invariants: ValueInvariants::default(),
-                                        field_offset: false,
-                                        discriminant: None,
-                                        bool_cond: None,
-                                        binary_op_source: None,
+                                        source: ValueSource::None,
                                     });
                                 } else {
                                     let mut chain = self.fresh_int("arr_elem");
@@ -1296,10 +1316,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         ty: place_ty,
                                         provenance: None,
                                         invariants: ValueInvariants::default(),
-                                        field_offset: false,
-                                        discriminant: None,
-                                        bool_cond: None,
-                                        binary_op_source: None,
+                                        source: ValueSource::None,
                                     });
                                 }
                             }

@@ -8,7 +8,7 @@ use rustc_middle::{
 };
 use z3::ast::{Ast, Int};
 
-use super::state::{AllocId, AllocKind, Allocation, Provenance, ValueInvariants, VmState, VmValue};
+use super::state::{AllocId, AllocKind, Allocation, Provenance, ValueInvariants, ValueSource, VmState, VmValue};
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     pub(crate) fn address_of_place(&mut self, place: &Place<'tcx>) -> Option<VmValue<'ctx, 'tcx>> {
@@ -41,10 +41,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 ty,
                 provenance,
                 invariants: ValueInvariants::default(),
-                field_offset: false,
-                discriminant: None,
-                bool_cond: None,
-                binary_op_source: None,
+                source: ValueSource::None,
             });
         }
 
@@ -185,10 +182,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             ty,
             provenance,
             invariants: ValueInvariants::default(),
-            field_offset: false,
-            discriminant: None,
-            bool_cond: None,
-            binary_op_source: None,
+            source: ValueSource::None,
         })
     }
 

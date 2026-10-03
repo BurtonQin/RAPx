@@ -18,7 +18,7 @@ use crate::compat::{FxHashMap, FxHashSet, Spanned};
 use crate::limit::MAX_INLINE_DEPTH;
 use crate::verify::api_classify;
 use crate::verify::call_summary::{self, CallEffect};
-use super::state::{AllocId, ContentTy, OffsetKind, Provenance, ValueInvariants, VmState, VmValue};
+use super::state::{AllocId, ContentTy, OffsetKind, Provenance, ValueInvariants, ValueSource, VmState, VmValue};
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Execute a call terminator.
@@ -338,10 +338,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     in_bounds: true,
                     ..Default::default()
                 },
-                field_offset: false,
-                discriminant: None,
-                bool_cond: None,
-                binary_op_source: None,
+                source: ValueSource::None,
             },
         );
         true
@@ -472,10 +469,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     in_bounds: true,
                     ..Default::default()
                 },
-                field_offset: false,
-                discriminant: None,
-                bool_cond: None,
-                binary_op_source: None,
+                source: ValueSource::None,
             },
         );
         true
@@ -535,10 +529,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 ty: dest_ty,
                 provenance: None,
                 invariants: ValueInvariants::default(),
-                field_offset: false,
-                discriminant: None,
-                bool_cond: None,
-                binary_op_source: None,
+                source: ValueSource::None,
             };
             self.set_local(destination, val);
         }
@@ -665,10 +656,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 init: true,
                 ..Default::default()
             },
-            field_offset: false,
-            discriminant: None,
-            bool_cond: None,
-            binary_op_source: None,
+            source: ValueSource::None,
         };
         // Advance ptr when not empty
         let one_term = Int::from_u64(self.ctx, 1);
@@ -695,13 +683,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 old_ptr_val.provenance.clone()
             },
             invariants: ValueInvariants::default(),
-            field_offset: false,
             // Tie the Option's discriminant to the emptiness condition so
             // `switchInt(discriminant(_n))` only takes the `Some` branch when
             // the iterator was non-empty (and the `None` branch when empty).
-            discriminant: Some(is_empty.ite(&zero, &one_term)),
-            bool_cond: None,
-            binary_op_source: None,
+            source: ValueSource::Discriminant(is_empty.ite(&zero, &one_term)),
         };
         self.set_local(destination, result_val);
         true
@@ -1209,10 +1194,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             ty: dest_ty,
                             provenance: prov,
                             invariants: ValueInvariants::default(),
-                            field_offset: false,
-                            discriminant: None,
-                            bool_cond: None,
-                            binary_op_source: None,
+                            source: ValueSource::None,
                         },
                     );
                 }
@@ -1266,10 +1248,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 offset_kind: None,
                             }),
                             invariants: ValueInvariants::default(),
-                            field_offset: false,
-                            discriminant: None,
-                            bool_cond: None,
-                            binary_op_source: None,
+                            source: ValueSource::None,
                         };
                     }
                 }
@@ -1404,10 +1383,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 in_bounds: true,
                                 align_n: Some(field_alloc_align),
                             },
-                            field_offset: false,
-                            discriminant: None,
-                            bool_cond: None,
-                            binary_op_source: None,
+                            source: ValueSource::None,
                         };
                         self.set_field_value(dest, vec![f], field_val);
                     }
@@ -1472,10 +1448,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         align_n: elem_align_n.clone(),
                         ..Default::default()
                     },
-                    field_offset: false,
-                    discriminant: None,
-                    bool_cond: None,
-                    binary_op_source: None,
+                    source: ValueSource::None,
                 };
                 let end_val = VmValue {
                     term: end_term,
@@ -1491,10 +1464,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         align_n: elem_align_n,
                         ..Default::default()
                     },
-                    field_offset: false,
-                    discriminant: None,
-                    bool_cond: None,
-                    binary_op_source: None,
+                    source: ValueSource::None,
                 };
                 self.set_field_value(dest, vec![0], start_val);
                 self.set_field_value(dest, vec![1], end_val);
@@ -1614,10 +1584,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 None
                             },
                         },
-                        field_offset: false,
-                        discriminant: None,
-                        bool_cond: None,
-                        binary_op_source: None,
+                        source: ValueSource::None,
                     };
                     self.set_field_value(dest, vec![f], field_val);
                 }
@@ -1741,10 +1708,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             align_n,
                             init: base.invariants.init,
                         },
-                        field_offset: false,
-                        discriminant: None,
-                        bool_cond: None,
-                        binary_op_source: None,
+                        source: ValueSource::None,
                     };
                     self.set_local(dest, val);
                 }
@@ -1806,10 +1770,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             align_n,
                             init: base.invariants.init,
                         },
-                        field_offset: false,
-                        discriminant: None,
-                        bool_cond: None,
-                        binary_op_source: None,
+                        source: ValueSource::None,
                     };
                     self.set_local(dest, val);
                 }
@@ -1838,10 +1799,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 non_null: true,
                                 ..Default::default()
                             },
-                            field_offset: false,
-                            discriminant: None,
-                            bool_cond: None,
-                            binary_op_source: None,
+                            source: ValueSource::None,
                         },
                     );
                 }
@@ -1866,10 +1824,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     init: true,
                                     ..Default::default()
                                 },
-                                field_offset: false,
-                                discriminant: None,
-                                bool_cond: None,
-                                binary_op_source: None,
+                                source: ValueSource::None,
                             },
                         );
                     }
@@ -1902,10 +1857,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             invariants: ValueInvariants {
                                 ..Default::default()
                             },
-                            field_offset: false,
-                            discriminant: None,
-                            bool_cond: None,
-                            binary_op_source: None,
+                            source: ValueSource::None,
                         },
                     );
                 }
@@ -2401,10 +2353,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 align_n: result_align_n.clone(),
                                 ..ValueInvariants::default()
                             },
-                            field_offset: false,
-                            discriminant: None,
-                            bool_cond: None,
-                            binary_op_source: None,
+                            source: ValueSource::None,
                         },
                     );
                     // Materialize `{ptr, cap, len}` fields for a Vec destination
@@ -2422,10 +2371,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     align_n: result_align_n,
                                     ..ValueInvariants::default()
                                 },
-                                field_offset: false,
-                                discriminant: None,
-                                bool_cond: None,
-                                binary_op_source: None,
+                                source: ValueSource::None,
                             };
                             self.materialize_vec_fields(dest, ptr_field, vec_len.clone(), vec_len);
                         }
@@ -2480,10 +2426,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         init: true,
                         ..Default::default()
                     },
-                    field_offset: false,
-                    discriminant: None,
-                    bool_cond: None,
-                    binary_op_source: None,
+                    source: ValueSource::None,
                 };
                 self.set_field_value(dest, vec![0, 0], nn_field.clone());
                 self.memory.fields
@@ -2504,10 +2447,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             in_bounds: true,
                             align_n,
                         },
-                        field_offset: false,
-                        discriminant: None,
-                        bool_cond: None,
-                        binary_op_source: None,
+                        source: ValueSource::None,
                     },
                 );
             }
@@ -2555,10 +2495,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 in_bounds: true,
                                 ..ValueInvariants::default()
                             },
-                            field_offset: false,
-                            discriminant: None,
-                            bool_cond: None,
-                            binary_op_source: None,
+                            source: ValueSource::None,
                         },
                     );
                     // `Vec::from_elem`/`from_elem`-style constructors set
@@ -2579,10 +2516,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     in_bounds: true,
                                     ..ValueInvariants::default()
                                 },
-                                field_offset: false,
-                                discriminant: None,
-                                bool_cond: None,
-                                binary_op_source: None,
+                                source: ValueSource::None,
                             };
                             self.materialize_vec_fields(dest, ptr_field, vec_len.clone(), vec_len);
                         }
@@ -2629,10 +2563,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 in_bounds: true,
                                 ..ValueInvariants::default()
                             },
-                            field_offset: false,
-                            discriminant: None,
-                            bool_cond: None,
-                            binary_op_source: None,
+                            source: ValueSource::None,
                         },
                     );
                     // `Vec::with_capacity(n)`: len == 0, cap == n.
@@ -2652,10 +2583,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     in_bounds: true,
                                     ..ValueInvariants::default()
                                 },
-                                field_offset: false,
-                                discriminant: None,
-                                bool_cond: None,
-                                binary_op_source: None,
+                                source: ValueSource::None,
                             };
                             let zero = Int::from_u64(self.ctx, 0);
                             self.materialize_vec_fields(dest, ptr_field, vec_cap, zero);
@@ -2702,10 +2630,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             in_bounds: true,
                             ..ValueInvariants::default()
                         },
-                        field_offset: false,
-                        discriminant: None,
-                        bool_cond: None,
-                        binary_op_source: None,
+                        source: ValueSource::None,
                     },
                 );
                 // `into_vec` / `box_assume_init_into_vec_unsafe`: the Vec's
@@ -2727,10 +2652,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 in_bounds: true,
                                 ..ValueInvariants::default()
                             },
-                            field_offset: false,
-                            discriminant: None,
-                            bool_cond: None,
-                            binary_op_source: None,
+                            source: ValueSource::None,
                         };
                         let len_term = self.fresh_int(&format!("vec_len_{}", dest.as_usize()));
                         self.materialize_vec_fields(dest, ptr_field, len_term.clone(), len_term);
@@ -2759,10 +2681,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         in_bounds: true,
                                         ..ValueInvariants::default()
                                     },
-                                    field_offset: false,
-                                    discriminant: None,
-                                    bool_cond: None,
-                                    binary_op_source: None,
+                                    source: ValueSource::None,
                                 },
                             );
                         }
