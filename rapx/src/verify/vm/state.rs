@@ -199,18 +199,6 @@ impl<'tcx> From<Option<Ty<'tcx>>> for ContentTy<'tcx> {
     }
 }
 
-/// How an allocation's liveness is established, and for which region.
-#[derive(Clone, Debug)]
-pub(crate) enum Liveness<'tcx> {
-    /// No liveness assumption. A VM-owned allocation is still alive while
-    /// `!dead`; an external allocation with no assumption has unknown liveness
-    /// (and fails `Alive` unless grounded in a live reference).
-    Unassumed,
-    /// Assumed alive for the named region (an `Alive(p, 'a)` contract/invariant,
-    /// or `'static` for `ValidCStr` / `Allocated` params / `'static` data).
-    AssumedFor(Region<'tcx>),
-}
-
 /// Uniform facts about the *pointer elements* of a container, established by
 /// `x.iter()` for_each invariants.
 ///
@@ -242,6 +230,7 @@ pub(crate) struct ForEachFacts<'ctx, 'tcx> {
 /// (an `AllocId` is a monotonic counter that doubles as the vector index).
 #[derive(Clone, Debug)]
 pub(crate) struct Allocation<'ctx, 'tcx> {
+    // ── Shape (always present) ──
     /// Base address (fresh Z3 constant).
     pub base: Int<'ctx>,
 
@@ -258,6 +247,7 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     /// The allocation shape (object vs slice vs external).
     pub kind: AllocKind<'ctx>,
 
+    // ── Lifecycle ──
     /// Whether the allocation has been freed (StorageDead / Drop).
     pub dead: bool,
 
@@ -268,13 +258,17 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     /// `MaybeUninit::uninit`).
     pub initialized: bool,
 
-    /// How this allocation's liveness is established, and for which region.
-    /// Only consulted for external allocations, which carry no liveness
-    /// guarantee (their memory is owned by the caller); `AssumedFor('a)` records
-    /// the `Alive(p, 'a)` contract's region so the checker can reject a use that
-    /// demands a longer region.
-    pub liveness: Liveness<'tcx>,
+    /// The region this external allocation is assumed alive for, via an
+    /// `Alive(p, 'a)` contract/invariant (or `'static` for `ValidCStr`/`Allocated`
+    /// params/`'static` data).  Only consulted for *external* allocations, whose
+    /// memory is owned by the caller (so `dead` carries no liveness guarantee):
+    /// the checker rejects a use that demands a longer region than this.  `None`
+    /// means no assumption — an external allocation then fails `Alive` unless
+    /// grounded in a live reference; a VM-owned allocation is alive while
+    /// `!dead` and never sets this.
+    pub liveness: Option<Region<'tcx>>,
 
+    // ── Content semantics ──
     /// Whether the allocation is known to be a null-terminated byte buffer (a
     /// valid C string), asserted via a `ValidCStr` contract fact or struct
     /// invariant.
@@ -284,6 +278,7 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     /// `x.iter()` for_each invariants (`Typed`/`Align`/`Allocated`).
     pub for_each: ForEachFacts<'ctx, 'tcx>,
 
+    // ── Relationships (Option) ──
     /// The allocation a sub-view was derived from: a slice view created by
     /// `s[i..j]` / `s.get(range)`, `split_at` / `align_to` / `as_chunks`, or
     /// `from_raw_parts`. Each view is a fresh `AllocId` but a window onto the
@@ -320,7 +315,7 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
             kind,
             dead: false,
             initialized: false,
-            liveness: Liveness::Unassumed,
+            liveness: None,
             nul_terminated: false,
             for_each: ForEachFacts::default(),
             parent: None,
@@ -880,137 +875,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         value: VmValue<'ctx, 'tcx>,
     ) {
         self.current_frame.field_values.insert((local, path), value);
-    }
-
-    /// The value at a field offset *within an allocation* viewed as `view_ty`.
-    ///
-    /// This is the memory-contents layer ([`Memory::fields`]), the counterpart
-    /// to [`Self::field_value`]'s binding-value layer ([`FrameState::field_values`]):
-    /// `field_value` asks "what value does the aggregate bound to `local` hold
-    /// at field `path`?", while `load_field` asks "what value sits at
-    /// `base(alloc_id) + offset(path)` interpreted as `view_ty`?".  The viewed
-    /// type is part of the key so reinterpret casts (`LeafNode` ↔
-    /// `InternalNode`) resolve to the right field view.
-    pub(crate) fn load_field(
-        &self,
-        alloc_id: AllocId,
-        view_ty: Ty<'tcx>,
-        path: &[usize],
-    ) -> Option<&VmValue<'ctx, 'tcx>> {
-        self.memory.fields.get(&(alloc_id, view_ty, path.to_vec()))
-    }
-
-    /// Record a per-byte symbolic value at a concrete offset in an allocation.
-    pub(crate) fn record_byte_value(&mut self, alloc_id: AllocId, offset: usize, term: Int<'ctx>) {
-        let byte = self.memory.bytes.entry((alloc_id, offset)).or_default();
-        byte.value = Some(term);
-        byte.init = true;
-    }
-
-    /// Mark a byte as initialized without changing its value.
-    pub(crate) fn mark_byte_init(&mut self, alloc_id: AllocId, offset: usize) {
-        self.memory.bytes.entry((alloc_id, offset)).or_default().init = true;
-    }
-
-    /// Mark a byte as known NUL (0x00).
-    pub(crate) fn mark_byte_nul(&mut self, alloc_id: AllocId, offset: usize) {
-        self.memory.bytes.entry((alloc_id, offset)).or_default().nul = Some(true);
-    }
-
-    /// Mark a byte as known non-NUL (!= 0x00).
-    pub(crate) fn mark_byte_non_nul(&mut self, alloc_id: AllocId, offset: usize) {
-        self.memory.bytes.entry((alloc_id, offset)).or_default().nul = Some(false);
-    }
-
-    /// Look up a per-byte Z3 term for a concrete offset in an allocation.
-    pub(crate) fn get_byte_value(&self, alloc_id: AllocId, offset: usize) -> Option<&Int<'ctx>> {
-        self.memory.bytes
-            .get(&(alloc_id, offset))
-            .and_then(|b| b.value.as_ref())
-    }
-
-    /// Check whether a byte at a concrete offset is known to be initialized.
-    pub(crate) fn is_byte_init(&self, alloc_id: AllocId, offset: usize) -> bool {
-        self.memory.bytes.get(&(alloc_id, offset)).is_some_and(|b| b.init)
-    }
-
-    /// Check whether a byte at a concrete offset is known to be NUL.
-    pub(crate) fn is_byte_nul(&self, alloc_id: AllocId, offset: usize) -> bool {
-        self.memory.bytes
-            .get(&(alloc_id, offset))
-            .is_some_and(|b| b.nul == Some(true))
-    }
-
-    /// Check whether a byte at a concrete offset is known to be non-NUL.
-    pub(crate) fn is_byte_non_nul(&self, alloc_id: AllocId, offset: usize) -> bool {
-        self.memory.bytes
-            .get(&(alloc_id, offset))
-            .is_some_and(|b| b.nul == Some(false))
-    }
-
-    /// Return all known (offset, term) pairs for an allocation, sorted by offset.
-    pub(crate) fn alloc_byte_values(&self, alloc_id: AllocId) -> Vec<(usize, &Int<'ctx>)> {
-        let mut pairs: Vec<_> = self
-            .memory.bytes
-            .iter()
-            .filter_map(|((aid, off), byte)| {
-                if *aid == alloc_id {
-                    byte.value.as_ref().map(|term| (*off, term))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        pairs.sort_by_key(|(off, _)| *off);
-        pairs
-    }
-
-    /// Collect all offsets known to be NUL in an allocation.
-    pub(crate) fn alloc_nul_offsets(&self, alloc_id: AllocId) -> Vec<usize> {
-        self.memory.bytes
-            .iter()
-            .filter_map(|((aid, off), byte)| {
-                if *aid == alloc_id && byte.nul == Some(true) {
-                    Some(*off)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    /// Collect all offsets known to be non-NUL in an allocation.
-    pub(crate) fn alloc_non_nul_offsets(&self, alloc_id: AllocId) -> Vec<usize> {
-        self.memory.bytes
-            .iter()
-            .filter_map(|((aid, off), byte)| {
-                if *aid == alloc_id && byte.nul == Some(false) {
-                    Some(*off)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    /// Copy all per-byte tracking (value, init, NUL knowledge) from one
-    /// allocation to another.
-    pub(crate) fn copy_byte_tracking(&mut self, src: AllocId, src_offset: usize, dst: AllocId) {
-        let infos: Vec<(usize, ByteInfo<'ctx>)> = self
-            .memory.bytes
-            .iter()
-            .filter(|((aid, _), _)| *aid == src)
-            .map(|((_, off), byte)| (*off, byte.clone()))
-            .collect();
-        for (off, byte) in infos {
-            // The destination allocation starts at `src_offset` into the source,
-            // so shift each tracked byte by that offset (`src[off]` → `dst[off -
-            // src_offset]`).  Bytes before `src_offset` lie outside the sub-slice
-            // and are dropped.
-            if off >= src_offset {
-                self.memory.bytes.insert((dst, off - src_offset), byte);
-            }
-        }
     }
 
     /// Assert path conditions and invariant constraints into a solver.

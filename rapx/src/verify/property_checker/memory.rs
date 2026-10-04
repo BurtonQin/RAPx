@@ -9,7 +9,7 @@ use crate::helpers::mir_scan::Checkpoint;
 use crate::verify::api_classify;
 use crate::verify::contract::{ContractExpr, Property, PropertyArg};
 use crate::verify::report::CheckResult;
-use crate::verify::vm::state::{AllocId, Liveness, OffsetKind, VmState, VmValue};
+use crate::verify::vm::state::{AllocId, OffsetKind, VmState, VmValue};
 use rustc_hash::FxHashSet;
 use rustc_middle::mir::{Local, Operand, Rvalue, StatementKind};
 use rustc_middle::ty::TyKind;
@@ -947,7 +947,7 @@ impl PropertyChecker {
             // precondition / struct invariant), or grounded in a live reference.
             if !vm_state.alloc(root_id).dead {
                 match &vm_state.alloc(root_id).liveness {
-                    Liveness::AssumedFor(src_region) => {
+                    Some(src_region) => {
                         // The `Alive(p, 'r)` check demands the memory alive for
                         // `'r`, while the assumption only guarantees `'a`; the
                         // assumption covers the demand only when `'a: 'r`.
@@ -997,7 +997,7 @@ impl PropertyChecker {
                         }
                         return CheckResult::ProvedByRule;
                     }
-                    Liveness::Unassumed => {}
+                    None => {}
                 }
             }
             // A raw pointer derived from a live reference or owned (Box/Vec)

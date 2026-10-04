@@ -8,7 +8,7 @@ use rustc_middle::{
 };
 use z3::ast::{Ast, Int};
 
-use super::state::{AllocId, AllocKind, Allocation, Provenance, ValueInvariants, ValueSource, VmState, VmValue};
+use super::state::{AllocId, AllocKind, Allocation, ByteInfo, Provenance, ValueInvariants, ValueSource, VmState, VmValue};
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     pub(crate) fn address_of_place(&mut self, place: &Place<'tcx>) -> Option<VmValue<'ctx, 'tcx>> {
@@ -470,6 +470,141 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             total = Int::add(self.ctx, &[&total, &field_size]);
         }
         Some(total)
+    }
+
+    // ── Per-byte state (`Memory::bytes`) ────────────────────────────────
+
+    /// Record a per-byte symbolic value at a concrete offset in an allocation.
+    pub(crate) fn record_byte_value(&mut self, alloc_id: AllocId, offset: usize, term: Int<'ctx>) {
+        let byte = self.memory.bytes.entry((alloc_id, offset)).or_default();
+        byte.value = Some(term);
+        byte.init = true;
+    }
+
+    /// Mark a byte as initialized without changing its value.
+    pub(crate) fn mark_byte_init(&mut self, alloc_id: AllocId, offset: usize) {
+        self.memory.bytes.entry((alloc_id, offset)).or_default().init = true;
+    }
+
+    /// Mark a byte as known NUL (0x00).
+    pub(crate) fn mark_byte_nul(&mut self, alloc_id: AllocId, offset: usize) {
+        self.memory.bytes.entry((alloc_id, offset)).or_default().nul = Some(true);
+    }
+
+    /// Mark a byte as known non-NUL (!= 0x00).
+    pub(crate) fn mark_byte_non_nul(&mut self, alloc_id: AllocId, offset: usize) {
+        self.memory.bytes.entry((alloc_id, offset)).or_default().nul = Some(false);
+    }
+
+    /// Look up a per-byte Z3 term for a concrete offset in an allocation.
+    pub(crate) fn get_byte_value(&self, alloc_id: AllocId, offset: usize) -> Option<&Int<'ctx>> {
+        self.memory.bytes
+            .get(&(alloc_id, offset))
+            .and_then(|b| b.value.as_ref())
+    }
+
+    /// Check whether a byte at a concrete offset is known to be initialized.
+    pub(crate) fn is_byte_init(&self, alloc_id: AllocId, offset: usize) -> bool {
+        self.memory.bytes.get(&(alloc_id, offset)).is_some_and(|b| b.init)
+    }
+
+    /// Check whether a byte at a concrete offset is known to be NUL.
+    pub(crate) fn is_byte_nul(&self, alloc_id: AllocId, offset: usize) -> bool {
+        self.memory.bytes
+            .get(&(alloc_id, offset))
+            .is_some_and(|b| b.nul == Some(true))
+    }
+
+    /// Check whether a byte at a concrete offset is known to be non-NUL.
+    pub(crate) fn is_byte_non_nul(&self, alloc_id: AllocId, offset: usize) -> bool {
+        self.memory.bytes
+            .get(&(alloc_id, offset))
+            .is_some_and(|b| b.nul == Some(false))
+    }
+
+    /// Return all known (offset, term) pairs for an allocation, sorted by offset.
+    pub(crate) fn alloc_byte_values(&self, alloc_id: AllocId) -> Vec<(usize, &Int<'ctx>)> {
+        let mut pairs: Vec<_> = self
+            .memory.bytes
+            .iter()
+            .filter_map(|((aid, off), byte)| {
+                if *aid == alloc_id {
+                    byte.value.as_ref().map(|term| (*off, term))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        pairs.sort_by_key(|(off, _)| *off);
+        pairs
+    }
+
+    /// Collect all offsets known to be NUL in an allocation.
+    pub(crate) fn alloc_nul_offsets(&self, alloc_id: AllocId) -> Vec<usize> {
+        self.memory.bytes
+            .iter()
+            .filter_map(|((aid, off), byte)| {
+                if *aid == alloc_id && byte.nul == Some(true) {
+                    Some(*off)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Collect all offsets known to be non-NUL in an allocation.
+    pub(crate) fn alloc_non_nul_offsets(&self, alloc_id: AllocId) -> Vec<usize> {
+        self.memory.bytes
+            .iter()
+            .filter_map(|((aid, off), byte)| {
+                if *aid == alloc_id && byte.nul == Some(false) {
+                    Some(*off)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Copy all per-byte tracking (value, init, NUL knowledge) from one
+    /// allocation to another.
+    pub(crate) fn copy_byte_tracking(&mut self, src: AllocId, src_offset: usize, dst: AllocId) {
+        let infos: Vec<(usize, ByteInfo<'ctx>)> = self
+            .memory.bytes
+            .iter()
+            .filter(|((aid, _), _)| *aid == src)
+            .map(|((_, off), byte)| (*off, byte.clone()))
+            .collect();
+        for (off, byte) in infos {
+            // The destination allocation starts at `src_offset` into the source,
+            // so shift each tracked byte by that offset (`src[off]` → `dst[off -
+            // src_offset]`).  Bytes before `src_offset` lie outside the sub-slice
+            // and are dropped.
+            if off >= src_offset {
+                self.memory.bytes.insert((dst, off - src_offset), byte);
+            }
+        }
+    }
+
+    // ── Per-allocation fields (`Memory::fields`) ─────────────────────────
+
+    /// The value at a field offset *within an allocation* viewed as `view_ty`.
+    ///
+    /// This is the memory-contents layer ([`Memory::fields`]), the counterpart
+    /// to [`Self::field_value`]'s binding-value layer ([`FrameState::field_values`]):
+    /// `field_value` asks "what value does the aggregate bound to `local` hold
+    /// at field `path`?", while `load_field` asks "what value sits at
+    /// `base(alloc_id) + offset(path)` interpreted as `view_ty`?".  The viewed
+    /// type is part of the key so reinterpret casts (`LeafNode` ↔
+    /// `InternalNode`) resolve to the right field view.
+    pub(crate) fn load_field(
+        &self,
+        alloc_id: AllocId,
+        view_ty: Ty<'tcx>,
+        path: &[usize],
+    ) -> Option<&VmValue<'ctx, 'tcx>> {
+        self.memory.fields.get(&(alloc_id, view_ty, path.to_vec()))
     }
 }
 
