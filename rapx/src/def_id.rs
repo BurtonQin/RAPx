@@ -68,6 +68,10 @@ struct Types {
     iter_types: Vec<DefId>,
     rc_types: Vec<DefId>,
     sync_primitive_types: Vec<DefId>,
+    /// `alloc::alloc::exchange_malloc` (`Box::new`'s lang item on toolchains
+    /// that lower `Box::new` to it) — resolved by name scan, since it has no
+    /// lang item on newer toolchains.
+    exchange_malloc: Option<DefId>,
     /// Negative auto-trait types (`Cell`/`UnsafeCell`/`RefCell`/`Ref`/`RefMut`/
     /// guards), keyed by short name — used by `ContainNoType` in Send/Sync obligations.
     negative_types: IndexMap<Box<str>, Vec<DefId>>,
@@ -104,6 +108,7 @@ fn init_types(tcx: TyCtxt) -> Types {
         iter_types: Vec::new(),
         rc_types: Vec::new(),
         sync_primitive_types: Vec::new(),
+        exchange_malloc: None,
         negative_types: IndexMap::new(),
     };
 
@@ -166,6 +171,12 @@ fn init_types(tcx: TyCtxt) -> Types {
                             types.ascii_char_types.push(adt_did);
                         }
                     }
+                }
+                // `alloc::alloc::exchange_malloc` (`Box::new`'s allocator on
+                // some toolchains) has no lang item on newer toolchains; resolve
+                // it by name so `Box::new`'s fresh allocation keeps provenance.
+                if name.contains("exchange_malloc") {
+                    types.exchange_malloc.get_or_insert(did);
                 }
                 // Synchronization primitives have no diagnostic/lang item, so
                 // resolve them from the self type of their methods (the
@@ -359,6 +370,14 @@ pub fn ascii_char_types() -> &'static [DefId] {
         .get()
         .expect("Type DefIds haven't been initialized.")
         .ascii_char_types
+}
+
+/// `alloc::alloc::exchange_malloc`, if present on this toolchain.
+pub fn exchange_malloc() -> Option<DefId> {
+    TYPES
+        .get()
+        .expect("Type DefIds haven't been initialized.")
+        .exchange_malloc
 }
 
 /// `core::cmp::Ordering`.

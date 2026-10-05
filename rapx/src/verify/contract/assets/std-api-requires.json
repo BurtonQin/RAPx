@@ -4693,6 +4693,7 @@
       ]
     }
   ],
+  "alloc::alloc::exchange_malloc": [],
   "alloc::alloc::alloc": [
     {
       "tag": "ValidNum",

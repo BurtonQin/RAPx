@@ -65,6 +65,7 @@ static REGISTRY: &[Entry] = &[
     // write-to-buffer model.)
     ED!(api_classify::is_vec_alloc_constructor, eff_new_allocation),
     ED!(api_classify::is_box_alloc_ctor, eff_box_alloc),
+    ED!(api_classify::is_exchange_malloc, eff_exchange_malloc),
     // `into_vec` / `box_assume_init_into_vec_unsafe`: needed on older
     // toolchains where `vec![…]` literals lower to `into_vec` (not `from_elem`).
     ED!(api_classify::is_vec_from_box, eff_vec_from_box),
@@ -475,6 +476,10 @@ fn eff_new_allocation(ctx: &EffCtx<'_, '_>) -> Vec<CallEffect> {
 
 fn eff_box_alloc(_ctx: &EffCtx<'_, '_>) -> Vec<CallEffect> {
     vec![CallEffect::ReturnBoxAllocation]
+}
+
+fn eff_exchange_malloc(_ctx: &EffCtx<'_, '_>) -> Vec<CallEffect> {
+    vec![CallEffect::ReturnExchangeMalloc { size_arg: 0 }]
 }
 
 fn eff_new_allocation_from_cap(ctx: &EffCtx<'_, '_>) -> Vec<CallEffect> {

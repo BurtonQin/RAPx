@@ -2451,6 +2451,38 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     },
                 );
             }
+            CallEffect::ReturnExchangeMalloc { size_arg } => {
+                if let Some(size_val) = args.get(*size_arg) {
+                    let dest_ty = self.body().local_decls[dest].ty;
+                    let u8_ty = self.tcx.types.u8;
+                    let (alloc_id, base) = self.allocate_external(
+                        size_val.term.clone(),
+                        Int::from_u64(self.ctx, 1),
+                        Some(u8_ty),
+                    );
+                    self.alloc_mut(alloc_id).set_slice_len(size_val.term.clone());
+                    self.alloc_mut(alloc_id).initialized = true;
+                    self.set_local(
+                        dest,
+                        VmValue {
+                            term: base,
+                            ty: dest_ty,
+                            provenance: Some(Provenance {
+                                alloc_id,
+                                offset: Int::from_u64(self.ctx, 0),
+                                offset_kind: None,
+                            }),
+                            invariants: ValueInvariants {
+                                non_null: true,
+                                init: true,
+                                in_bounds: true,
+                                ..ValueInvariants::default()
+                            },
+                            source: ValueSource::None,
+                        },
+                    );
+                }
+            }
             CallEffect::ReturnNewAllocation {
                 size_arg,
                 elem_size,

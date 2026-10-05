@@ -125,6 +125,9 @@ pub(crate) enum CallEffect {
         size_arg: usize,
         elem_size: u64,
     },
+    /// `alloc::alloc::exchange_malloc(size, align)` — a fresh allocation of
+    /// `size_arg` bytes, returned as `*mut u8`.
+    ReturnExchangeMalloc { size_arg: usize },
     /// The return value is the length of an aggregate argument.
     ReturnLengthOfArg { arg: usize },
     /// The return value is field `field` of the pointee of argument `arg`

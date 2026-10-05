@@ -471,6 +471,10 @@ pub fn is_vec_from_box(callee: Option<DefId>) -> bool {
         ],
     )
 }
+/// `alloc::alloc::exchange_malloc` (`Box::new`'s allocator on some toolchains).
+pub fn is_exchange_malloc(callee: Option<DefId>) -> bool {
+    callee.is_some_and(|c| crate::def_id::exchange_malloc() == Some(c))
+}
 /// `slice::to_vec` (`<[T]>::to_vec` via `to_vec_in::ConvertVec::to_vec`) —
 /// allocates a fresh buffer and copies the slice's elements.
 pub fn is_slice_to_vec(callee: Option<DefId>) -> bool {
