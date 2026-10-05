@@ -190,13 +190,11 @@ fn ownedheap_collections() {
     ] {
         assert_contain(&output, pattern);
     }
-    if output.contains("HashMap\": True, <0,0,1,1>") {
-        assert_contain(&output, "HashMap\": True, <0,0,1,1>");
-        assert_contain(&output, "HashSet\": True, <0,1,1>");
-    } else {
-        assert_contain(&output, "HashMap\": True, <0,0,1>");
-        assert_contain(&output, "HashSet\": True, <0,1>");
-    }
+    // std internals on the pinned nightly-2026-02-07 (1.95.0-nightly) expose
+    // the 4-level HashMap/HashSet access paths; pre-1.99 std emitted 3-level
+    // paths. Pinned to the shape this toolchain actually emits.
+    assert_contain(&output, "HashMap\": True, <0,0,1,1>");
+    assert_contain(&output, "HashSet\": True, <0,1,1>");
     assert_contain(&output, "BTreeMap\": True, <0,0,1>");
     assert_contain(&output, "BTreeSet\": True, <0,1>");
 }
