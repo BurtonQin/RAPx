@@ -72,14 +72,14 @@ pub trait RcxMut<'tcx, 'o, 'a> {
     fn tcx(&'o self) -> TyCtxt<'tcx>;
 }
 
-pub trait IcxMut<'tcx, 'ctx, 'o> {
-    fn icx(&'o self) -> &'o IntraFlowContext<'tcx, 'ctx>;
+pub trait IcxMut<'tcx, 'z3, 'o> {
+    fn icx(&'o self) -> &'o IntraFlowContext<'tcx, 'z3>;
 
-    fn icx_mut(&'o mut self) -> &'o mut IntraFlowContext<'tcx, 'ctx>;
+    fn icx_mut(&'o mut self) -> &'o mut IntraFlowContext<'tcx, 'z3>;
 }
 
-pub trait IcxSliceMut<'tcx, 'ctx, 'o> {
-    fn icx_slice(&'o self) -> &'o IcxSliceFroBlock<'tcx, 'ctx>;
+pub trait IcxSliceMut<'tcx, 'z3, 'o> {
+    fn icx_slice(&'o self) -> &'o IcxSliceFroBlock<'tcx, 'z3>;
 
-    fn icx_slice_mut(&'o mut self) -> &'o mut IcxSliceFroBlock<'tcx, 'ctx>;
+    fn icx_slice_mut(&'o mut self) -> &'o mut IcxSliceFroBlock<'tcx, 'z3>;
 }

@@ -20,9 +20,9 @@ use z3::ast::Ast;
 use super::PropertyChecker;
 
 impl PropertyChecker {
-    pub(super) fn check_typed<'ctx, 'tcx>(
+    pub(super) fn check_typed<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -239,9 +239,9 @@ impl PropertyChecker {
         crate::verify::api_classify::is_maybe_uninit_ty(ty)
     }
 
-    pub(super) fn check_size<'ctx, 'tcx>(
+    pub(super) fn check_size<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -293,9 +293,9 @@ impl PropertyChecker {
         }
     }
 
-    pub(super) fn check_no_padding<'ctx, 'tcx>(
+    pub(super) fn check_no_padding<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {

@@ -30,12 +30,12 @@ pub(crate) struct AllocId(pub usize);
 /// of the non-linear byte form `(k+count)·S <= len·S` (undecidable in Z3 NIA
 /// for a generic `S`).
 #[derive(Clone, Debug)]
-pub(crate) enum OffsetKind<'ctx> {
+pub(crate) enum OffsetKind<'z3> {
     /// Compile-time field offset (`offset_of!`), including a first field at 0.
     Field,
     /// Element index from element-strided arithmetic (`ptr.add(k)`); the byte
     /// offset is `element · S`.
-    Element(Int<'ctx>),
+    Element(Int<'z3>),
     /// A byte-strided or otherwise unclassifiable offset (`byte_add`).
     Byte,
 }
@@ -43,17 +43,17 @@ pub(crate) enum OffsetKind<'ctx> {
 /// Pointer provenance: which allocation, at what byte offset, and (when known)
 /// what structure that offset has.
 #[derive(Clone, Debug)]
-pub(crate) struct Provenance<'ctx> {
+pub(crate) struct Provenance<'z3> {
     /// The allocation this pointer derives from.
     pub alloc_id: AllocId,
     /// Byte offset from the allocation base (always present). A freshly created
     /// pointer to the base of an allocation has `offset = 0`.
-    pub offset: Int<'ctx>,
+    pub offset: Int<'z3>,
     /// The offset's structure. `None` means the pointer sits at the base
     /// (`offset == 0`) with no further structure; `Some(..)` records whether the
     /// offset is a compile-time field offset (`Field`), an element index from
     /// element-strided arithmetic (`Element`), or a byte-strided offset (`Byte`).
-    pub offset_kind: Option<OffsetKind<'ctx>>,
+    pub offset_kind: Option<OffsetKind<'z3>>,
 }
 
 /// Known invariants about a symbolic value.
@@ -63,49 +63,49 @@ pub(crate) struct Provenance<'ctx> {
 /// two `ValueInvariants` would silently report semantically-equal values as
 /// unequal.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ValueInvariants<'ctx> {
+pub(crate) struct ValueInvariants<'z3> {
     pub non_null: bool,
     pub init: bool,
     pub in_bounds: bool,
-    /// If Some(n), the value's term is known to satisfy `term % n == 0`.
+    /// If Some(n), the value's term is known to satisfy `z3_term % n == 0`.
     /// Set by alignment guards, Mul by power-of-two, and type alignment.
     /// `n` is a Z3 term so that a generic type's alignment (a symbolic
     /// `align_T`) can be carried the same way as a concrete alignment.
-    pub align_n: Option<Int<'ctx>>,
+    pub align_n: Option<Int<'z3>>,
 }
 
 /// A symbolic value tracked by the VM.
 ///
-/// # Semantics of `term`
+/// # Semantics of `z3_term`
 ///
 /// - For pointer/reference types (`&T`, `*const T`, `*mut T`, `Box<T>`, etc.):
-///   `term` represents the **address** in the VM's logical address space.
-/// - For scalar types (integers, `bool`, `char`): `term` represents the **value**.
-/// - For aggregate types (struct, tuple, enum): `term` is the base address of
+///   `z3_term` represents the **address** in the VM's logical address space.
+/// - For scalar types (integers, `bool`, `char`): `z3_term` represents the **value**.
+/// - For aggregate types (struct, tuple, enum): `z3_term` is the base address of
 ///   the stack allocation backing the aggregate.
 ///
 /// When `provenance` is `Some`, the following relationship holds and is
 /// asserted into the solver at check time:
-///   `term == alloc[provenance.alloc_id].base + provenance.offset`
+///   `z3_term == alloc[provenance.alloc_id].base + provenance.offset`
 #[derive(Clone, Debug)]
-pub(crate) struct VmValue<'ctx, 'tcx> {
+pub(crate) struct VmValue<'z3, 'tcx> {
     /// The Z3 integer term (address or scalar value, see struct docs).
-    pub term: Int<'ctx>,
+    pub z3_term: Int<'z3>,
     /// Rust type, for layout queries.
     pub ty: Ty<'tcx>,
     /// Which allocation this pointer derives from and at what offset.
-    pub provenance: Option<Provenance<'ctx>>,
+    pub provenance: Option<Provenance<'z3>>,
     /// Known constraints on this value.
-    pub invariants: ValueInvariants<'ctx>,
+    pub invariants: ValueInvariants<'z3>,
     /// Extra semantics (field offset, discriminant, comparison, or binary-op
     /// source); see [`ValueSource`].
-    pub source: ValueSource<'ctx>,
+    pub source: ValueSource<'z3>,
 }
 
-impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
-    pub(crate) fn new(term: Int<'ctx>, ty: Ty<'tcx>) -> Self {
+impl<'z3, 'tcx> VmValue<'z3, 'tcx> {
+    pub(crate) fn new(term: Int<'z3>, ty: Ty<'tcx>) -> Self {
         VmValue {
-            term,
+            z3_term: term,
             ty,
             provenance: None,
             invariants: ValueInvariants::default(),
@@ -119,7 +119,7 @@ impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
     }
 
     /// Symbolic enum discriminant, if known.
-    pub(crate) fn discriminant(&self) -> Option<&Int<'ctx>> {
+    pub(crate) fn discriminant(&self) -> Option<&Int<'z3>> {
         match &self.source {
             ValueSource::Discriminant(d) => Some(d),
             _ => None,
@@ -127,7 +127,7 @@ impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
     }
 
     /// Direct boolean condition of a comparison result, if any.
-    pub(crate) fn bool_cond(&self) -> Option<&Bool<'ctx>> {
+    pub(crate) fn bool_cond(&self) -> Option<&Bool<'z3>> {
         match &self.source {
             ValueSource::Comparison { cond, .. } => Some(cond),
             _ => None,
@@ -149,12 +149,12 @@ impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
 /// combination that previously encoded the kind. `element_ty` (typed vs untyped)
 /// and `parent`/`slice_data` (sub-view / slice-ref edges) stay separate fields.
 #[derive(Clone, Debug)]
-pub(crate) enum AllocKind<'ctx> {
+pub(crate) enum AllocKind<'z3> {
     /// A single object: a `Box<T>` heap object, a struct, a scalar, or an
     /// untyped raw buffer.
     Object,
     /// A slice/array buffer with a known element count.
-    Slice { len: Int<'ctx> },
+    Slice { len: Int<'z3> },
     /// An external raw-pointer parameter. `size` is an unconstrained symbolic
     /// term (the caller may pass any allocation); nullability is *not* stored
     /// here — it is tracked via the pointer term (`term == 0`) path conditions.
@@ -208,14 +208,14 @@ impl<'tcx> From<Option<Ty<'tcx>>> for ContentTy<'tcx> {
 /// allocation, so the checker finds the fact via the loaded pointer's
 /// provenance.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ForEachFacts<'ctx, 'tcx> {
+pub(crate) struct ForEachFacts<'z3, 'tcx> {
     /// `Typed(iter(), T)`: every element pointer points at a valid `T`.
     pub target_ty: Option<Ty<'tcx>>,
     /// `Align(iter(), T)`: every element pointer is aligned to `align_of(T)`.
     pub aligned_ty: Option<Ty<'tcx>>,
     /// `Allocated(iter(), T, n)`: every element pointer backs `>= n` `T`
     /// elements (`n` may be symbolic).
-    pub allocated: Option<(Ty<'tcx>, Int<'ctx>)>,
+    pub allocated: Option<(Ty<'tcx>, Int<'z3>)>,
     /// `Owning(iter())`: every element pointer is the sole owner of its
     /// pointee (mutually non-aliasing).  Established by the trusted invariant;
     /// the aliasing *check* of the invariant itself is done by the alias
@@ -229,23 +229,23 @@ pub(crate) struct ForEachFacts<'ctx, 'tcx> {
 /// The allocation is stored in [`Memory::allocations`] at index `AllocId.0`
 /// (an `AllocId` is a monotonic counter that doubles as the vector index).
 #[derive(Clone, Debug)]
-pub(crate) struct Allocation<'ctx, 'tcx> {
+pub(crate) struct Allocation<'z3, 'tcx> {
     // ── Shape (always present) ──
     /// Base address (fresh Z3 constant).
-    pub base: Int<'ctx>,
+    pub base: Int<'z3>,
 
     /// Size in bytes (Z3 term, may be symbolic).
-    pub size: Int<'ctx>,
+    pub size: Int<'z3>,
 
     /// Alignment in bytes (Z3 term, may be symbolic for a generic element
     /// type).
-    pub align: Int<'ctx>,
+    pub align: Int<'z3>,
 
     /// Type of the allocation's contents (concrete `Ty` or symbolic `Generic`).
     pub element_ty: ContentTy<'tcx>,
 
     /// The allocation shape (object vs slice vs external).
-    pub kind: AllocKind<'ctx>,
+    pub kind: AllocKind<'z3>,
 
     // ── Lifecycle ──
     /// Whether the allocation has been freed (StorageDead / Drop).
@@ -276,7 +276,7 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
 
     /// Uniform facts about this allocation's pointer elements, established by
     /// `x.iter()` for_each invariants (`Typed`/`Align`/`Allocated`).
-    pub for_each: ForEachFacts<'ctx, 'tcx>,
+    pub for_each: ForEachFacts<'z3, 'tcx>,
 
     // ── Relationships (Option) ──
     /// The allocation a sub-view was derived from: a slice view created by
@@ -297,15 +297,15 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     pub slice_data: Option<AllocId>,
 }
 
-impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
+impl<'z3, 'tcx> Allocation<'z3, 'tcx> {
     /// Construct a fresh allocation with all live/dead/invariant flags in
     /// their initial state.
     pub(crate) fn new(
-        base: Int<'ctx>,
-        size: Int<'ctx>,
-        align: Int<'ctx>,
+        base: Int<'z3>,
+        size: Int<'z3>,
+        align: Int<'z3>,
         element_ty: Option<Ty<'tcx>>,
-        kind: AllocKind<'ctx>,
+        kind: AllocKind<'z3>,
     ) -> Self {
         Allocation {
             base,
@@ -335,7 +335,7 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
     /// same `len` and push the equality as a path condition); it is *not*
     /// enforced here. `slice_len_from_value` falls back to `size / elem_size`
     /// when the length was never materialized.
-    pub(crate) fn slice_len(&self) -> Option<&Int<'ctx>> {
+    pub(crate) fn slice_len(&self) -> Option<&Int<'z3>> {
         match &self.kind {
             AllocKind::Slice { len } => Some(len),
             _ => None,
@@ -344,7 +344,7 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
 
     /// Mark this allocation as slice data with the given element count.
     /// Callers must keep `size == len * sizeof(element_ty)` consistent.
-    pub(crate) fn set_slice_len(&mut self, len: Int<'ctx>) {
+    pub(crate) fn set_slice_len(&mut self, len: Int<'z3>) {
         self.kind = AllocKind::Slice { len };
     }
 }
@@ -376,9 +376,9 @@ pub(crate) struct PathFacts {
 
 /// Per-byte symbolic state at a concrete offset in an allocation.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ByteInfo<'ctx> {
+pub(crate) struct ByteInfo<'z3> {
     /// Symbolic value, if tracked.
-    pub value: Option<Int<'ctx>>,
+    pub value: Option<Int<'z3>>,
     /// Whether the byte has been explicitly written.
     pub init: bool,
     /// NUL knowledge: `Some(true)` known NUL, `Some(false)` known non-NUL.
@@ -417,7 +417,7 @@ pub(crate) struct ByteInfo<'ctx> {
 /// 3. Exit `bar`: `restore_frame` brings `main`'s locals back, then the deferred
 ///    write is replayed, giving `x.field == 1`.
 #[derive(Default)]
-pub(crate) struct InlineCtx<'ctx, 'tcx> {
+pub(crate) struct InlineCtx<'z3, 'tcx> {
     /// Current inlining depth (nested inlined callees), bounded by
     /// `MAX_INLINE_DEPTH`.
     pub inline_depth: usize,
@@ -433,7 +433,7 @@ pub(crate) struct InlineCtx<'ctx, 'tcx> {
     /// Each entry is `(caller_local, field_path, value)`, where `caller_local`
     /// comes from `arg_referents` — the caller local the `&mut` argument points
     /// at, not the argument itself.
-    pub deferred_field_writes: Vec<(Local, Vec<usize>, VmValue<'ctx, 'tcx>)>,
+    pub deferred_field_writes: Vec<(Local, Vec<usize>, VmValue<'z3, 'tcx>)>,
 }
 
 /// The extra semantics attached to a value, beyond its term/type/provenance.
@@ -445,13 +445,13 @@ pub(crate) struct InlineCtx<'ctx, 'tcx> {
 /// it null-checks/alignment-checks) and division-axiom injection (following
 /// dataflow edges to reach `Div`/`Rem` results).
 #[derive(Clone, Debug)]
-pub(crate) enum ValueSource<'ctx> {
+pub(crate) enum ValueSource<'z3> {
     /// No extra semantics.
     None,
     /// A compile-time `offset_of!` field offset.
     FieldOffset,
     /// A symbolic enum discriminant (variant index).
-    Discriminant(Int<'ctx>),
+    Discriminant(Int<'z3>),
     /// A comparison result (`Eq`/`Ne`/`Le`/`Lt`/`Ge`/`Gt`): the operands and
     /// the direct boolean condition (`offset <= len`) carried alongside the
     /// ite-encoded term.
@@ -459,7 +459,7 @@ pub(crate) enum ValueSource<'ctx> {
         lhs: Option<PlaceKey>,
         rhs: Option<PlaceKey>,
         op: rustc_middle::mir::BinOp,
-        cond: Bool<'ctx>,
+        cond: Bool<'z3>,
     },
     /// A non-comparison binary-op result (`Add`/`Sub`/…/`Div`/`Rem`): the
     /// operands and operator.
@@ -470,7 +470,7 @@ pub(crate) enum ValueSource<'ctx> {
     },
 }
 
-impl<'ctx> ValueSource<'ctx> {
+impl<'z3> ValueSource<'z3> {
     /// The `(lhs, rhs, op)` of a binary-op/comparison result, if this value is
     /// one.
     pub(crate) fn operands(&self) -> Option<(&Option<PlaceKey>, &Option<PlaceKey>, rustc_middle::mir::BinOp)> {
@@ -483,7 +483,7 @@ impl<'ctx> ValueSource<'ctx> {
 
     /// Just the field-offset part of this source: `FieldOffset` if it is one,
     /// otherwise `None`.
-    pub(crate) fn field_offset_only(&self) -> ValueSource<'ctx> {
+    pub(crate) fn field_offset_only(&self) -> ValueSource<'z3> {
         match self {
             ValueSource::FieldOffset => ValueSource::FieldOffset,
             _ => ValueSource::None,
@@ -500,14 +500,14 @@ impl<'ctx> ValueSource<'ctx> {
 /// `allocations.len()`), so the `AllocId`-keyed field/byte tables stay
 /// consistent with the allocation vector.
 #[derive(Default)]
-pub(crate) struct Memory<'ctx, 'tcx> {
+pub(crate) struct Memory<'z3, 'tcx> {
     /// All known allocations, indexed by `AllocId`.
-    pub(crate) allocations: Vec<Allocation<'ctx, 'tcx>>,
+    pub(crate) allocations: Vec<Allocation<'z3, 'tcx>>,
 
     /// Per-byte symbolic state: (alloc_id, concrete_byte_offset) → ByteInfo.
     /// Populated by aggregate initialisation, pointer stores, and write call
     /// effects. Enables byte-level reasoning for properties like ValidCStr.
-    pub(crate) bytes: FxHashMap<(AllocId, usize), ByteInfo<'ctx>>,
+    pub(crate) bytes: FxHashMap<(AllocId, usize), ByteInfo<'z3>>,
 
     /// Per-allocation field tracking: (alloc_id, viewed_type, field_indices) →
     /// value, i.e. the value of a field *within an allocation* viewed as
@@ -515,7 +515,7 @@ pub(crate) struct Memory<'ctx, 'tcx> {
     /// allocation under different ADTs (e.g. `LeafNode` vs `InternalNode` cast
     /// views), so field index `1` resolves to `parent_idx` under `LeafNode` and
     /// `edges` under `InternalNode` without colliding.
-    pub(crate) fields: FxHashMap<(AllocId, Ty<'tcx>, Vec<usize>), VmValue<'ctx, 'tcx>>,
+    pub(crate) fields: FxHashMap<(AllocId, Ty<'tcx>, Vec<usize>), VmValue<'z3, 'tcx>>,
 }
 
 /// Accumulated solver state for the current path.
@@ -525,16 +525,16 @@ pub(crate) struct Memory<'ctx, 'tcx> {
 /// linear.  Everything is path-scoped and monotonic: it accumulates as the VM
 /// steps and is never reset within a path (or across inlined frames).
 #[derive(Default)]
-pub(crate) struct Constraints<'ctx, 'tcx> {
+pub(crate) struct Constraints<'z3, 'tcx> {
     /// Accumulated solver constraints along the current path: branch/guard
     /// constraints (`SwitchInt`/`Assert`), API preconditions, and symbolic
     /// layout facts (`sizeof_T`, `align_T`).  Asserted into the solver by
     /// [`VmState::assert_all`] and by the property checker's feasibility
     /// queries.
-    pub(crate) assertions: Vec<Bool<'ctx>>,
+    pub(crate) assertions: Vec<Bool<'z3>>,
 
     /// Term-provenance caches that shape terms into a form Z3 can solve.
-    pub(crate) term_caches: TermCaches<'ctx, 'tcx>,
+    pub(crate) term_caches: TermCaches<'z3, 'tcx>,
 }
 
 /// Term-provenance caches, one per phenomenon the VM must shape by hand.
@@ -545,30 +545,30 @@ pub(crate) struct Constraints<'ctx, 'tcx> {
 /// provenance later to emit a compact, degree-≤2 term instead.  Each cache is
 /// independent — they share only the path-scoped, monotonic lifetime.
 #[derive(Default)]
-pub(crate) struct TermCaches<'ctx, 'tcx> {
+pub(crate) struct TermCaches<'z3, 'tcx> {
     /// `sizeof_T` for each generic type, one symbolic constant per type.  Keeps
     /// `ptr.add` strides, `access_bytes` element sizes, and allocation sizes
     /// consistent so that SMT can cancel the `S` factor in `InBound`.
-    pub(crate) sizes: FxHashMap<Ty<'tcx>, Int<'ctx>>,
+    pub(crate) sizes: FxHashMap<Ty<'tcx>, Int<'z3>>,
 
     /// `align_T` for each generic type, one symbolic constant per type; linked
     /// to the size by the layout constraint `sizeof_T % align_T == 0`.
-    pub(crate) aligns: FxHashMap<Ty<'tcx>, Int<'ctx>>,
+    pub(crate) aligns: FxHashMap<Ty<'tcx>, Int<'z3>>,
 
     /// Terms that are the result of a bitwise `Not` (two's-complement mask).
     /// Used to recognize `x & !(align-1)` alignment patterns in BitAnd so we
     /// can derive `align = -mask` and emit linear bounds for the result.
-    pub(crate) not_mask_terms: FxHashSet<Int<'ctx>>,
+    pub(crate) not_mask_terms: FxHashSet<Int<'z3>>,
 
     /// `quotient → dividend` for each *exact* division (`lhs % rhs == 0`),
     /// recording which size each `exact_div` symbol divides (e.g. `us` →
     /// `sizeof_T`).  Lets a later `us_len = (len / ts) * us` multiplication
     /// emit the byte bound `us_len * sizeof_U <= len * sizeof_T`.
-    pub(crate) exact_div_roots: FxHashMap<Int<'ctx>, Int<'ctx>>,
+    pub(crate) exact_div_roots: FxHashMap<Int<'z3>, Int<'z3>>,
 
     /// `quotient → (lhs, rhs)` for each *non-exact* division, recovering the
     /// `len` and divisor (`ts`) operands at a following `us_len = (len / ts) * us`.
-    pub(crate) div_roots: FxHashMap<Int<'ctx>, (Int<'ctx>, Int<'ctx>)>,
+    pub(crate) div_roots: FxHashMap<Int<'z3>, (Int<'z3>, Int<'z3>)>,
 
     /// Per-iterator element index, keyed by the *buffer* the iterator walks
     /// (`end` field's provenance alloc id, which is frame-independent).  The
@@ -577,25 +577,25 @@ pub(crate) struct TermCaches<'ctx, 'tcx> {
     /// Caching both keeps `next`/`len`/`is_empty` checks linear
     /// (`base_len - offset`) instead of a deeply-nested `((base + S) + S) …`
     /// pointer chain that Z3's NIA cannot reason about.
-    pub(crate) iter_ptr_offset: FxHashMap<AllocId, (Int<'ctx>, Option<Int<'ctx>>)>,
+    pub(crate) iter_ptr_offset: FxHashMap<AllocId, (Int<'z3>, Option<Int<'z3>>)>,
 }
 
 /// The frame-scoped subset of [`VmState`]: everything keyed by MIR `Local` /
 /// `PlaceKey`, which the callee reuses, so it must be swapped out for the
 /// duration of an inlined callee and swapped back afterwards.
-pub(crate) struct FrameState<'ctx, 'tcx> {
+pub(crate) struct FrameState<'z3, 'tcx> {
     /// The function whose body we execute (the MIR is derived via
     /// [`VmState::body`]).
     pub(crate) current_def_id: DefId,
 
     /// Current value bound to each MIR local (rvalue).
-    pub(crate) local_values: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
+    pub(crate) local_values: FxHashMap<Local, VmValue<'z3, 'tcx>>,
 
     /// Field-level value tracking for aggregates: (local, field_indices) → value.
     /// Example: `(local_3, [0])` is `local_3.0`, `(local_3, [0, 1])` is `local_3.0.1`.
     /// This is the binding-value layer; see [`Memory::fields`] for the
     /// alloc-keyed memory-contents layer (pointee decomposition).
-    pub(crate) field_values: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
+    pub(crate) field_values: FxHashMap<(Local, Vec<usize>), VmValue<'z3, 'tcx>>,
 
     /// The stack allocation backing each local's place (lvalue identity).
     pub(crate) local_alloc: FxHashMap<Local, AllocId>,
@@ -606,18 +606,18 @@ pub(crate) struct FrameState<'ctx, 'tcx> {
 /// Accumulates locals, allocations, and solver constraints as the VM steps
 /// through retained MIR items. The Z3 context is borrowed so a single context
 /// can be reused across property checks.
-pub(crate) struct VmState<'ctx, 'tcx> {
+pub(crate) struct VmState<'z3, 'tcx> {
     // ── Shared handles (passed in at run start; not execution state, but
     //    needed to create terms and query types during checking)
     /// Shared Z3 context.
-    pub(crate) ctx: &'ctx Context,
+    pub(crate) z3_ctx: &'z3 Context,
 
     /// Compiler type context.
     pub(crate) tcx: TyCtxt<'tcx>,
 
     // ── Frame-scoped state (swapped on inline entry/exit; the exact set
     //    captured by [`Self::save_frame`])
-    pub(crate) current_frame: FrameState<'ctx, 'tcx>,
+    pub(crate) current_frame: FrameState<'z3, 'tcx>,
 
     // ── Path-scoped state (accumulates across the whole path, including
     //    inlined frames)
@@ -625,27 +625,27 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// (`CalleeEntry`/`CalleeExit` items).  Together with [`Self::current_frame`]
     /// (the current frame) it forms the call stack: entering an inlined callee
     /// moves the current frame here, exiting restores it.
-    pub(crate) caller_frames: Vec<FrameState<'ctx, 'tcx>>,
+    pub(crate) caller_frames: Vec<FrameState<'z3, 'tcx>>,
 
     /// The object space: allocations, per-byte state, and per-allocation fields.
-    pub(crate) memory: Memory<'ctx, 'tcx>,
+    pub(crate) memory: Memory<'z3, 'tcx>,
 
     /// Solver constraints and term caches accumulated along the current path.
-    pub(crate) constraints: Constraints<'ctx, 'tcx>,
+    pub(crate) constraints: Constraints<'z3, 'tcx>,
 
     /// Recursive-inlining scratch state (depth and per-call temporary bindings
     /// pushed/popped on inline entry/exit).
-    pub(crate) inline: InlineCtx<'ctx, 'tcx>,
+    pub(crate) inline: InlineCtx<'z3, 'tcx>,
 
     /// Per-path facts (latched while stepping, or derived in [`Self::new`]),
     /// read by the property checker.
     pub(crate) path_facts: PathFacts,
 }
 
-impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
+impl<'z3, 'tcx> VmState<'z3, 'tcx> {
     /// Create a fresh VM state for executing a path.
     pub(crate) fn new(
-        ctx: &'ctx Context,
+        z3_ctx: &'z3 Context,
         tcx: TyCtxt<'tcx>,
         path: &Path,
         caller_def_id: DefId,
@@ -654,7 +654,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // path re-enters a block); the raw `Path` itself is not kept.
         let reenter = path.reenters();
         Self {
-            ctx,
+            z3_ctx,
             tcx,
             current_frame: FrameState {
                 current_def_id: caller_def_id,
@@ -684,7 +684,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// [`FrameState`] (function identity, local bindings, and operand sources).
     /// Both inline mechanisms (`handle_callee_entry` in path replay and
     /// `exec_inline_call`) call this, so they can no longer drift apart.
-    pub(crate) fn save_frame(&mut self) -> FrameState<'ctx, 'tcx> {
+    pub(crate) fn save_frame(&mut self) -> FrameState<'z3, 'tcx> {
         FrameState {
             current_def_id: self.current_frame.current_def_id,
             local_values: std::mem::take(&mut self.current_frame.local_values),
@@ -694,22 +694,22 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     }
 
     /// Restore the frame-scoped state after an inlined callee returns.
-    pub(crate) fn restore_frame(&mut self, frame: FrameState<'ctx, 'tcx>) {
+    pub(crate) fn restore_frame(&mut self, frame: FrameState<'z3, 'tcx>) {
         self.current_frame = frame;
     }
 
     /// Look up the value bound to a MIR local.
-    pub(crate) fn local_value(&self, local: Local) -> Option<&VmValue<'ctx, 'tcx>> {
+    pub(crate) fn local_value(&self, local: Local) -> Option<&VmValue<'z3, 'tcx>> {
         self.current_frame.local_values.get(&local)
     }
 
     /// Bind a value to a MIR local.
-    pub(crate) fn set_local(&mut self, local: Local, value: VmValue<'ctx, 'tcx>) {
+    pub(crate) fn set_local(&mut self, local: Local, value: VmValue<'z3, 'tcx>) {
         self.current_frame.local_values.insert(local, value);
     }
 
     /// Get the symbolic address of a MIR local (its stack allocation's base).
-    pub(crate) fn local_address(&mut self, local: Local) -> Int<'ctx> {
+    pub(crate) fn local_address(&mut self, local: Local) -> Int<'z3> {
         self.ensure_local_allocation(local);
         let id = self.current_frame.local_alloc[&local];
         self.memory.allocations[id.0].base.clone()
@@ -718,10 +718,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Allocate a fresh symbolic object and return its ID and base address.
     pub(crate) fn allocate(
         &mut self,
-        size: Int<'ctx>,
-        align: Int<'ctx>,
+        size: Int<'z3>,
+        align: Int<'z3>,
         element_ty: Option<Ty<'tcx>>,
-    ) -> (AllocId, Int<'ctx>) {
+    ) -> (AllocId, Int<'z3>) {
         self.allocate_internal(size, align, element_ty, AllocKind::Object)
     }
 
@@ -729,10 +729,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// External allocations may be null and have unlimited size.
     pub(crate) fn allocate_external(
         &mut self,
-        size: Int<'ctx>,
-        align: Int<'ctx>,
+        size: Int<'z3>,
+        align: Int<'z3>,
         element_ty: Option<Ty<'tcx>>,
-    ) -> (AllocId, Int<'ctx>) {
+    ) -> (AllocId, Int<'z3>) {
         self.allocate_internal(size, align, element_ty, AllocKind::External)
     }
 
@@ -743,12 +743,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// re-derived by every caller).
     pub(crate) fn allocate_slice(
         &mut self,
-        len: Int<'ctx>,
-        elem_size: Int<'ctx>,
-        align: Int<'ctx>,
+        len: Int<'z3>,
+        elem_size: Int<'z3>,
+        align: Int<'z3>,
         element_ty: Option<Ty<'tcx>>,
-    ) -> (AllocId, Int<'ctx>) {
-        let size = Int::mul(self.ctx, &[&len, &elem_size]);
+    ) -> (AllocId, Int<'z3>) {
+        let size = Int::mul(self.z3_ctx, &[&len, &elem_size]);
         let (id, base) = self.allocate(size, align, element_ty);
         self.alloc_mut(id).set_slice_len(len);
         (id, base)
@@ -756,11 +756,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     fn allocate_internal(
         &mut self,
-        size: Int<'ctx>,
-        align: Int<'ctx>,
+        size: Int<'z3>,
+        align: Int<'z3>,
         element_ty: Option<Ty<'tcx>>,
-        kind: AllocKind<'ctx>,
-    ) -> (AllocId, Int<'ctx>) {
+        kind: AllocKind<'z3>,
+    ) -> (AllocId, Int<'z3>) {
         let id = AllocId(self.memory.allocations.len());
         let base = {
             let name = format!(
@@ -772,7 +772,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 },
                 id.0
             );
-            Int::new_const(self.ctx, name.as_str())
+            Int::new_const(self.z3_ctx, name.as_str())
         };
         let alloc = Allocation::new(base.clone(), size, align, element_ty, kind);
         self.memory.allocations.push(alloc);
@@ -780,12 +780,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     }
 
     /// Indexed access to an allocation by its `AllocId` (the id is the index).
-    pub(crate) fn alloc(&self, id: AllocId) -> &Allocation<'ctx, 'tcx> {
+    pub(crate) fn alloc(&self, id: AllocId) -> &Allocation<'z3, 'tcx> {
         &self.memory.allocations[id.0]
     }
 
     /// Mutable indexed access to an allocation by its `AllocId`.
-    pub(crate) fn alloc_mut(&mut self, id: AllocId) -> &mut Allocation<'ctx, 'tcx> {
+    pub(crate) fn alloc_mut(&mut self, id: AllocId) -> &mut Allocation<'z3, 'tcx> {
         &mut self.memory.allocations[id.0]
     }
 
@@ -809,12 +809,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Create a fresh symbolic Z3 int constant (globally unique, even across
     /// calls with the same prefix — `Z3_mk_fresh_const` auto-suffixes the name).
-    pub(crate) fn fresh_int(&self, prefix: &str) -> Int<'ctx> {
-        Int::fresh_const(self.ctx, prefix)
+    pub(crate) fn fresh_int(&self, prefix: &str) -> Int<'z3> {
+        Int::fresh_const(self.z3_ctx, prefix)
     }
 
     /// Get the value of a specific field within an aggregate local.
-    pub(crate) fn field_value(&self, local: Local, path: &[usize]) -> Option<&VmValue<'ctx, 'tcx>> {
+    pub(crate) fn field_value(&self, local: Local, path: &[usize]) -> Option<&VmValue<'z3, 'tcx>> {
         self.current_frame.field_values.get(&(local, path.to_vec()))
     }
 
@@ -833,8 +833,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// adapters, so the innermost `Iter`/`IterMut` `end` pointer is any tracked
     /// field whose path ends in `[1]`.  Return its allocation and end offset
     /// (the end offset doubles as the byte length when the element is `u8`).
-    pub(crate) fn iter_utf8_buffer(&self, local: Local) -> Option<(AllocId, Int<'ctx>)> {
-        let mut best: Option<(usize, AllocId, Int<'ctx>)> = None;
+    pub(crate) fn iter_utf8_buffer(&self, local: Local) -> Option<(AllocId, Int<'z3>)> {
+        let mut best: Option<(usize, AllocId, Int<'z3>)> = None;
         for ((l, path), v) in &self.current_frame.field_values {
             if *l != local || path.last() != Some(&1) {
                 continue;
@@ -852,7 +852,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// The field carrying an owned value's heap pointer (`Box.0.0`/`Vec.0.0`,
     /// and for nested owners like `String` the deeper data field). Prefer the
     /// canonical `[0, 0]`; fall back to the first field with heap provenance.
-    pub(crate) fn owner_ptr_field(&self, local: Local) -> Option<&VmValue<'ctx, 'tcx>> {
+    pub(crate) fn owner_ptr_field(&self, local: Local) -> Option<&VmValue<'z3, 'tcx>> {
         self.field_value(local, &[0, 0])
             .filter(|v| v.provenance_alloc_id().is_some())
             .or_else(|| {
@@ -893,17 +893,17 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         &mut self,
         local: Local,
         path: Vec<usize>,
-        value: VmValue<'ctx, 'tcx>,
+        value: VmValue<'z3, 'tcx>,
     ) {
         self.current_frame.field_values.insert((local, path), value);
     }
 
     /// Assert path conditions and invariant constraints into a solver.
-    pub(crate) fn assert_all(&self, solver: &z3::Solver<'ctx>) {
+    pub(crate) fn assert_all(&self, solver: &z3::Solver<'z3>) {
         for cond in &self.constraints.assertions {
             solver.assert(cond);
         }
-        let zero = Int::from_u64(self.ctx, 0);
+        let zero = Int::from_u64(self.z3_ctx, 0);
         for alloc in &self.memory.allocations {
             if !alloc.is_external() {
                 solver.assert(&alloc.base._eq(&zero).not());
@@ -923,15 +923,15 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     }
 
     /// Assert a single symbolic value's known invariant constraints.
-    fn assert_value_constraints(&self, solver: &z3::Solver<'ctx>, value: &VmValue<'ctx, 'tcx>) {
-        let zero = Int::from_u64(self.ctx, 0);
+    fn assert_value_constraints(&self, solver: &z3::Solver<'z3>, value: &VmValue<'z3, 'tcx>) {
+        let zero = Int::from_u64(self.z3_ctx, 0);
         if value.invariants.non_null {
-            solver.assert(&value.term._eq(&zero).not());
+            solver.assert(&value.z3_term._eq(&zero).not());
         }
         if let Some(ref prov) = value.provenance {
             let alloc = self.alloc(prov.alloc_id);
-            let expected = Int::add(self.ctx, &[&alloc.base, &prov.offset]);
-            solver.assert(&value.term._eq(&expected));
+            let expected = Int::add(self.z3_ctx, &[&alloc.base, &prov.offset]);
+            solver.assert(&value.z3_term._eq(&expected));
         }
         if matches!(
             value.ty.kind(),
@@ -939,15 +939,15 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 | rustc_middle::ty::TyKind::Bool
                 | rustc_middle::ty::TyKind::Char
         ) {
-            solver.assert(&value.term.ge(&zero));
+            solver.assert(&value.z3_term.ge(&zero));
         }
         if matches!(value.ty.kind(), rustc_middle::ty::TyKind::Bool) {
-            let one = Int::from_u64(self.ctx, 1);
-            solver.assert(&value.term.le(&one));
+            let one = Int::from_u64(self.z3_ctx, 1);
+            solver.assert(&value.z3_term.le(&one));
         }
         if matches!(value.ty.kind(), rustc_middle::ty::TyKind::Char) {
-            let max = Int::from_u64(self.ctx, 0x10FFFF);
-            solver.assert(&value.term.le(&max));
+            let max = Int::from_u64(self.z3_ctx, 0x10FFFF);
+            solver.assert(&value.z3_term.le(&max));
         }
     }
 }
@@ -964,9 +964,9 @@ impl std::fmt::Debug for VmState<'_, '_> {
 
 // ── Shared value extraction ──────────────────────────────────────
 
-impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
+impl<'z3, 'tcx> VmState<'z3, 'tcx> {
     /// Extract a VmValue from a MIR operand.
-    pub(crate) fn value_of_operand(&self, operand: &Operand<'tcx>) -> VmValue<'ctx, 'tcx> {
+    pub(crate) fn value_of_operand(&self, operand: &Operand<'tcx>) -> VmValue<'z3, 'tcx> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self
                 .value_of_place(place)
@@ -1003,19 +1003,19 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .is_some();
                 let term = if let Some(v) = int_val {
                     if v < 0 {
-                        Int::from_i64(self.ctx, v as i64)
+                        Int::from_i64(self.z3_ctx, v as i64)
                     } else {
-                        Int::from_u64(self.ctx, v as u64)
+                        Int::from_u64(self.z3_ctx, v as u64)
                     }
                 } else {
                     // Create a deterministic name for const generics so
                     // multiple uses of the same parameter share one term.
                     let name = format!("const_{}", text.replace([':', '#', ' '], "_"));
-                    Int::new_const(self.ctx, name.as_str())
+                    Int::new_const(self.z3_ctx, name.as_str())
                 };
                 let ty = constant.const_.ty();
                 VmValue {
-                    term,
+                    z3_term: term,
                     ty,
                     provenance: None,
                     invariants: ValueInvariants::default(),
@@ -1035,7 +1035,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     }
 
     /// Look up the value stored at a MIR place.
-    pub(crate) fn value_of_place(&self, place: &Place<'tcx>) -> Option<VmValue<'ctx, 'tcx>> {
+    pub(crate) fn value_of_place(&self, place: &Place<'tcx>) -> Option<VmValue<'z3, 'tcx>> {
         if place.projection.is_empty() {
             return self.current_frame.local_values.get(&place.local).cloned();
         }
@@ -1078,7 +1078,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if let Some(base_val) = self.current_frame.local_values.get(&place.local) {
                     if let Some(ref prov) = base_val.provenance {
                         return Some(VmValue {
-                            term: base_val.term.clone(),
+                            z3_term: base_val.z3_term.clone(),
                             ty: place_ty,
                             provenance: Some(prov.clone()),
                             invariants: base_val.invariants.clone(),
@@ -1193,14 +1193,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             let elem_sz = self.size_of_ty(inner_ty) as usize;
                             let step = elem_sz.max(1);
                             if let Some(index_val) = self.current_frame.local_values.get(local) {
-                                if let Some(concrete_idx) = index_val.term.as_u64() {
+                                if let Some(concrete_idx) = index_val.z3_term.as_u64() {
                                     let offset = concrete_idx as usize * step;
                                     let term = self
                                         .get_byte_value(alloc_id, offset)
                                         .cloned()
                                         .unwrap_or_else(|| self.fresh_int("arr_elem"));
                                     return Some(VmValue {
-                                        term,
+                                        z3_term: term,
                                         ty: place_ty,
                                         provenance: None,
                                         invariants: ValueInvariants::default(),
@@ -1210,12 +1210,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     let mut chain = self.fresh_int("arr_elem");
                                     for (offset, term) in byte_vals.iter().rev() {
                                         let vidx = offset / step;
-                                        let idx_term = Int::from_u64(self.ctx, vidx as u64);
-                                        let cond = index_val.term._eq(&idx_term);
+                                        let idx_term = Int::from_u64(self.z3_ctx, vidx as u64);
+                                        let cond = index_val.z3_term._eq(&idx_term);
                                         chain = Bool::ite(&cond, term, &chain);
                                     }
                                     return Some(VmValue {
-                                        term: chain,
+                                        z3_term: chain,
                                         ty: place_ty,
                                         provenance: None,
                                         invariants: ValueInvariants::default(),
@@ -1278,7 +1278,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// The value carries no `non_null` (or any other) assumption: a raw pointer
     /// whose provenance was lost may still be null, so assuming non-null here
     /// would let `NonNull`/null-guard checks pass unsoundly.
-    pub(crate) fn unknown_value_for_place(&self, place: &Place<'tcx>) -> VmValue<'ctx, 'tcx> {
+    pub(crate) fn unknown_value_for_place(&self, place: &Place<'tcx>) -> VmValue<'z3, 'tcx> {
         let ty = place.ty(self.body(), self.tcx).ty;
         VmValue::new(self.fresh_int("unknown"), ty)
     }

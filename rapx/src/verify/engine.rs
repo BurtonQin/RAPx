@@ -75,7 +75,7 @@ impl<'tcx> VerifyEngine<'tcx> {
 
         let bound_property = Self::bind_property_to_checkpoint(property, checkpoint);
 
-        let ctx = Self::new_z3_context();
+        let z3_ctx = Self::new_z3_context();
 
         // Accumulate checked-bounds facts across checkpoints.
         // A ChecksIndexBoundsDisjoint call in an earlier checkpoint
@@ -122,7 +122,7 @@ impl<'tcx> VerifyEngine<'tcx> {
                 block_fn: backward.block_fn,
             };
 
-            let vm_state = self.vm.run(&ctx, self.tcx, wrapped);
+            let vm_state = self.vm.run(&z3_ctx, self.tcx, wrapped);
 
             // Accumulate checked bounds/disjointness facts across
             // checkpoints so that a validator called in one checkpoint
@@ -666,7 +666,7 @@ impl<'tcx> VerifyEngine<'tcx> {
             invariant,
         );
 
-        let ctx = Self::new_z3_context();
+        let z3_ctx = Self::new_z3_context();
 
         for mut backward in backward_items {
             let path_desc = backward.path.describe_indices();
@@ -677,7 +677,7 @@ impl<'tcx> VerifyEngine<'tcx> {
                 backward.items = items;
             }
 
-            let vm_state = self.vm.run(&ctx, self.tcx, backward);
+            let vm_state = self.vm.run(&z3_ctx, self.tcx, backward);
 
             let fake_checkpoint = Checkpoint {
                 caller: def_id,

@@ -12,10 +12,10 @@ impl PropertyChecker {
     /// Shared UTF-8 byte check: prove the tracked buffer bytes of `alloc_id` are
     /// *not* valid UTF-8 (i.e. disprove the DFA), reporting `Failed` when the
     /// solver proves they cannot be valid.
-    fn check_utf8_alloc<'ctx, 'tcx>(
+    fn check_utf8_alloc<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         alloc_id: crate::verify::vm::state::AllocId,
     ) -> CheckResult {
         if vm_state.alloc(alloc_id).dead {
@@ -25,8 +25,8 @@ impl PropertyChecker {
         if byte_pairs.is_empty() {
             return CheckResult::ProvedByRule; // no byte-level info → trust
         }
-        let bytes: Vec<Int<'ctx>> = byte_pairs.iter().map(|(_, t)| (*t).clone()).collect();
-        let valid = super::utf8_validity(vm_state.ctx, &bytes);
+        let bytes: Vec<Int<'z3>> = byte_pairs.iter().map(|(_, t)| (*t).clone()).collect();
+        let valid = super::utf8_validity(vm_state.z3_ctx, &bytes);
 
         solver.push();
         solver.assert(&valid);
@@ -38,10 +38,10 @@ impl PropertyChecker {
         }
     }
 
-    pub(super) fn check_valid_string<'ctx, 'tcx>(
+    pub(super) fn check_valid_string<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -66,7 +66,7 @@ impl PropertyChecker {
         // A one-argument `ValidString(iter)` targets an `Iterator<Item = u8>`:
         // trace the (possibly `Cloned`/`Rev`-wrapped) iterator to the backing
         // byte buffer of its innermost `Iter`/`IterMut` and UTF-8-check that.
-        if let Some(local) = vm_state.find_local_by_address(&value.term) {
+        if let Some(local) = vm_state.find_local_by_address(&value.z3_term) {
             if let Some((alloc_id, _end_offset)) = vm_state.iter_utf8_buffer(local) {
                 return self.check_utf8_alloc(vm_state, solver, alloc_id);
             }

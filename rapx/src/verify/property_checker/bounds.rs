@@ -21,10 +21,10 @@ use z3::{
 use super::PropertyChecker;
 
 impl PropertyChecker {
-    pub(super) fn check_in_bound<'ctx, 'tcx>(
+    pub(super) fn check_in_bound<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -135,12 +135,12 @@ impl PropertyChecker {
                     .args()
                     .get(2)
                     .and_then(|a| self.resolve_arg_term(vm_state, checkpoint, a))
-                    .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));
-                let zero = Int::from_u64(vm_state.ctx, 0);
-                let covered = Int::add(vm_state.ctx, &[&k, &count_term]);
+                    .unwrap_or_else(|| Int::from_u64(vm_state.z3_ctx, 1));
+                let zero = Int::from_u64(vm_state.z3_ctx, 0);
+                let covered = Int::add(vm_state.z3_ctx, &[&k, &count_term]);
                 solver.push();
                 solver.assert(&z3::ast::Bool::or(
-                    vm_state.ctx,
+                    vm_state.z3_ctx,
                     &[&covered.gt(&len), &k.lt(&zero)],
                 ));
                 let r = match solver.check() {
@@ -174,7 +174,7 @@ impl PropertyChecker {
         {
             let field_size = crate::helpers::mir_utils::pointee_ty(value.ty)
                 .map(|ty| vm_state.size_sym_read(ty))
-                .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));
+                .unwrap_or_else(|| Int::from_u64(vm_state.z3_ctx, 1));
             solver.assert(&access.le(&field_size).not());
             let r = match solver.check() {
                 SatResult::Unsat => CheckResult::ProvedBySmt,
@@ -185,18 +185,18 @@ impl PropertyChecker {
             return r;
         }
 
-        let bound = Int::add(vm_state.ctx, &[&base, &size]);
+        let bound = Int::add(vm_state.z3_ctx, &[&base, &size]);
         // `sub` walks *backwards*: the accessed range is `[value - access, value)`,
         // so the lower bound is `value - access >= base` and the upper bound is
         // `value <= base + size`.  `add` (and everything else) walks forwards.
         let (above_negated, below_negated) = if api_classify::is_pointer_sub(checkpoint.callee) {
-            let walked = Int::sub(vm_state.ctx, &[&value.term, &access]);
-            (value.term.gt(&bound), walked.lt(&base))
+            let walked = Int::sub(vm_state.z3_ctx, &[&value.z3_term, &access]);
+            (value.z3_term.gt(&bound), walked.lt(&base))
         } else {
-            let covered = Int::add(vm_state.ctx, &[&value.term, &access]);
-            (covered.gt(&bound), value.term.lt(&base))
+            let covered = Int::add(vm_state.z3_ctx, &[&value.z3_term, &access]);
+            (covered.gt(&bound), value.z3_term.lt(&base))
         };
-        let negated = z3::ast::Bool::or(vm_state.ctx, &[&above_negated, &below_negated]);
+        let negated = z3::ast::Bool::or(vm_state.z3_ctx, &[&above_negated, &below_negated]);
 
         // Generic element size: discharge by a case split on `S = 0` (ZST) vs
         // `S ≥ 1` (non-ZST) rather than a single nonlinear query.
@@ -222,12 +222,12 @@ impl PropertyChecker {
         r
     }
 
-    pub(super) fn count_is_offset_of<'ctx, 'tcx>(
+    pub(super) fn count_is_offset_of<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
-        value: &VmValue<'ctx, 'tcx>,
+        value: &VmValue<'z3, 'tcx>,
     ) -> bool {
         let Some(count_arg) = property.args().get(2) else {
             return false;
@@ -286,10 +286,10 @@ impl PropertyChecker {
         }
     }
 
-    pub(super) fn check_in_bound_slice<'ctx, 'tcx>(
+    pub(super) fn check_in_bound_slice<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -326,18 +326,18 @@ impl PropertyChecker {
                     .element_ty
                     .as_ty()
                     .map(|ty| vm_state.size_sym_read(ty))
-                    .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));
+                    .unwrap_or_else(|| Int::from_u64(vm_state.z3_ctx, 1));
                 size.div(&elem_sz)
             });
 
         solver.push();
         let negated = if is_range {
             // For range-based InBound (start..end), check end <= len
-            index_val.term.le(&len).not()
+            index_val.z3_term.le(&len).not()
         } else {
             // For single-element InBound (index), check index < len — the same
             // strict bound recorded by `assert_in_bound_single`.
-            index_val.term.lt(&len).not()
+            index_val.z3_term.lt(&len).not()
         };
         solver.assert(&negated);
         let r = match solver.check() {
@@ -349,11 +349,11 @@ impl PropertyChecker {
         r
     }
 
-    pub(super) fn extract_range_end<'ctx, 'tcx>(
+    pub(super) fn extract_range_end<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         op: &Operand<'tcx>,
-    ) -> Option<VmValue<'ctx, 'tcx>> {
+    ) -> Option<VmValue<'z3, 'tcx>> {
         let place = match op {
             Operand::Copy(p) | Operand::Move(p) => p,
             _ => return None,
@@ -409,10 +409,10 @@ impl PropertyChecker {
         None
     }
 
-    pub(super) fn check_non_overlap<'ctx, 'tcx>(
+    pub(super) fn check_non_overlap<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -462,7 +462,7 @@ impl PropertyChecker {
         if let Some(count_term) = checkpoint
             .args
             .get(2)
-            .map(|op| vm_state.value_of_operand(op).term)
+            .map(|op| vm_state.value_of_operand(op).z3_term)
         {
             // Use the pointee element size from either pointer type.
             let elem_size = vm_state
@@ -470,13 +470,13 @@ impl PropertyChecker {
                 .max(vm_state.pointee_elem_size(v2.ty))
                 .max(1);
             if let Some(count) = count_term.simplify().as_u64() {
-                let range = Int::from_u64(vm_state.ctx, elem_size * count.max(1));
-                let src_end = Int::add(vm_state.ctx, &[&v1.term, &range]);
-                let dst_end = Int::add(vm_state.ctx, &[&v2.term, &range]);
+                let range = Int::from_u64(vm_state.z3_ctx, elem_size * count.max(1));
+                let src_end = Int::add(vm_state.z3_ctx, &[&v1.z3_term, &range]);
+                let dst_end = Int::add(vm_state.z3_ctx, &[&v2.z3_term, &range]);
                 solver.push();
                 let overlap = Bool::and(
-                    vm_state.ctx,
-                    &[&v1.term.lt(&dst_end), &v2.term.lt(&src_end)],
+                    vm_state.z3_ctx,
+                    &[&v1.z3_term.lt(&dst_end), &v2.z3_term.lt(&src_end)],
                 );
                 solver.assert(&overlap);
                 let r = match solver.check() {
@@ -491,7 +491,7 @@ impl PropertyChecker {
 
         // Fallback: check pointer-distinctness.
         solver.push();
-        let ne = v1.term._eq(&v2.term).not();
+        let ne = v1.z3_term._eq(&v2.z3_term).not();
         solver.assert(&ne);
         let r = match solver.check() {
             SatResult::Unsat => CheckResult::ProvedBySmt,
@@ -502,9 +502,9 @@ impl PropertyChecker {
         r
     }
 
-    pub(super) fn all_predicates_are_slice_size_invariant<'ctx, 'tcx>(
+    pub(super) fn all_predicates_are_slice_size_invariant<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         predicates: &[crate::verify::contract::NumericPredicate<'tcx>],
     ) -> bool {
@@ -514,9 +514,9 @@ impl PropertyChecker {
                 .all(|p| self.predicate_is_slice_size_invariant(vm_state, checkpoint, p))
     }
 
-    pub(super) fn predicate_is_slice_size_invariant<'ctx, 'tcx>(
+    pub(super) fn predicate_is_slice_size_invariant<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         pred: &crate::verify::contract::NumericPredicate<'tcx>,
     ) -> bool {
@@ -550,9 +550,9 @@ impl PropertyChecker {
         self.count_derives_from_slice_param(vm_state, checkpoint, count_expr, resolved_ty)
     }
 
-    pub(super) fn count_derives_from_slice_param<'ctx, 'tcx>(
+    pub(super) fn count_derives_from_slice_param<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         count_expr: &ContractExpr<'tcx>,
         elem_ty: Ty<'tcx>,
@@ -602,11 +602,11 @@ impl PropertyChecker {
         false
     }
 
-    pub(super) fn is_slice_ref_with_elem<'ctx, 'tcx>(
+    pub(super) fn is_slice_ref_with_elem<'z3, 'tcx>(
         &self,
         ty: Ty<'tcx>,
         elem_ty: Ty<'tcx>,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
     ) -> bool {
         let rustc_middle::ty::TyKind::Ref(_, inner, _) = ty.kind() else {
@@ -621,9 +621,9 @@ impl PropertyChecker {
         }
     }
 
-    pub(super) fn same_erased_ty<'ctx, 'tcx>(
+    pub(super) fn same_erased_ty<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         a: Ty<'tcx>,
         b: Ty<'tcx>,
     ) -> bool {
@@ -632,9 +632,9 @@ impl PropertyChecker {
             && vm_state.size_of_ty(a) == vm_state.size_of_ty(b)
     }
 
-    pub(super) fn is_caller_type_param<'ctx, 'tcx>(
+    pub(super) fn is_caller_type_param<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         ty: Ty<'tcx>,
     ) -> bool {
         let rustc_middle::ty::TyKind::Param(param_ty) = ty.kind() else {

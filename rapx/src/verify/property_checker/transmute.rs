@@ -14,9 +14,9 @@ use super::PropertyChecker;
 impl PropertyChecker {
     // ── check_valid_transmute ──────────────────────────────────
 
-    pub(super) fn check_valid_transmute<'ctx, 'tcx>(
+    pub(super) fn check_valid_transmute<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
         let src = Self::ty_arg(property, 0);
@@ -45,9 +45,9 @@ impl PropertyChecker {
 
     // ── check_trait ────────────────────────────────────────────
 
-    pub(super) fn check_trait<'ctx, 'tcx>(
+    pub(super) fn check_trait<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -112,9 +112,9 @@ impl PropertyChecker {
 
     // ── check_split_transmute ──────────────────────────────────
 
-    pub(super) fn check_split_transmute<'ctx, 'tcx>(
+    pub(super) fn check_split_transmute<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -179,7 +179,7 @@ impl PropertyChecker {
 
     /// Return true if `ty` is a SIMD vector (a `#[repr(simd)]` ADT such as
     /// `core::simd::Simd<T, N>`).
-    fn is_simd_vector<'ctx, 'tcx>(_vm_state: &VmState<'ctx, 'tcx>, ty: Ty<'tcx>) -> bool {
+    fn is_simd_vector<'z3, 'tcx>(_vm_state: &VmState<'z3, 'tcx>, ty: Ty<'tcx>) -> bool {
         if let TyKind::Adt(adt_def, _) = ty.kind() {
             return adt_def.repr().simd();
         }
@@ -187,7 +187,7 @@ impl PropertyChecker {
     }
 
     /// Compute type size, trying different typing environments.
-    fn ty_size<'ctx, 'tcx>(vm_state: &VmState<'ctx, 'tcx>, ty: Ty<'tcx>) -> u64 {
+    fn ty_size<'z3, 'tcx>(vm_state: &VmState<'z3, 'tcx>, ty: Ty<'tcx>) -> u64 {
         let sz = vm_state.size_of_ty(ty);
         if sz > 0 {
             return sz;

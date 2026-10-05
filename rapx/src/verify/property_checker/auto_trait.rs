@@ -59,9 +59,9 @@ impl Contains {
 impl PropertyChecker {
     /// `ContainNoType(T, bad1, bad2, ...)`: `T` must not structurally contain any of
     /// the named negative types.
-    pub(super) fn check_contain_no_type<'ctx, 'tcx>(
+    pub(super) fn check_contain_no_type<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -82,9 +82,9 @@ impl PropertyChecker {
     }
 
     /// `NoRawPtr(T)`: `T` must have no raw pointers.
-    pub(super) fn check_no_raw_ptr<'ctx, 'tcx>(
+    pub(super) fn check_no_raw_ptr<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -95,9 +95,9 @@ impl PropertyChecker {
     }
 
     /// `NoInternalMut(T)`: `T` must have no interior mutation through raw pointers.
-    pub(super) fn check_no_internal_mut<'ctx, 'tcx>(
+    pub(super) fn check_no_internal_mut<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
         let Some(ty) = Self::ty_arg(property, 0) else {
@@ -108,9 +108,9 @@ impl PropertyChecker {
 
     /// `UniInternalMut(T)`: `T`'s interior mutation must be unique (exclusive
     /// owner, no aliasing `Clone`).
-    pub(super) fn check_uni_internal_mut<'ctx, 'tcx>(
+    pub(super) fn check_uni_internal_mut<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
         let Some(ty) = Self::ty_arg(property, 0) else {
@@ -122,9 +122,9 @@ impl PropertyChecker {
     /// `AtomicUpdate(T)`: `T`'s raw-pointer updates are guarded by a
     /// synchronization primitive (`Mutex`/`RwLock`) or performed atomically
     /// (`Atomic*`).
-    pub(super) fn check_atomic_update<'ctx, 'tcx>(
+    pub(super) fn check_atomic_update<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -136,9 +136,9 @@ impl PropertyChecker {
 
     /// `RefSend(T)`: every interior-mutability (`UnsafeCell`) / raw-pointer
     /// field of `T` must be guarded by a synchronization primitive.
-    pub(super) fn check_ref_send<'ctx, 'tcx>(
+    pub(super) fn check_ref_send<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {

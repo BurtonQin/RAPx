@@ -153,10 +153,10 @@ impl<'tcx> NodeOrder<'tcx> {
     }
 }
 
-struct IntraFlowAnalysis<'tcx, 'ctx, 'a> {
+struct IntraFlowAnalysis<'tcx, 'z3, 'a> {
     pub rcx: &'a rCanary<'tcx>,
-    icx: IntraFlowContext<'tcx, 'ctx>,
-    icx_slice: IcxSliceFroBlock<'tcx, 'ctx>,
+    icx: IntraFlowContext<'tcx, 'z3>,
+    icx_slice: IcxSliceFroBlock<'tcx, 'z3>,
     pub def_id: DefId,
     pub body: &'a Body<'tcx>,
     pub graph: &'a Graph,
@@ -164,7 +164,7 @@ struct IntraFlowAnalysis<'tcx, 'ctx, 'a> {
     taint_source: Vec<Terminator<'tcx>>,
 }
 
-impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
+impl<'tcx, 'z3, 'a> IntraFlowAnalysis<'tcx, 'z3, 'a> {
     pub fn new(
         rcx: &'a rCanary<'tcx>,
         def_id: DefId,
@@ -196,7 +196,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
     }
 }
 
-impl<'tcx, 'ctx, 'o, 'a> Rcx<'tcx, 'o, 'a> for IntraFlowAnalysis<'tcx, 'ctx, 'a> {
+impl<'tcx, 'z3, 'o, 'a> Rcx<'tcx, 'o, 'a> for IntraFlowAnalysis<'tcx, 'z3, 'a> {
     #[inline(always)]
     fn rcx(&'o self) -> &'a rCanary<'tcx> {
         self.rcx
@@ -208,34 +208,34 @@ impl<'tcx, 'ctx, 'o, 'a> Rcx<'tcx, 'o, 'a> for IntraFlowAnalysis<'tcx, 'ctx, 'a>
     }
 }
 
-impl<'tcx, 'ctx, 'o, 'a> IcxMut<'tcx, 'ctx, 'o> for IntraFlowAnalysis<'tcx, 'ctx, 'a> {
+impl<'tcx, 'z3, 'o, 'a> IcxMut<'tcx, 'z3, 'o> for IntraFlowAnalysis<'tcx, 'z3, 'a> {
     #[inline(always)]
-    fn icx(&'o self) -> &'o IntraFlowContext<'tcx, 'ctx> {
+    fn icx(&'o self) -> &'o IntraFlowContext<'tcx, 'z3> {
         &self.icx
     }
 
     #[inline(always)]
-    fn icx_mut(&'o mut self) -> &'o mut IntraFlowContext<'tcx, 'ctx> {
+    fn icx_mut(&'o mut self) -> &'o mut IntraFlowContext<'tcx, 'z3> {
         &mut self.icx
     }
 }
 
-impl<'tcx, 'ctx, 'o, 'a> IcxSliceMut<'tcx, 'ctx, 'o> for IntraFlowAnalysis<'tcx, 'ctx, 'a> {
+impl<'tcx, 'z3, 'o, 'a> IcxSliceMut<'tcx, 'z3, 'o> for IntraFlowAnalysis<'tcx, 'z3, 'a> {
     #[inline(always)]
-    fn icx_slice(&'o self) -> &'o IcxSliceFroBlock<'tcx, 'ctx> {
+    fn icx_slice(&'o self) -> &'o IcxSliceFroBlock<'tcx, 'z3> {
         &self.icx_slice
     }
 
     #[inline(always)]
-    fn icx_slice_mut(&'o mut self) -> &'o mut IcxSliceFroBlock<'tcx, 'ctx> {
+    fn icx_slice_mut(&'o mut self) -> &'o mut IcxSliceFroBlock<'tcx, 'z3> {
         &mut self.icx_slice
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct IntraFlowContext<'tcx, 'ctx> {
+pub struct IntraFlowContext<'tcx, 'z3> {
     taint: IOPairForGraph<Taint<'tcx>>,
-    var: IOPairForGraph<IntraVar<'ctx>>,
+    var: IOPairForGraph<IntraVar<'z3>>,
     len: IOPairForGraph<usize>,
     // the ty in icx is the Rust ownership layout of the pointing instance
     // Note: the ty is not the exact ty of the local
@@ -243,7 +243,7 @@ pub struct IntraFlowContext<'tcx, 'ctx> {
     layout: IOPairForGraph<Vec<HeapOwnership>>,
 }
 
-impl<'tcx, 'ctx, 'icx> IntraFlowContext<'tcx, 'ctx> {
+impl<'tcx, 'z3, 'icx> IntraFlowContext<'tcx, 'z3> {
     pub fn new(b_len: usize, v_len: usize) -> Self {
         Self {
             taint: IOPairForGraph::new(b_len, v_len),
@@ -262,11 +262,11 @@ impl<'tcx, 'ctx, 'icx> IntraFlowContext<'tcx, 'ctx> {
         &mut self.taint
     }
 
-    pub fn var(&self) -> &IOPairForGraph<IntraVar<'ctx>> {
+    pub fn var(&self) -> &IOPairForGraph<IntraVar<'z3>> {
         &self.var
     }
 
-    pub fn var_mut(&mut self) -> &mut IOPairForGraph<IntraVar<'ctx>> {
+    pub fn var_mut(&mut self) -> &mut IOPairForGraph<IntraVar<'z3>> {
         &mut self.var
     }
 
@@ -316,7 +316,7 @@ impl<'tcx, 'ctx, 'icx> IntraFlowContext<'tcx, 'ctx> {
             self.layout_mut().get_g_mut()[from].get_o_mut().clone();
     }
 
-    pub fn derive_from_icx_slice(&mut self, from: IcxSliceFroBlock<'tcx, 'ctx>, to: usize) {
+    pub fn derive_from_icx_slice(&mut self, from: IcxSliceFroBlock<'tcx, 'z3>, to: usize) {
         *self.taint_mut().get_g_mut()[to].get_o_mut() = from.taint;
 
         *self.var_mut().get_g_mut()[to].get_o_mut() = from.var;
@@ -380,9 +380,9 @@ where
 }
 
 #[derive(Clone, Default)]
-pub struct IcxSliceFroBlock<'tcx, 'ctx> {
+pub struct IcxSliceFroBlock<'tcx, 'z3> {
     taint: Vec<Taint<'tcx>>,
-    var: Vec<IntraVar<'ctx>>,
+    var: Vec<IntraVar<'z3>>,
     len: Vec<usize>,
     // the ty in icx is the Rust ownership layout of the pointing instance
     // Note: the ty is not the exact ty of the local
@@ -390,8 +390,8 @@ pub struct IcxSliceFroBlock<'tcx, 'ctx> {
     layout: Vec<Vec<HeapOwnership>>,
 }
 
-impl<'tcx, 'ctx> IcxSliceFroBlock<'tcx, 'ctx> {
-    pub fn new_in(icx: &mut IntraFlowContext<'tcx, 'ctx>, idx: usize) -> Self {
+impl<'tcx, 'z3> IcxSliceFroBlock<'tcx, 'z3> {
+    pub fn new_in(icx: &mut IntraFlowContext<'tcx, 'z3>, idx: usize) -> Self {
         Self {
             taint: icx.taint_mut().get_g_mut()[idx].get_i_mut().clone(),
             var: icx.var_mut().get_g_mut()[idx].get_i_mut().clone(),
@@ -401,7 +401,7 @@ impl<'tcx, 'ctx> IcxSliceFroBlock<'tcx, 'ctx> {
         }
     }
 
-    pub fn new_out(icx: &mut IntraFlowContext<'tcx, 'ctx>, idx: usize) -> Self {
+    pub fn new_out(icx: &mut IntraFlowContext<'tcx, 'z3>, idx: usize) -> Self {
         Self {
             taint: icx.taint_mut().get_g_mut()[idx].get_o_mut().clone(),
             var: icx.var_mut().get_g_mut()[idx].get_o_mut().clone(),
@@ -429,11 +429,11 @@ impl<'tcx, 'ctx> IcxSliceFroBlock<'tcx, 'ctx> {
         &mut self.taint
     }
 
-    pub fn var(&self) -> &Vec<IntraVar<'ctx>> {
+    pub fn var(&self) -> &Vec<IntraVar<'z3>> {
         &self.var
     }
 
-    pub fn var_mut(&mut self) -> &mut Vec<IntraVar<'ctx>> {
+    pub fn var_mut(&mut self) -> &mut Vec<IntraVar<'z3>> {
         &mut self.var
     }
 
@@ -461,7 +461,7 @@ impl<'tcx, 'ctx> IcxSliceFroBlock<'tcx, 'ctx> {
         &mut self.layout
     }
 
-    pub fn taint_merge(&mut self, another: &IcxSliceFroBlock<'tcx, 'ctx>, u: usize) {
+    pub fn taint_merge(&mut self, another: &IcxSliceFroBlock<'tcx, 'z3>, u: usize) {
         if another.taint()[u].is_untainted() {
             return;
         }
@@ -476,7 +476,7 @@ impl<'tcx, 'ctx> IcxSliceFroBlock<'tcx, 'ctx> {
     }
 }
 
-impl<'tcx, 'ctx> Debug for IcxSliceFroBlock<'tcx, 'ctx> {
+impl<'tcx, 'z3> Debug for IcxSliceFroBlock<'tcx, 'z3> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,

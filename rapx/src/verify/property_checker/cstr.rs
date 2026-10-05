@@ -78,10 +78,10 @@ fn body_parents(body: &Body<'_>) -> FxHashMap<Local, Local> {
 impl PropertyChecker {
     // ── check_valid_cstr ───────────────────────────────────────
 
-    pub(super) fn check_valid_cstr<'ctx, 'tcx>(
+    pub(super) fn check_valid_cstr<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -183,9 +183,9 @@ impl PropertyChecker {
     /// where all element operands are constants.
     /// `start_offset` is the byte offset within the allocation where the C string begins
     /// (non-zero when pointer arithmetic like `.add(n)` is used).
-    fn check_valid_cstr_from_known_nul<'ctx, 'tcx>(
+    fn check_valid_cstr_from_known_nul<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         alloc_id: AllocId,
         start_offset: usize,
     ) -> Option<CheckResult> {
@@ -248,19 +248,19 @@ impl PropertyChecker {
 
     /// Check NUL termination using per-byte symbolic values tracked in `bytes`.
     /// Uses the SMT solver to verify that a NUL-terminated byte sequence is possible.
-    fn check_valid_cstr_from_byte_values<'ctx, 'tcx>(
+    fn check_valid_cstr_from_byte_values<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         alloc_id: AllocId,
-        alloc_size: &Int<'ctx>,
+        alloc_size: &Int<'z3>,
     ) -> Option<CheckResult> {
         let byte_pairs = vm_state.alloc_byte_values(alloc_id);
         if byte_pairs.is_empty() {
             return None;
         }
 
-        let zero = Int::from_u64(vm_state.ctx, 0);
+        let zero = Int::from_u64(vm_state.z3_ctx, 0);
         let size_u64 = alloc_size.as_u64();
 
         if size_u64.is_none() {
@@ -466,9 +466,9 @@ impl PropertyChecker {
     /// Fallback: scan the MIR body for constant byte assignments to the target
     /// pointer's root local. Uses worklist-based analysis (handles as_ptr chains
     /// and branches), falling back to simple local chain for Aggregate cases.
-    fn check_valid_cstr_from_mir_constants<'ctx, 'tcx>(
+    fn check_valid_cstr_from_mir_constants<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
     ) -> Option<CheckResult> {
         let target_local = first_arg_local(checkpoint)?;

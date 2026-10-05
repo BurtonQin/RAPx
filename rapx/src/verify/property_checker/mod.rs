@@ -35,21 +35,21 @@ pub(crate) use auto_trait::{
 pub(crate) struct PropertyChecker;
 
 impl PropertyChecker {
-    pub(crate) fn check<'ctx, 'tcx>(
+    pub(crate) fn check<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
-        let solver = Solver::new(vm_state.ctx);
+        let solver = Solver::new(vm_state.z3_ctx);
         vm_state.assert_all(&solver);
         self.check_inner(vm_state, &solver, checkpoint, property)
     }
 
-    fn check_inner<'ctx, 'tcx>(
+    fn check_inner<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -134,10 +134,10 @@ impl PropertyChecker {
         }
     }
 
-    fn check_or<'ctx, 'tcx>(
+    fn check_or<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -152,10 +152,10 @@ impl PropertyChecker {
         overall
     }
 
-    fn check_and<'ctx, 'tcx>(
+    fn check_and<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -178,24 +178,24 @@ impl PropertyChecker {
 /// followed by exactly `k-1` continuation bytes.  Value-range refinements
 /// reject overlong encodings, surrogates (U+D800..=U+DFFF), and code points
 /// above U+10FFFF.
-pub(super) fn utf8_validity<'ctx>(ctx: &'ctx z3::Context, bytes: &[Int<'ctx>]) -> Bool<'ctx> {
-    let zero = Int::from_u64(ctx, 0);
-    let one = Int::from_u64(ctx, 1);
-    let two = Int::from_u64(ctx, 2);
-    let three = Int::from_u64(ctx, 3);
+pub(super) fn utf8_validity<'z3>(z3_ctx: &'z3 z3::Context, bytes: &[Int<'z3>]) -> Bool<'z3> {
+    let zero = Int::from_u64(z3_ctx, 0);
+    let one = Int::from_u64(z3_ctx, 1);
+    let two = Int::from_u64(z3_ctx, 2);
+    let three = Int::from_u64(z3_ctx, 3);
 
-    let c_0x80 = Int::from_u64(ctx, 0x80);
-    let c_0xc0 = Int::from_u64(ctx, 0xC0);
-    let c_0xc2 = Int::from_u64(ctx, 0xC2);
-    let c_0xe0 = Int::from_u64(ctx, 0xE0);
-    let c_0xf0 = Int::from_u64(ctx, 0xF0);
-    let c_0xf5 = Int::from_u64(ctx, 0xF5);
-    let c_0xa0 = Int::from_u64(ctx, 0xA0);
-    let c_0x90 = Int::from_u64(ctx, 0x90);
-    let c_0xed = Int::from_u64(ctx, 0xED);
-    let c_0xf4 = Int::from_u64(ctx, 0xF4);
+    let c_0x80 = Int::from_u64(z3_ctx, 0x80);
+    let c_0xc0 = Int::from_u64(z3_ctx, 0xC0);
+    let c_0xc2 = Int::from_u64(z3_ctx, 0xC2);
+    let c_0xe0 = Int::from_u64(z3_ctx, 0xE0);
+    let c_0xf0 = Int::from_u64(z3_ctx, 0xF0);
+    let c_0xf5 = Int::from_u64(z3_ctx, 0xF5);
+    let c_0xa0 = Int::from_u64(z3_ctx, 0xA0);
+    let c_0x90 = Int::from_u64(z3_ctx, 0x90);
+    let c_0xed = Int::from_u64(z3_ctx, 0xED);
+    let c_0xf4 = Int::from_u64(z3_ctx, 0xF4);
 
-    let mut valid = Bool::from_bool(ctx, true);
+    let mut valid = Bool::from_bool(z3_ctx, true);
     // Number of continuation bytes still pending for the current multi-byte
     // sequence (0..=3).  `lead` holds the lead byte (only meaningful while a
     // multi-byte sequence is open).

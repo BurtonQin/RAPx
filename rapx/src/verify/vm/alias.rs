@@ -55,12 +55,12 @@ impl VmOrigin {
     }
 }
 
-impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
+impl<'z3, 'tcx> VmState<'z3, 'tcx> {
     /// Trace the origin of a pointer value through VM provenance.
     ///
     /// Given a VmValue (extracted from a checkpoint argument), follows
     /// its provenance back to determine where the allocation came from.
-    pub(crate) fn resolve_origin(&self, value: &VmValue<'ctx, 'tcx>) -> Option<VmOrigin> {
+    pub(crate) fn resolve_origin(&self, value: &VmValue<'z3, 'tcx>) -> Option<VmOrigin> {
         let Some(prov) = &value.provenance else {
             return None;
         };
@@ -170,8 +170,8 @@ fn fn_has_alias_requires(tcx: rustc_middle::ty::TyCtxt<'_>, def_id: DefId) -> bo
 /// live reference view as conflicting when it names the same allocation, or a
 /// sub-allocation of it (`root_alloc` — `from_raw_parts`/`split_at` keep a
 /// `parent` edge), with the opposite mutability.
-fn flow_xor_violation<'ctx, 'tcx>(
-    vm_state: &VmState<'ctx, 'tcx>,
+fn flow_xor_violation<'z3, 'tcx>(
+    vm_state: &VmState<'z3, 'tcx>,
     checkpoint: &Checkpoint<'tcx>,
     unique: bool,
     statement_index: usize,
@@ -227,8 +227,8 @@ fn flow_xor_violation<'ctx, 'tcx>(
 /// Run the full alias hazard check for the VM backend.
 ///
 /// This is the function the `PropertyChecker::check_alias` delegates to.
-pub(crate) fn check_alias_vm<'ctx, 'tcx>(
-    vm_state: &VmState<'ctx, 'tcx>,
+pub(crate) fn check_alias_vm<'z3, 'tcx>(
+    vm_state: &VmState<'z3, 'tcx>,
     checkpoint: &Checkpoint<'tcx>,
 ) -> VmAliasResult {
     let callee = match checkpoint.callee {
@@ -527,8 +527,8 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
     }
 }
 
-fn check_view_alias<'ctx, 'tcx>(
-    vm_state: &VmState<'ctx, 'tcx>,
+fn check_view_alias<'z3, 'tcx>(
+    vm_state: &VmState<'z3, 'tcx>,
     checkpoint: &Checkpoint<'tcx>,
     kind: HazardKind,
 ) -> VmAliasResult {
@@ -1070,8 +1070,8 @@ fn self_adt<'tcx>(
     crate::analysis::alias::adt_from_ty(inner)
 }
 
-fn check_ownership_transfer_alias<'ctx, 'tcx>(
-    vm_state: &VmState<'ctx, 'tcx>,
+fn check_ownership_transfer_alias<'z3, 'tcx>(
+    vm_state: &VmState<'z3, 'tcx>,
     checkpoint: &Checkpoint<'tcx>,
 ) -> VmAliasResult {
     let Some(origin_arg) = checkpoint.args.first() else {
@@ -1101,8 +1101,8 @@ fn check_ownership_transfer_alias<'ctx, 'tcx>(
     VmAliasResult::Proved
 }
 
-fn check_read_memory_alias<'ctx, 'tcx>(
-    vm_state: &VmState<'ctx, 'tcx>,
+fn check_read_memory_alias<'z3, 'tcx>(
+    vm_state: &VmState<'z3, 'tcx>,
     checkpoint: &Checkpoint<'tcx>,
 ) -> VmAliasResult {
     let Some(origin_arg) = checkpoint.args.first() else {

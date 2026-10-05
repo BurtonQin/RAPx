@@ -23,10 +23,10 @@ use z3::{
 use super::PropertyChecker;
 
 impl PropertyChecker {
-    pub(super) fn check_valid_num<'ctx, 'tcx>(
+    pub(super) fn check_valid_num<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -57,9 +57,9 @@ impl PropertyChecker {
                     let min = -(half as i128);
                     let max = (half - 1) as i128;
                     solver.push();
-                    let below = value.term.lt(&Int::from_i64(vm_state.ctx, min as i64));
-                    let above = value.term.gt(&Int::from_i64(vm_state.ctx, max as i64));
-                    solver.assert(&Bool::or(vm_state.ctx, &[&below, &above]));
+                    let below = value.z3_term.lt(&Int::from_i64(vm_state.z3_ctx, min as i64));
+                    let above = value.z3_term.gt(&Int::from_i64(vm_state.z3_ctx, max as i64));
+                    solver.assert(&Bool::or(vm_state.z3_ctx, &[&below, &above]));
                     let r = match solver.check() {
                         SatResult::Unsat => CheckResult::ProvedBySmt,
                         SatResult::Sat => CheckResult::Failed,
@@ -69,11 +69,11 @@ impl PropertyChecker {
                     return r;
                 }
                 let max = Int::from_u64(
-                    vm_state.ctx,
+                    vm_state.z3_ctx,
                     ((1u128 << size_bits) - 1).min(u64::MAX as u128) as u64,
                 );
                 solver.push();
-                solver.assert(&value.term.gt(&max));
+                solver.assert(&value.z3_term.gt(&max));
                 let r = match solver.check() {
                     SatResult::Unsat => CheckResult::ProvedBySmt,
                     SatResult::Sat => CheckResult::Failed,
@@ -90,12 +90,12 @@ impl PropertyChecker {
     /// If `expr` is a `SliceIndex` range parameter (e.g. `..n`), return its
     /// *exclusive* end term, so `ValidNum(index < CAPACITY)` compares `n` (not
     /// the opaque range value).
-    fn range_end_of_lhs<'ctx, 'tcx>(
+    fn range_end_of_lhs<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: Option<&Checkpoint<'tcx>>,
         expr: &ContractExpr<'tcx>,
-    ) -> Option<Int<'ctx>> {
+    ) -> Option<Int<'z3>> {
         let cp = match expr {
             ContractExpr::Place(cp) => cp,
             _ => return None,
@@ -111,13 +111,13 @@ impl PropertyChecker {
         };
         let op = op?;
         let end = self.extract_range_end(vm_state, op)?;
-        Some(end.term.clone())
+        Some(end.z3_term.clone())
     }
 
-    pub(super) fn eval_numeric_predicate<'ctx, 'tcx>(
+    pub(super) fn eval_numeric_predicate<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         checkpoint: Option<&Checkpoint<'tcx>>,
         pred: &crate::verify::contract::NumericPredicate<'tcx>,
     ) -> Option<CheckResult> {
@@ -148,8 +148,8 @@ impl PropertyChecker {
         // At the assert_unchecked(i < n) point, tracked_offset == i + 1
         // because post_inc_start(1) was just called before the check.
         for (_, (off, _)) in vm_state.constraints.term_caches.iter_ptr_offset.iter() {
-            let one = Int::from_u64(vm_state.ctx, 1);
-            solver.assert(&off._eq(&Int::add(vm_state.ctx, &[&lhs, &one])));
+            let one = Int::from_u64(vm_state.z3_ctx, 1);
+            solver.assert(&off._eq(&Int::add(vm_state.z3_ctx, &[&lhs, &one])));
         }
         // For Iter/IterMut Le predicates with rhs computed from fields,
         // inject a lower-bound: the field-based len is >= 1 when the
@@ -159,7 +159,7 @@ impl PropertyChecker {
             if let Some(term) = self.try_get_iter_len_term(vm_state, &pred.rhs) {
                 if let Some(one) = lhs.as_u64().or(rhs.as_u64()) {
                     if one == 1 {
-                        let one_term = Int::from_u64(vm_state.ctx, 1);
+                        let one_term = Int::from_u64(vm_state.z3_ctx, 1);
                         solver.assert(&term.ge(&one_term));
                     }
                 }
@@ -214,10 +214,10 @@ impl PropertyChecker {
         r
     }
 
-    pub(super) fn inject_nia_axioms<'ctx, 'tcx>(
+    pub(super) fn inject_nia_axioms<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         checkpoint: Option<&Checkpoint<'tcx>>,
         expr: &ContractExpr<'tcx>,
     ) {
@@ -231,10 +231,10 @@ impl PropertyChecker {
                     self.eval_contract_expr(vm_state, checkpoint, lhs),
                     self.eval_contract_expr(vm_state, checkpoint, rhs),
                 ) {
-                    let zero = Int::from_u64(vm_state.ctx, 0);
-                    let mul_term = Int::mul(vm_state.ctx, &[&l.div(&r), &r]);
+                    let zero = Int::from_u64(vm_state.z3_ctx, 0);
+                    let mul_term = Int::mul(vm_state.z3_ctx, &[&l.div(&r), &r]);
                     let rem_term = l.rem(&r);
-                    let sum_term = Int::add(vm_state.ctx, &[&mul_term, &rem_term]);
+                    let sum_term = Int::add(vm_state.z3_ctx, &[&mul_term, &rem_term]);
                     solver.assert(&l._eq(&sum_term));
                     solver.assert(&rem_term.ge(&zero));
                 }
@@ -259,10 +259,10 @@ impl PropertyChecker {
         }
     }
 
-    pub(super) fn inject_vm_div_axioms<'ctx, 'tcx>(
+    pub(super) fn inject_vm_div_axioms<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
         expr: &ContractExpr<'tcx>,
     ) {
         let Some(val) = self.eval_contract_expr(vm_state, None, expr) else {
@@ -271,11 +271,11 @@ impl PropertyChecker {
         self.inject_div_axioms_for_term(vm_state, solver, &val, 4);
     }
 
-    pub(super) fn inject_div_axioms_for_term<'ctx, 'tcx>(
+    pub(super) fn inject_div_axioms_for_term<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
-        solver: &Solver<'ctx>,
-        target: &Int<'ctx>,
+        vm_state: &VmState<'z3, 'tcx>,
+        solver: &Solver<'z3>,
+        target: &Int<'z3>,
         depth: usize,
     ) {
         if depth == 0 {
@@ -288,7 +288,7 @@ impl PropertyChecker {
             let mut src: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = Vec::new();
             for val in vm_state.current_frame.local_values.values() {
                 if let Some((lhs, rhs, _)) = val.source.operands() {
-                    if val.term == *target {
+                    if val.z3_term == *target {
                         src.push((lhs.clone(), rhs.clone()));
                     }
                 }
@@ -306,7 +306,7 @@ impl PropertyChecker {
             let Some(val) = vm_state.local_value(local) else {
                 continue;
             };
-            if val.term != *target {
+            if val.z3_term != *target {
                 continue;
             }
 
@@ -317,13 +317,13 @@ impl PropertyChecker {
                 let lhs_local = lhs.as_ref().and_then(|pk| pk.local());
                 let rhs_local = rhs.as_ref().and_then(|pk| pk.local());
                 if (lhs_local == Some(local) || rhs_local == Some(local))
-                    && !already_seen.contains(&dest_val.term)
+                    && !already_seen.contains(&dest_val.z3_term)
                 {
-                    already_seen.insert(dest_val.term.clone());
+                    already_seen.insert(dest_val.z3_term.clone());
                     self.inject_div_axioms_for_term(
                         vm_state,
                         solver,
-                        &dest_val.term,
+                        &dest_val.z3_term,
                         depth - 1,
                     );
                 }
@@ -364,27 +364,27 @@ impl PropertyChecker {
                     continue;
                 };
 
-                let quot = div_lhs_val.term.div(&div_rhs_val.term);
-                let rem = div_lhs_val.term.rem(&div_rhs_val.term);
-                let mul_term = Int::mul(vm_state.ctx, &[&quot, &div_rhs_val.term]);
-                let sum_term = Int::add(vm_state.ctx, &[&mul_term, &rem]);
-                solver.assert(&div_lhs_val.term._eq(&sum_term));
-                let zero = Int::from_u64(vm_state.ctx, 0);
+                let quot = div_lhs_val.z3_term.div(&div_rhs_val.z3_term);
+                let rem = div_lhs_val.z3_term.rem(&div_rhs_val.z3_term);
+                let mul_term = Int::mul(vm_state.z3_ctx, &[&quot, &div_rhs_val.z3_term]);
+                let sum_term = Int::add(vm_state.z3_ctx, &[&mul_term, &rem]);
+                solver.assert(&div_lhs_val.z3_term._eq(&sum_term));
+                let zero = Int::from_u64(vm_state.z3_ctx, 0);
                 solver.assert(&rem.ge(&zero));
-                solver.assert(&mul_term.le(&div_lhs_val.term));
+                solver.assert(&mul_term.le(&div_lhs_val.z3_term));
             }
 
             // Recurse into operands
-            self.inject_div_axioms_for_term(vm_state, solver, &lhs_val.term, depth - 1);
-            self.inject_div_axioms_for_term(vm_state, solver, &rhs_val.term, depth - 1);
+            self.inject_div_axioms_for_term(vm_state, solver, &lhs_val.z3_term, depth - 1);
+            self.inject_div_axioms_for_term(vm_state, solver, &rhs_val.z3_term, depth - 1);
         }
     }
 
-    pub(super) fn try_get_iter_len_term<'ctx, 'tcx>(
+    pub(super) fn try_get_iter_len_term<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         expr: &ContractExpr<'tcx>,
-    ) -> Option<Int<'ctx>> {
+    ) -> Option<Int<'z3>> {
         let ContractExpr::Len(_) = expr else {
             return None;
         };
@@ -416,12 +416,12 @@ impl PropertyChecker {
         None
     }
 
-    pub(super) fn try_iter_len_from_fields<'ctx, 'tcx>(
+    pub(super) fn try_iter_len_from_fields<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         expr: &ContractExpr<'tcx>,
-    ) -> Option<Int<'ctx>> {
+    ) -> Option<Int<'z3>> {
         use rustc_middle::mir::Place;
         let ContractExpr::Place(cp) = expr else {
             return None;

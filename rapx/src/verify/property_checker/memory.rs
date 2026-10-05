@@ -3,7 +3,7 @@
 //!
 //! These consume the VM's provenance/invariant facts (e.g. `align_n`,
 //! `in_bounds`, `non_null`) with fast paths, falling back to SMT over
-//! `value.term` and allocation base/size.
+//! `value.z3_term` and allocation base/size.
 
 use crate::helpers::mir_scan::Checkpoint;
 use crate::verify::api_classify;
@@ -22,9 +22,9 @@ use super::PropertyChecker;
 use super::util::maybe_uninit_inner;
 
 impl PropertyChecker {
-    pub(super) fn check_align<'ctx, 'tcx>(
+    pub(super) fn check_align<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -47,7 +47,7 @@ impl PropertyChecker {
                 let resolved = self.instantiate_callsite_ty(vm_state, checkpoint, ty);
                 vm_state.align_sym_read(resolved)
             }
-            None => Int::from_u64(vm_state.ctx, 1),
+            None => Int::from_u64(vm_state.z3_ctx, 1),
         };
         if align.simplify().as_u64() == Some(1) {
             return CheckResult::ProvedByRule;
@@ -62,7 +62,7 @@ impl PropertyChecker {
         // local whose value fell back to its own stack-address default (and is
         // really some unaligned offset) is not mistaken for a stack borrow.
         if value.is_pointer() {
-            if let Some(local) = vm_state.find_local_by_address(&value.term) {
+            if let Some(local) = vm_state.find_local_by_address(&value.z3_term) {
                 let local_ty = vm_state.body().local_decls[local].ty;
                 let local_align = vm_state.align_sym_read(local_ty);
                 if let Some(local_align_u64) = local_align.simplify().as_u64() {
@@ -105,7 +105,7 @@ impl PropertyChecker {
                     return CheckResult::ProvedByRule;
                 }
             }
-            let solver = Solver::new(vm_state.ctx);
+            let solver = Solver::new(vm_state.z3_ctx);
             solver.push();
             vm_state.assert_all(&solver);
             solver.assert(&known_align.lt(&align));
@@ -175,15 +175,15 @@ impl PropertyChecker {
             }
         }
         let align_term = align;
-        let zero = Int::from_u64(vm_state.ctx, 0);
-        let local = Solver::new(vm_state.ctx);
+        let zero = Int::from_u64(vm_state.z3_ctx, 0);
+        let local = Solver::new(vm_state.z3_ctx);
         local.push();
         if let Some(ref prov) = value.provenance {
             let alloc = vm_state.alloc(prov.alloc_id);
             local.assert(
                 &value
-                    .term
-                    ._eq(&Int::add(vm_state.ctx, &[&alloc.base, &prov.offset])),
+                    .z3_term
+                    ._eq(&Int::add(vm_state.z3_ctx, &[&alloc.base, &prov.offset])),
             );
             local.assert(&alloc.base._eq(&zero).not());
             local.assert(&alloc.base.ge(&zero));
@@ -192,12 +192,12 @@ impl PropertyChecker {
             }
         }
         if let Some(known_align) = value.invariants.align_n.as_ref() {
-            local.assert(&value.term.rem(known_align)._eq(&zero));
+            local.assert(&value.z3_term.rem(known_align)._eq(&zero));
         }
         for cond in &vm_state.constraints.assertions {
             local.assert(cond);
         }
-        let negated = value.term.rem(&align_term)._eq(&zero).not();
+        let negated = value.z3_term.rem(&align_term)._eq(&zero).not();
         local.assert(&negated);
         let r = match local.check() {
             z3::SatResult::Sat => CheckResult::Failed,
@@ -208,7 +208,7 @@ impl PropertyChecker {
         if matches!(r, CheckResult::Failed) {
             rap_debug!(
                 "align=Failed vterm={} align_n={:?} off={}",
-                value.term.to_string(),
+                value.z3_term.to_string(),
                 value.invariants.align_n,
                 value
                     .provenance
@@ -220,9 +220,9 @@ impl PropertyChecker {
         r
     }
 
-    pub(super) fn value_aligned_to<'ctx, 'tcx>(
-        vm_state: &VmState<'ctx, 'tcx>,
-        value: &VmValue<'ctx, 'tcx>,
+    pub(super) fn value_aligned_to<'z3, 'tcx>(
+        vm_state: &VmState<'z3, 'tcx>,
+        value: &VmValue<'z3, 'tcx>,
         align: u64,
     ) -> bool {
         if align <= 1 {
@@ -238,15 +238,15 @@ impl PropertyChecker {
                 return true;
             }
         }
-        let solver = Solver::new(vm_state.ctx);
+        let solver = Solver::new(vm_state.z3_ctx);
         solver.push();
-        let zero = Int::from_u64(vm_state.ctx, 0);
+        let zero = Int::from_u64(vm_state.z3_ctx, 0);
         if let Some(ref prov) = value.provenance {
             let alloc = vm_state.alloc(prov.alloc_id);
             solver.assert(
                 &value
-                    .term
-                    ._eq(&Int::add(vm_state.ctx, &[&alloc.base, &prov.offset])),
+                    .z3_term
+                    ._eq(&Int::add(vm_state.z3_ctx, &[&alloc.base, &prov.offset])),
             );
             solver.assert(&alloc.base.ge(&zero));
             if alloc.align.simplify().as_u64() != Some(1) {
@@ -256,16 +256,16 @@ impl PropertyChecker {
         for cond in &vm_state.constraints.assertions {
             solver.assert(cond);
         }
-        let align_term = Int::from_u64(vm_state.ctx, align);
-        solver.assert(&value.term.rem(&align_term)._eq(&zero).not());
+        let align_term = Int::from_u64(vm_state.z3_ctx, align);
+        solver.assert(&value.z3_term.rem(&align_term)._eq(&zero).not());
         let r = solver.check() == SatResult::Unsat;
         solver.pop(1);
         r
     }
 
-    pub(super) fn check_non_null<'ctx, 'tcx>(
+    pub(super) fn check_non_null<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -291,17 +291,17 @@ impl PropertyChecker {
         // derived `non_null` flag, but the `&T` produced by this very deref
         // shares the source pointer's term and is marked non-null — using it
         // would circularly "prove" `NonNull` on the pointer being dereferenced.
-        let zero = Int::from_u64(vm_state.ctx, 0);
-        let local = Solver::new(vm_state.ctx);
+        let zero = Int::from_u64(vm_state.z3_ctx, 0);
+        let local = Solver::new(vm_state.z3_ctx);
         for cond in &vm_state.constraints.assertions {
             local.assert(cond);
         }
-        self.smt_check(&local, &value.term._eq(&zero))
+        self.smt_check(&local, &value.z3_term._eq(&zero))
     }
 
-    pub(super) fn check_null<'ctx, 'tcx>(
+    pub(super) fn check_null<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -325,9 +325,9 @@ impl PropertyChecker {
     /// Whether `value` is known to be aligned: either `align_n` carries a
     /// concrete alignment, or the value sits at the base of an allocation whose
     /// `align` is not 1.
-    fn is_value_aligned<'ctx, 'tcx>(
-        vm_state: &VmState<'ctx, 'tcx>,
-        value: &VmValue<'ctx, 'tcx>,
+    fn is_value_aligned<'z3, 'tcx>(
+        vm_state: &VmState<'z3, 'tcx>,
+        value: &VmValue<'z3, 'tcx>,
     ) -> bool {
         value.invariants.align_n.is_some()
             || value.provenance.as_ref().is_some_and(|p| {
@@ -342,9 +342,9 @@ impl PropertyChecker {
     /// initialized element from storage that may be going out of scope, so the
     /// `Init`/`Allocated` requirement concerns the write, not the allocation's
     /// live/dead flag.
-    fn is_maybe_uninit_ptr<'ctx, 'tcx>(
-        vm_state: &VmState<'ctx, 'tcx>,
-        value: &VmValue<'ctx, 'tcx>,
+    fn is_maybe_uninit_ptr<'z3, 'tcx>(
+        vm_state: &VmState<'z3, 'tcx>,
+        value: &VmValue<'z3, 'tcx>,
         alloc_id: AllocId,
     ) -> bool {
         value.invariants.init
@@ -367,9 +367,9 @@ impl PropertyChecker {
             }
     }
 
-    pub(super) fn check_allocated<'ctx, 'tcx>(
+    pub(super) fn check_allocated<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -404,13 +404,13 @@ impl PropertyChecker {
             }
             // A null pointer (address term 0) is definitely not backed by any
             // allocation — a confirmed violation, not an incomplete proof.
-            if value.term.simplify().as_u64() == Some(0) {
+            if value.z3_term.simplify().as_u64() == Some(0) {
                 return CheckResult::Failed;
             }
             // A pointer whose address is a compile-time constant (e.g.
             // `NonNull::dangling`'s `align_of::<T>()`, an unevaluated `const_…`
             // term) is likewise not backed by any allocation.
-            if value.term.to_string().contains("const_") {
+            if value.z3_term.to_string().contains("const_") {
                 return CheckResult::Failed;
             }
             return CheckResult::Unknown;
@@ -563,8 +563,8 @@ impl PropertyChecker {
         {
             let field_size = crate::helpers::mir_utils::pointee_ty(value.ty)
                 .map(|ty| vm_state.size_sym_read(ty))
-                .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));
-            let solver = Solver::new(vm_state.ctx);
+                .unwrap_or_else(|| Int::from_u64(vm_state.z3_ctx, 1));
+            let solver = Solver::new(vm_state.z3_ctx);
             solver.push();
             vm_state.assert_all(&solver);
             solver.assert(&access.le(&field_size).not());
@@ -637,24 +637,24 @@ impl PropertyChecker {
     /// layout cannot be resolved.  `elem_size`, when present, is the *generic*
     /// element-size term: the check is then discharged by a case split on `S = 0`
     /// (ZST) vs `S ≥ 1` (non-ZST) rather than a single nonlinear query.
-    fn allocation_covers_access<'ctx, 'tcx>(
-        vm_state: &VmState<'ctx, 'tcx>,
-        value: &VmValue<'ctx, 'tcx>,
-        access: &Int<'ctx>,
-        base: &Int<'ctx>,
-        size: &Int<'ctx>,
+    fn allocation_covers_access<'z3, 'tcx>(
+        vm_state: &VmState<'z3, 'tcx>,
+        value: &VmValue<'z3, 'tcx>,
+        access: &Int<'z3>,
+        base: &Int<'z3>,
+        size: &Int<'z3>,
         on_sat: CheckResult,
-        elem_size: Option<&Int<'ctx>>,
+        elem_size: Option<&Int<'z3>>,
     ) -> CheckResult {
-        let bound = Int::add(vm_state.ctx, &[base, size]);
-        let covered = Int::add(vm_state.ctx, &[&value.term, access]);
+        let bound = Int::add(vm_state.z3_ctx, &[base, size]);
+        let covered = Int::add(vm_state.z3_ctx, &[&value.z3_term, access]);
         let negated = covered.le(&bound).not();
 
         if let Some(s) = elem_size {
             return Self::smt_check_size_split(vm_state, s, &negated, on_sat);
         }
 
-        let solver = Solver::new(vm_state.ctx);
+        let solver = Solver::new(vm_state.z3_ctx);
         solver.push();
         vm_state.assert_all(&solver);
         solver.assert(&negated);
@@ -667,9 +667,9 @@ impl PropertyChecker {
         r
     }
 
-    pub(super) fn check_init<'ctx, 'tcx>(
+    pub(super) fn check_init<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -846,7 +846,7 @@ impl PropertyChecker {
         // only for such paths so unrelated over-constrained paths aren't
         // spuriously marked sound.
         if vm_state.path_facts.saw_next_discriminant {
-            let local = Solver::new(vm_state.ctx);
+            let local = Solver::new(vm_state.z3_ctx);
             local.push();
             for cond in &vm_state.constraints.assertions {
                 local.assert(cond);
@@ -860,9 +860,9 @@ impl PropertyChecker {
         CheckResult::Unknown
     }
 
-    pub(super) fn trace_alloc_ids<'ctx, 'tcx>(
+    pub(super) fn trace_alloc_ids<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         local: Local,
     ) -> Vec<AllocId> {
         let mut result = Vec::new();
@@ -917,9 +917,9 @@ impl PropertyChecker {
         result
     }
 
-    pub(super) fn check_alive<'ctx, 'tcx>(
+    pub(super) fn check_alive<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {

@@ -11,9 +11,9 @@ use crate::verify::vm::state::VmState;
 use super::PropertyChecker;
 
 impl PropertyChecker {
-    pub(super) fn check_alias<'ctx, 'tcx>(
+    pub(super) fn check_alias<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
     ) -> CheckResult {
         match crate::verify::vm::alias::check_alias_vm(vm_state, checkpoint) {
@@ -23,9 +23,9 @@ impl PropertyChecker {
         }
     }
 
-    pub(super) fn check_owning<'ctx, 'tcx>(
+    pub(super) fn check_owning<'z3, 'tcx>(
         &self,
-        vm_state: &VmState<'ctx, 'tcx>,
+        vm_state: &VmState<'z3, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
@@ -38,7 +38,7 @@ impl PropertyChecker {
         // own provenance slot is empty. Fall back to the owner's field provenance.
         let alloc_id = value.provenance_alloc_id().or_else(|| {
             vm_state
-                .find_local_by_address(&value.term)
+                .find_local_by_address(&value.z3_term)
                 .and_then(|owner| vm_state.owner_ptr_field(owner))
                 .and_then(|v| v.provenance_alloc_id())
         });
@@ -101,7 +101,7 @@ impl PropertyChecker {
         // report a second owner directly, without needing its field provenance.
         // A moved-out source still has the same term but its owner-field
         // provenance has been invalidated, so it is not counted as an owner.
-        if let Some(owner) = vm_state.find_local_by_address(&value.term) {
+        if let Some(owner) = vm_state.find_local_by_address(&value.z3_term) {
             if live.contains(&owner)
                 && Some(owner) != dest_local
                 && Some(owner) != raw_local

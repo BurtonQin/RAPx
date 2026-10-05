@@ -42,13 +42,13 @@ impl SymbolicVm {
     /// across property checks; `run` is a pure `input -> state` mapping — the
     /// program to execute (`goal`) is consumed here and is never stored in the
     /// returned [`VmState`].
-    pub(crate) fn run<'ctx, 'tcx>(
+    pub(crate) fn run<'z3, 'tcx>(
         &self,
-        ctx: &'ctx Context,
+        z3_ctx: &'z3 Context,
         tcx: TyCtxt<'tcx>,
         goal: ProofGoal<'tcx>,
-    ) -> VmState<'ctx, 'tcx> {
-        let mut state = VmState::new(ctx, tcx, &goal.path, goal.path.target.caller);
+    ) -> VmState<'z3, 'tcx> {
+        let mut state = VmState::new(z3_ctx, tcx, &goal.path, goal.path.target.caller);
         state.execute_items(&goal.items);
         state
     }

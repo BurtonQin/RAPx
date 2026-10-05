@@ -59,55 +59,55 @@ impl<'tcx, 'a> FlowAnalysis<'tcx, 'a> {
             let mut cfg = z3::Config::new();
             cfg.set_model_generation(true);
             cfg.set_timeout_msec(1000);
-            let ctx = z3::Context::new(&cfg);
-            let goal = z3::Goal::new(&ctx, true, false, false);
-            let solver = z3::Solver::new(&ctx);
+            let z3_ctx = z3::Context::new(&cfg);
+            let goal = z3::Goal::new(&z3_ctx, true, false, false);
+            let solver = z3::Solver::new(&z3_ctx);
 
             let mut intra_visitor = IntraFlowAnalysis::new(self.rcx, def_id);
-            intra_visitor.visit_body(&ctx, &goal, &solver, body);
+            intra_visitor.visit_body(&z3_ctx, &goal, &solver, body);
         }
     }
 }
 
-impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
+impl<'tcx, 'z3, 'a> IntraFlowAnalysis<'tcx, 'z3, 'a> {
     pub(crate) fn visit_body(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         body: &'tcx Body<'tcx>,
     ) {
         let topo: Vec<usize> = self.graph.get_topo().iter().map(|id| *id).collect();
         for bidx in topo {
             let data = &body.basic_blocks[BasicBlock::from(bidx)];
-            self.visit_block_data(ctx, goal, solver, data, bidx);
+            self.visit_block_data(z3_ctx, goal, solver, data, bidx);
         }
     }
 
     pub(crate) fn visit_block_data(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         data: &'tcx BasicBlockData<'tcx>,
         bidx: usize,
     ) {
-        self.preprocess_for_basic_block(ctx, goal, solver, bidx);
+        self.preprocess_for_basic_block(z3_ctx, goal, solver, bidx);
 
         for (sidx, stmt) in data.statements.iter().enumerate() {
-            self.visit_statement(ctx, goal, solver, stmt, bidx, sidx);
+            self.visit_statement(z3_ctx, goal, solver, stmt, bidx, sidx);
         }
 
-        self.visit_terminator(ctx, goal, solver, data.terminator(), bidx);
+        self.visit_terminator(z3_ctx, goal, solver, data.terminator(), bidx);
 
         self.reprocess_for_basic_block(bidx);
     }
 
     pub(crate) fn preprocess_for_basic_block(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         bidx: usize,
     ) {
         // For node 0 there is no pre node existed!
@@ -136,8 +136,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 let name = new_local_name(idx, 0, 0).add("_arg_init");
                 let len = default_layout.layout().len();
 
-                let new_bv = ast::BV::new_const(ctx, name, len as u32);
-                let init_const = ast::BV::from_u64(ctx, int, len as u32);
+                let new_bv = ast::BV::new_const(z3_ctx, name, len as u32);
+                let init_const = ast::BV::from_u64(z3_ctx, int, len as u32);
 
                 let constraint_init_arg = new_bv._eq(&init_const);
 
@@ -221,7 +221,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 }
 
                 let name = new_local_name(var_idx, bidx, 0).add("_phi");
-                let phi_bv = ast::BV::new_const(ctx, name, len as u32);
+                let phi_bv = ast::BV::new_const(z3_ctx, name, len as u32);
                 let constraint_phi = phi_bv._eq(&using_for_and_bv.unwrap());
 
                 goal.assert(&constraint_phi);
@@ -250,9 +250,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn visit_statement(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         stmt: &Statement<'tcx>,
         bidx: usize,
         sidx: usize,
@@ -260,7 +260,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         match &stmt.kind {
             StatementKind::Assign(assign) => {
                 let (place, rvalue) = &**assign;
-                help_debug_goal_stmt(ctx, goal, bidx, sidx);
+                help_debug_goal_stmt(z3_ctx, goal, bidx, sidx);
 
                 let disc: Disc = None;
 
@@ -289,7 +289,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 //     };
                 // }
 
-                self.visit_assign(ctx, goal, solver, place, rvalue, disc, bidx, sidx);
+                self.visit_assign(z3_ctx, goal, solver, place, rvalue, disc, bidx, sidx);
                 rap_debug!(
                     "IcxSlice in Assign: {} {}: {:?}\n{:?}\n",
                     bidx,
@@ -306,17 +306,17 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn visit_terminator(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         term: &'tcx Terminator<'tcx>,
         bidx: usize,
     ) {
-        help_debug_goal_term(ctx, goal, bidx);
+        help_debug_goal_term(z3_ctx, goal, bidx);
 
         match &term.kind {
             TerminatorKind::Drop { place, .. } => {
-                self.handle_drop(ctx, goal, solver, place, bidx, false);
+                self.handle_drop(z3_ctx, goal, solver, place, bidx, false);
             }
             TerminatorKind::Call {
                 func,
@@ -325,7 +325,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 ..
             } => {
                 self.handle_call(
-                    ctx,
+                    z3_ctx,
                     goal,
                     solver,
                     term.clone(),
@@ -336,7 +336,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 );
             }
             TerminatorKind::Return => {
-                self.handle_return(ctx, goal, solver, bidx);
+                self.handle_return(z3_ctx, goal, solver, bidx);
             }
             _ => (),
         }
@@ -351,9 +351,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn visit_assign(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         lplace: &Place<'tcx>,
         rvalue: &Rvalue<'tcx>,
         disc: Disc,
@@ -371,24 +371,24 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         match (lvalue_has_projection, rvalue_has_projection) {
                             (true, true) => {
                                 self.handle_copy_field_to_field(
-                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
+                                    z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (true, false) => {
                                 self.handle_copy_to_field(
-                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
+                                    z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (false, true) => {
                                 self.handle_copy_from_field(
-                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
+                                    z3_ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                             (false, false) => {
                                 self.handle_copy(
-                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
+                                    z3_ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                         }
@@ -398,24 +398,24 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         match (lvalue_has_projection, rvalue_has_projection) {
                             (true, true) => {
                                 self.handle_move_field_to_field(
-                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
+                                    z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (true, false) => {
                                 self.handle_move_to_field(
-                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
+                                    z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (false, true) => {
                                 self.handle_move_from_field(
-                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
+                                    z3_ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                             (false, false) => {
                                 self.handle_move(
-                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
+                                    z3_ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                         }
@@ -429,21 +429,21 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 match (lvalue_has_projection, rvalue_has_projection) {
                     (true, true) => {
                         self.handle_copy_field_to_field(
-                            ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
+                            z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                         );
                     }
                     (true, false) => {
                         self.handle_copy_to_field(
-                            ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
+                            z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                         );
                     }
                     (false, true) => {
                         self.handle_copy_from_field(
-                            ctx, goal, solver, lplace, rplace, bidx, sidx,
+                            z3_ctx, goal, solver, lplace, rplace, bidx, sidx,
                         );
                     }
                     (false, false) => {
-                        self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
+                        self.handle_copy(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
                     }
                 }
             }
@@ -453,21 +453,21 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 match (lvalue_has_projection, rvalue_has_projection) {
                     (true, true) => {
                         self.handle_copy_field_to_field(
-                            ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
+                            z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                         );
                     }
                     (true, false) => {
                         self.handle_copy_to_field(
-                            ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
+                            z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                         );
                     }
                     (false, true) => {
                         self.handle_copy_from_field(
-                            ctx, goal, solver, lplace, rplace, bidx, sidx,
+                            z3_ctx, goal, solver, lplace, rplace, bidx, sidx,
                         );
                     }
                     (false, false) => {
-                        self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
+                        self.handle_copy(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
                     }
                 }
             }
@@ -479,24 +479,24 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         match (lvalue_has_projection, rvalue_has_projection) {
                             (true, true) => {
                                 self.handle_copy_field_to_field(
-                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
+                                    z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (true, false) => {
                                 self.handle_copy_to_field(
-                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
+                                    z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (false, true) => {
                                 self.handle_copy_from_field(
-                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
+                                    z3_ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                             (false, false) => {
                                 self.handle_copy(
-                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
+                                    z3_ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                         }
@@ -506,24 +506,24 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         match (lvalue_has_projection, rvalue_has_projection) {
                             (true, true) => {
                                 self.handle_move_field_to_field(
-                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
+                                    z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (true, false) => {
                                 self.handle_move_to_field(
-                                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
+                                    z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx,
                                     sidx,
                                 );
                             }
                             (false, true) => {
                                 self.handle_move_from_field(
-                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
+                                    z3_ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                             (false, false) => {
                                 self.handle_move(
-                                    ctx, goal, solver, lplace, rplace, bidx, sidx,
+                                    z3_ctx, goal, solver, lplace, rplace, bidx, sidx,
                                 );
                             }
                         }
@@ -537,7 +537,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 }
                 if let AggregateKind::Adt(_, vidx, ..) = **akind {
                     self.handle_aggregate_init(
-                        ctx, goal, solver, lplace, vidx, disc, bidx, sidx,
+                        z3_ctx, goal, solver, lplace, vidx, disc, bidx, sidx,
                     );
                     for (fidx, op) in operands.iter().enumerate() {
                         let aggre = Some(fidx);
@@ -547,13 +547,13 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                                 match rvalue_has_projection {
                                     true => {
                                         self.handle_copy_field_to_field(
-                                            ctx, goal, solver, lplace, rplace, disc,
+                                            z3_ctx, goal, solver, lplace, rplace, disc,
                                             aggre, bidx, sidx,
                                         );
                                     }
                                     false => {
                                         self.handle_copy_to_field(
-                                            ctx, goal, solver, lplace, rplace, disc,
+                                            z3_ctx, goal, solver, lplace, rplace, disc,
                                             aggre, bidx, sidx,
                                         );
                                     }
@@ -564,13 +564,13 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                                 match rvalue_has_projection {
                                     true => {
                                         self.handle_move_field_to_field(
-                                            ctx, goal, solver, lplace, rplace, disc,
+                                            z3_ctx, goal, solver, lplace, rplace, disc,
                                             aggre, bidx, sidx,
                                         );
                                     }
                                     false => {
                                         self.handle_move_to_field(
-                                            ctx, goal, solver, lplace, rplace, disc,
+                                            z3_ctx, goal, solver, lplace, rplace, disc,
                                             aggre, bidx, sidx,
                                         );
                                     }
@@ -587,9 +587,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_copy(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         bidx: usize,
@@ -646,7 +646,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 return;
             }
             l_ori_bv = self.icx_slice_mut().var_mut()[lu].extract();
-            let l_zero_const = ast::BV::from_u64(ctx, 0, llen as u32);
+            let l_zero_const = ast::BV::from_u64(z3_ctx, 0, llen as u32);
             let constraint_l_ori_zero = l_ori_bv._safe_eq(&l_zero_const).unwrap();
             goal.assert(&constraint_l_ori_zero);
             solver.assert(&constraint_l_ori_zero);
@@ -687,11 +687,11 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let r_name = new_local_name(ru, bidx, sidx);
 
         // generate new bit vectors for variables
-        let l_new_bv = ast::BV::new_const(ctx, l_name, llen as u32);
-        let r_new_bv = ast::BV::new_const(ctx, r_name, rlen as u32);
+        let l_new_bv = ast::BV::new_const(z3_ctx, l_name, llen as u32);
+        let r_new_bv = ast::BV::new_const(z3_ctx, r_name, rlen as u32);
 
-        let l_zero_const = ast::BV::from_u64(ctx, 0, llen as u32);
-        let r_zero_const = ast::BV::from_u64(ctx, 0, rlen as u32);
+        let l_zero_const = ast::BV::from_u64(z3_ctx, 0, llen as u32);
+        let r_zero_const = ast::BV::from_u64(z3_ctx, 0, rlen as u32);
 
         // the constraint that promise the unique heap in transformation of y=x, l=r
         // the exactly constraint is that (r'=r && l'=0) || (l'=r && r'=0)
@@ -699,17 +699,17 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let r_owning = r_new_bv._safe_eq(&r_ori_bv).unwrap();
         let l_non_owning = l_new_bv._safe_eq(&l_zero_const).unwrap();
         let args1 = &[&r_owning, &l_non_owning];
-        let summary_1 = ast::Bool::and(ctx, args1);
+        let summary_1 = ast::Bool::and(z3_ctx, args1);
 
         // this is for (l'=r && r'=0)
         let l_owning = l_new_bv._safe_eq(&r_ori_bv).unwrap();
         let r_non_owning = r_new_bv._safe_eq(&r_zero_const).unwrap();
         let args2 = &[&l_owning, &r_non_owning];
-        let summary_2 = ast::Bool::and(ctx, args2);
+        let summary_2 = ast::Bool::and(z3_ctx, args2);
 
         // the final constraint and add the constraint to the goal of this function
         let args3 = &[&summary_1, &summary_2];
-        let constraint_owning_now = ast::Bool::or(ctx, args3);
+        let constraint_owning_now = ast::Bool::or(z3_ctx, args3);
 
         goal.assert(&constraint_owning_now);
         solver.assert(&constraint_owning_now);
@@ -722,9 +722,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_move(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         bidx: usize,
@@ -781,7 +781,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 return;
             }
             l_ori_bv = self.icx_slice_mut().var_mut()[lu].extract();
-            let l_zero_const = ast::BV::from_u64(ctx, 0, llen as u32);
+            let l_zero_const = ast::BV::from_u64(z3_ctx, 0, llen as u32);
             let constraint_l_ori_zero = l_ori_bv._safe_eq(&l_zero_const).unwrap();
             goal.assert(&constraint_l_ori_zero);
             solver.assert(&constraint_l_ori_zero);
@@ -822,10 +822,10 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let r_name = new_local_name(ru, bidx, sidx);
 
         // generate new bit vectors for variables
-        let l_new_bv = ast::BV::new_const(ctx, l_name, llen as u32);
-        let r_new_bv = ast::BV::new_const(ctx, r_name, rlen as u32);
+        let l_new_bv = ast::BV::new_const(z3_ctx, l_name, llen as u32);
+        let r_new_bv = ast::BV::new_const(z3_ctx, r_name, rlen as u32);
 
-        let r_zero_const = ast::BV::from_u64(ctx, 0, rlen as u32);
+        let r_zero_const = ast::BV::from_u64(z3_ctx, 0, rlen as u32);
 
         // the constraint that promise the unique heap in transformation of y=move x, l=move r
         // the exactly constraint is that r'=0 && l'=r
@@ -847,9 +847,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_copy_from_field(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         bidx: usize,
@@ -892,7 +892,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             return;
         }
         if !rpj_fields.has_field() {
-            self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
+            self.handle_copy(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
             return;
         }
         let index_needed = rpj_fields.index_needed();
@@ -924,7 +924,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             // the constraint that promise the original value of lvalue that does not hold the heap
             // e.g., y=move x.f ,that y (l) is non-owning
             l_ori_bv = self.icx_slice_mut().var_mut()[lu].extract();
-            let l_zero_const = ast::BV::from_u64(ctx, 0, llen as u32);
+            let l_zero_const = ast::BV::from_u64(z3_ctx, 0, llen as u32);
             let constraint_l_ori_zero = l_ori_bv._safe_eq(&l_zero_const).unwrap();
             goal.assert(&constraint_l_ori_zero);
             solver.assert(&constraint_l_ori_zero);
@@ -966,17 +966,17 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let r_name = new_local_name(ru, bidx, sidx);
 
         // generate new bit vectors for variables
-        let l_new_bv = ast::BV::new_const(ctx, l_name, llen as u32);
-        let r_new_bv = ast::BV::new_const(ctx, r_name, rlen as u32);
+        let l_new_bv = ast::BV::new_const(z3_ctx, l_name, llen as u32);
+        let r_new_bv = ast::BV::new_const(z3_ctx, r_name, rlen as u32);
 
         // the constraint that promise the unique heap in transformation of y=x.f, l=r.f
         // the exactly constraint is that ( r.f'=r.f && l'=0 ) || ( l'=extend(r.f) && r.f'=0 )
         // this is for r.f'=r.f (no change) && l'=0
         let r_f_owning = r_new_bv._safe_eq(&r_ori_bv).unwrap();
-        let l_zero_const = ast::BV::from_u64(ctx, 0, llen as u32);
+        let l_zero_const = ast::BV::from_u64(z3_ctx, 0, llen as u32);
         let l_non_owning = l_new_bv._safe_eq(&l_zero_const).unwrap();
         let args1 = &[&r_f_owning, &l_non_owning];
-        let summary_1 = ast::Bool::and(ctx, args1);
+        let summary_1 = ast::Bool::and(z3_ctx, args1);
 
         // this is for l'=extend(r.f) && r.f'=0
         // this is for l'=extend(r.f)
@@ -991,7 +991,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             heap_layout_to_rustbv(default_heap.layout())
         };
         let int_for_op_and = rustbv_to_int(&rust_bv_for_op_and);
-        let z3_bv_for_op_and = ast::BV::from_u64(ctx, int_for_op_and, llen as u32);
+        let z3_bv_for_op_and = ast::BV::from_u64(z3_ctx, int_for_op_and, llen as u32);
 
         if index_needed >= rlen {
             rap_debug!(
@@ -1015,16 +1015,16 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let mut rust_bv_for_op_and = vec![true; rlen];
         rust_bv_for_op_and[index_needed] = false;
         let int_for_op_and = rustbv_to_int(&rust_bv_for_op_and);
-        let z3_bv_for_op_and = ast::BV::from_u64(ctx, int_for_op_and, rlen as u32);
+        let z3_bv_for_op_and = ast::BV::from_u64(z3_ctx, int_for_op_and, rlen as u32);
         let after_op_and = r_ori_bv.bvand(&z3_bv_for_op_and);
         let rpj_non_owning = r_new_bv._safe_eq(&after_op_and).unwrap();
 
         let args2 = &[&l_extend_owning, &rpj_non_owning];
-        let summary_2 = ast::Bool::and(ctx, args2);
+        let summary_2 = ast::Bool::and(z3_ctx, args2);
 
         // the final constraint and add the constraint to the goal of this function
         let args3 = &[&summary_1, &summary_2];
-        let constraint_owning_now = ast::Bool::or(ctx, args3);
+        let constraint_owning_now = ast::Bool::or(z3_ctx, args3);
 
         goal.assert(&constraint_owning_now);
         solver.assert(&constraint_owning_now);
@@ -1037,9 +1037,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_move_from_field(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         bidx: usize,
@@ -1075,7 +1075,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             return;
         }
         if !rpj_fields.has_field() {
-            self.handle_move(ctx, goal, solver, lplace, rplace, bidx, sidx);
+            self.handle_move(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
             return;
         }
         let index_needed = rpj_fields.index_needed();
@@ -1120,7 +1120,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             //     return;
             // }
             l_ori_bv = self.icx_slice_mut().var_mut()[lu].extract();
-            let l_zero_const = ast::BV::from_u64(ctx, 0, llen as u32);
+            let l_zero_const = ast::BV::from_u64(z3_ctx, 0, llen as u32);
             let constraint_l_ori_zero = l_ori_bv._safe_eq(&l_zero_const).unwrap();
             goal.assert(&constraint_l_ori_zero);
             solver.assert(&constraint_l_ori_zero);
@@ -1162,8 +1162,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let r_name = new_local_name(ru, bidx, sidx);
 
         // generate new bit vectors for variables
-        let l_new_bv = ast::BV::new_const(ctx, l_name, llen as u32);
-        let r_new_bv = ast::BV::new_const(ctx, r_name, rlen as u32);
+        let l_new_bv = ast::BV::new_const(z3_ctx, l_name, llen as u32);
+        let r_new_bv = ast::BV::new_const(z3_ctx, r_name, rlen as u32);
 
         // the constraint that promise the unique heap in transformation of y=move x.f, l=move r.f
         // the exactly constraint is that l'=extend(r.f) && r.f'=0
@@ -1179,7 +1179,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             heap_layout_to_rustbv(default_heap.layout())
         };
         let int_for_op_and = rustbv_to_int(&rust_bv_for_op_and);
-        let z3_bv_for_op_and = ast::BV::from_u64(ctx, int_for_op_and, llen as u32);
+        let z3_bv_for_op_and = ast::BV::from_u64(z3_ctx, int_for_op_and, llen as u32);
 
         if index_needed >= rlen {
             rap_debug!(
@@ -1204,7 +1204,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let mut rust_bv_for_op_and = vec![true; rlen];
         rust_bv_for_op_and[index_needed] = false;
         let int_for_op_and = rustbv_to_int(&rust_bv_for_op_and);
-        let z3_bv_for_op_and = ast::BV::from_u64(ctx, int_for_op_and, rlen as u32);
+        let z3_bv_for_op_and = ast::BV::from_u64(z3_ctx, int_for_op_and, rlen as u32);
         let after_op_and = r_ori_bv.bvand(&z3_bv_for_op_and);
         let rpj_non_owning = r_new_bv._safe_eq(&after_op_and).unwrap();
 
@@ -1220,9 +1220,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
     }
     pub(crate) fn handle_aggregate_init(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         lplace: &Place<'tcx>,
         vidx: VariantIdx,
         disc: Disc,
@@ -1247,8 +1247,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
         if !self.icx_slice().var[lu].is_init() {
             let l_ori_name_ctor = new_local_name(lu, bidx, sidx).add("_ctor_asgn");
-            let l_ori_bv_ctor = ast::BV::new_const(ctx, l_ori_name_ctor, llen as u32);
-            let l_ori_zero = ast::BV::from_u64(ctx, 0, llen as u32);
+            let l_ori_bv_ctor = ast::BV::new_const(z3_ctx, l_ori_name_ctor, llen as u32);
+            let l_ori_zero = ast::BV::from_u64(z3_ctx, 0, llen as u32);
             let constraint_l_ctor_zero = l_ori_bv_ctor._safe_eq(&l_ori_zero).unwrap();
             goal.assert(&constraint_l_ctor_zero);
             solver.assert(&constraint_l_ctor_zero);
@@ -1260,9 +1260,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_copy_to_field(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         mut disc: Disc,
@@ -1311,7 +1311,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
                 // variant.len = 1 && field[0]
                 if lpj_fields.index_needed() == 0 && ty_with_index.0.unwrap().0 == 1 {
-                    self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
+                    self.handle_copy(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
                     return;
                 }
             }
@@ -1323,7 +1323,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 return;
             }
             (false, false) => {
-                self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
+                self.handle_copy(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
         }
@@ -1358,7 +1358,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             l_ori_bv = self.icx_slice_mut().var_mut()[lu].extract();
             let extract_from_field = l_ori_bv.extract(index_needed as u32, index_needed as u32);
             if lu > self.body.arg_count {
-                let l_f_zero_const = ast::BV::from_u64(ctx, 0, 1);
+                let l_f_zero_const = ast::BV::from_u64(z3_ctx, 0, 1);
                 let constraint_l_f_ori_zero = extract_from_field._safe_eq(&l_f_zero_const).unwrap();
                 goal.assert(&constraint_l_f_ori_zero);
                 solver.assert(&constraint_l_f_ori_zero);
@@ -1367,8 +1367,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             // this branch means that the assignment is the constructor of the lvalue (either l and l.f)
             // this constraint promise before the struct is [0;field]
             let l_ori_name_ctor = new_local_name(lu, bidx, sidx).add("_ctor_asgn");
-            let l_ori_bv_ctor = ast::BV::new_const(ctx, l_ori_name_ctor, llen as u32);
-            let l_ori_zero = ast::BV::from_u64(ctx, 0, llen as u32);
+            let l_ori_bv_ctor = ast::BV::new_const(z3_ctx, l_ori_name_ctor, llen as u32);
+            let l_ori_zero = ast::BV::from_u64(z3_ctx, 0, llen as u32);
             let constraint_l_ctor_zero = l_ori_bv_ctor._safe_eq(&l_ori_zero).unwrap();
             goal.assert(&constraint_l_ctor_zero);
             solver.assert(&constraint_l_ctor_zero);
@@ -1386,10 +1386,10 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let r_name = new_local_name(ru, bidx, sidx);
 
         // generate new bit vectors for variables
-        let l_new_bv = ast::BV::new_const(ctx, l_name, llen as u32);
-        let r_new_bv = ast::BV::new_const(ctx, r_name, rlen as u32);
+        let l_new_bv = ast::BV::new_const(z3_ctx, l_name, llen as u32);
+        let r_new_bv = ast::BV::new_const(z3_ctx, r_name, rlen as u32);
 
-        let r_zero_const = ast::BV::from_u64(ctx, 0, rlen as u32);
+        let r_zero_const = ast::BV::from_u64(z3_ctx, 0, rlen as u32);
 
         // the constraint that promise the unique heap in transformation of y.f=x, l.f=r
         // the exactly constraint is that (r'=r && l.f'=0) || (r'=0 && l.f'=shrink(r))
@@ -1400,12 +1400,12 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let mut rust_bv_for_op_and = vec![true; llen];
         rust_bv_for_op_and[index_needed] = false;
         let int_for_op_and = rustbv_to_int(&rust_bv_for_op_and);
-        let z3_bv_for_op_and = ast::BV::from_u64(ctx, int_for_op_and, llen as u32);
+        let z3_bv_for_op_and = ast::BV::from_u64(z3_ctx, int_for_op_and, llen as u32);
         let after_op_and = l_ori_bv.bvand(&z3_bv_for_op_and);
         let lpj_non_owning = l_new_bv._safe_eq(&after_op_and).unwrap();
 
         let args1 = &[&r_owning, &lpj_non_owning];
-        let summary_1 = ast::Bool::and(ctx, args1);
+        let summary_1 = ast::Bool::and(z3_ctx, args1);
 
         // this is for r'=0 && l.f'=shrink(r)
         // this is for r'=0
@@ -1432,11 +1432,11 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let lpj_shrink_owning = l_new_bv._safe_eq(&final_bv).unwrap();
 
         let args2 = &[&r_non_owning, &lpj_shrink_owning];
-        let summary_2 = ast::Bool::and(ctx, args2);
+        let summary_2 = ast::Bool::and(z3_ctx, args2);
 
         // the final constraint and add the constraint to the goal of this function
         let args3 = &[&summary_1, &summary_2];
-        let constraint_owning_now = ast::Bool::or(ctx, args3);
+        let constraint_owning_now = ast::Bool::or(z3_ctx, args3);
 
         goal.assert(&constraint_owning_now);
         solver.assert(&constraint_owning_now);
@@ -1449,9 +1449,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_move_to_field(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         mut disc: Disc,
@@ -1500,7 +1500,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
                 // variant.len = 1 && field[0]
                 if lpj_fields.index_needed() == 0 && ty_with_index.0.unwrap().0 == 1 {
-                    self.handle_move(ctx, goal, solver, lplace, rplace, bidx, sidx);
+                    self.handle_move(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
                     return;
                 }
             }
@@ -1512,7 +1512,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 return;
             }
             (false, false) => {
-                self.handle_move(ctx, goal, solver, lplace, rplace, bidx, sidx);
+                self.handle_move(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
         }
@@ -1548,7 +1548,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             l_ori_bv = self.icx_slice_mut().var_mut()[lu].extract();
             let extract_from_field = l_ori_bv.extract(index_needed as u32, index_needed as u32);
             if lu > self.body.arg_count {
-                let l_f_zero_const = ast::BV::from_u64(ctx, 0, 1);
+                let l_f_zero_const = ast::BV::from_u64(z3_ctx, 0, 1);
                 let constraint_l_f_ori_zero = extract_from_field._safe_eq(&l_f_zero_const).unwrap();
                 goal.assert(&constraint_l_f_ori_zero);
                 solver.assert(&constraint_l_f_ori_zero);
@@ -1557,8 +1557,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             // this branch means that the assignment is the constructor of the lvalue (either l and l.f)
             // this constraint promise before the struct is [0;field]
             let l_ori_name_ctor = new_local_name(lu, bidx, sidx).add("_ctor_asgn");
-            let l_ori_bv_ctor = ast::BV::new_const(ctx, l_ori_name_ctor, llen as u32);
-            let l_ori_zero = ast::BV::from_u64(ctx, 0, llen as u32);
+            let l_ori_bv_ctor = ast::BV::new_const(z3_ctx, l_ori_name_ctor, llen as u32);
+            let l_ori_zero = ast::BV::from_u64(z3_ctx, 0, llen as u32);
             let constraint_l_ctor_zero = l_ori_bv_ctor._safe_eq(&l_ori_zero).unwrap();
             goal.assert(&constraint_l_ctor_zero);
             solver.assert(&constraint_l_ctor_zero);
@@ -1576,10 +1576,10 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let r_name = new_local_name(ru, bidx, sidx);
 
         // generate new bit vectors for variables
-        let l_new_bv = ast::BV::new_const(ctx, l_name, llen as u32);
-        let r_new_bv = ast::BV::new_const(ctx, r_name, rlen as u32);
+        let l_new_bv = ast::BV::new_const(z3_ctx, l_name, llen as u32);
+        let r_new_bv = ast::BV::new_const(z3_ctx, r_name, rlen as u32);
 
-        let r_zero_const = ast::BV::from_u64(ctx, 0, rlen as u32);
+        let r_zero_const = ast::BV::from_u64(z3_ctx, 0, rlen as u32);
 
         // the constraint that promise the unique heap in transformation of y.f=move x, l.f=move r
         // the exactly constraint is that r'=0 && l.f'=shrink(r)
@@ -1618,9 +1618,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_copy_field_to_field(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         disc: Disc,
@@ -1669,17 +1669,17 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         match (rpj_fields.has_field(), lpj_fields.has_field()) {
             (true, true) => (),
             (true, false) => {
-                self.handle_copy_from_field(ctx, goal, solver, lplace, rplace, bidx, sidx);
+                self.handle_copy_from_field(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
             (false, true) => {
                 self.handle_copy_to_field(
-                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
+                    z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                 );
                 return;
             }
             (false, false) => {
-                self.handle_copy(ctx, goal, solver, lplace, rplace, bidx, sidx);
+                self.handle_copy(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
         }
@@ -1715,7 +1715,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             l_ori_bv = self.icx_slice_mut().var_mut()[lu].extract();
             let extract_from_field = l_ori_bv.extract(l_index_needed as u32, l_index_needed as u32);
             if lu > self.body.arg_count {
-                let l_f_zero_const = ast::BV::from_u64(ctx, 0, 1);
+                let l_f_zero_const = ast::BV::from_u64(z3_ctx, 0, 1);
                 let constraint_l_f_ori_zero = extract_from_field._safe_eq(&l_f_zero_const).unwrap();
                 goal.assert(&constraint_l_f_ori_zero);
                 solver.assert(&constraint_l_f_ori_zero);
@@ -1724,8 +1724,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             // this branch means that the assignment is the constructor of the lvalue (either l and l.f)
             // this constraint promise before the struct is [0;field]
             let l_ori_name_ctor = new_local_name(lu, bidx, sidx).add("_ctor_asgn");
-            let l_ori_bv_ctor = ast::BV::new_const(ctx, l_ori_name_ctor, llen as u32);
-            let l_ori_zero = ast::BV::from_u64(ctx, 0, llen as u32);
+            let l_ori_bv_ctor = ast::BV::new_const(z3_ctx, l_ori_name_ctor, llen as u32);
+            let l_ori_zero = ast::BV::from_u64(z3_ctx, 0, llen as u32);
             let constraint_l_ctor_zero = l_ori_bv_ctor._safe_eq(&l_ori_zero).unwrap();
             goal.assert(&constraint_l_ctor_zero);
             solver.assert(&constraint_l_ctor_zero);
@@ -1739,8 +1739,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let r_name = new_local_name(ru, bidx, sidx);
 
         // generate new bit vectors for variables
-        let l_new_bv = ast::BV::new_const(ctx, l_name, llen as u32);
-        let r_new_bv = ast::BV::new_const(ctx, r_name, rlen as u32);
+        let l_new_bv = ast::BV::new_const(z3_ctx, l_name, llen as u32);
+        let r_new_bv = ast::BV::new_const(z3_ctx, r_name, rlen as u32);
 
         // the constraint that promise the unique heap in transformation of y.f= x.f, l.f= r.f
         // the exactly constraint is that (r.f'=0 && l.f'=r.f) || (l.f'=0 && r.f'=r.f)
@@ -1751,7 +1751,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let mut rust_bv_for_op_and = vec![true; rlen];
         rust_bv_for_op_and[r_index_needed] = false;
         let int_for_op_and = rustbv_to_int(&rust_bv_for_op_and);
-        let z3_bv_for_op_and = ast::BV::from_u64(ctx, int_for_op_and, rlen as u32);
+        let z3_bv_for_op_and = ast::BV::from_u64(z3_ctx, int_for_op_and, rlen as u32);
         let after_op_and = r_ori_bv.bvand(&z3_bv_for_op_and);
         let rpj_non_owning = r_new_bv._safe_eq(&after_op_and).unwrap();
         // this is for l.f'=r.f
@@ -1773,25 +1773,25 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let lpj_owning = l_new_bv._safe_eq(&final_bv).unwrap();
 
         let args1 = &[&rpj_non_owning, &lpj_owning];
-        let summary_1 = ast::Bool::and(ctx, args1);
+        let summary_1 = ast::Bool::and(z3_ctx, args1);
 
         // this is for l.f'=0 && r.f'=r.f
         // this is for l.f'=0
         let mut rust_bv_for_op_and = vec![true; llen];
         rust_bv_for_op_and[l_index_needed] = false;
         let int_for_op_and = rustbv_to_int(&rust_bv_for_op_and);
-        let z3_bv_for_op_and = ast::BV::from_u64(ctx, int_for_op_and, llen as u32);
+        let z3_bv_for_op_and = ast::BV::from_u64(z3_ctx, int_for_op_and, llen as u32);
         let after_op_and = l_ori_bv.bvand(&z3_bv_for_op_and);
         let lpj_non_owning = l_new_bv._safe_eq(&after_op_and).unwrap();
         // this is for r.f'=r.f
         let rpj_owning = r_new_bv._safe_eq(&r_ori_bv).unwrap();
 
         let args2 = &[&lpj_non_owning, &rpj_owning];
-        let summary_2 = ast::Bool::and(ctx, args2);
+        let summary_2 = ast::Bool::and(z3_ctx, args2);
 
         // the final constraint and add the constraint to the goal of this function
         let args3 = &[&summary_1, &summary_2];
-        let constraint_owning_now = ast::Bool::or(ctx, args3);
+        let constraint_owning_now = ast::Bool::or(z3_ctx, args3);
 
         goal.assert(&constraint_owning_now);
         solver.assert(&constraint_owning_now);
@@ -1804,9 +1804,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_move_field_to_field(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         lplace: &Place<'tcx>,
         rplace: &Place<'tcx>,
         disc: Disc,
@@ -1859,16 +1859,16 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         match (rpj_fields.has_field(), lpj_fields.has_field()) {
             (true, true) => (),
             (true, false) => {
-                self.handle_move_from_field(ctx, goal, solver, lplace, rplace, bidx, sidx);
+                self.handle_move_from_field(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
             (false, true) => {
                 self.handle_move_to_field(
-                    ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
+                    z3_ctx, goal, solver, lplace, rplace, disc, aggre, bidx, sidx,
                 );
             }
             (false, false) => {
-                self.handle_move(ctx, goal, solver, lplace, rplace, bidx, sidx);
+                self.handle_move(z3_ctx, goal, solver, lplace, rplace, bidx, sidx);
                 return;
             }
         }
@@ -1904,7 +1904,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             l_ori_bv = self.icx_slice_mut().var_mut()[lu].extract();
             let extract_from_field = l_ori_bv.extract(l_index_needed as u32, l_index_needed as u32);
             if lu > self.body.arg_count {
-                let l_f_zero_const = ast::BV::from_u64(ctx, 0, 1);
+                let l_f_zero_const = ast::BV::from_u64(z3_ctx, 0, 1);
                 let constraint_l_f_ori_zero = extract_from_field._safe_eq(&l_f_zero_const).unwrap();
                 goal.assert(&constraint_l_f_ori_zero);
                 solver.assert(&constraint_l_f_ori_zero);
@@ -1913,8 +1913,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             // this branch means that the assignment is the constructor of the lvalue (either l and l.f)
             // this constraint promise before the struct is [0;field]
             let l_ori_name_ctor = new_local_name(lu, bidx, sidx).add("_ctor_asgn");
-            let l_ori_bv_ctor = ast::BV::new_const(ctx, l_ori_name_ctor, llen as u32);
-            let l_ori_zero = ast::BV::from_u64(ctx, 0, llen as u32);
+            let l_ori_bv_ctor = ast::BV::new_const(z3_ctx, l_ori_name_ctor, llen as u32);
+            let l_ori_zero = ast::BV::from_u64(z3_ctx, 0, llen as u32);
             let constraint_l_ctor_zero = l_ori_bv_ctor._safe_eq(&l_ori_zero).unwrap();
             goal.assert(&constraint_l_ctor_zero);
             solver.assert(&constraint_l_ctor_zero);
@@ -1928,8 +1928,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let r_name = new_local_name(ru, bidx, sidx);
 
         // generate new bit vectors for variables
-        let l_new_bv = ast::BV::new_const(ctx, l_name, llen as u32);
-        let r_new_bv = ast::BV::new_const(ctx, r_name, rlen as u32);
+        let l_new_bv = ast::BV::new_const(z3_ctx, l_name, llen as u32);
+        let r_new_bv = ast::BV::new_const(z3_ctx, r_name, rlen as u32);
 
         // the constraint that promise the unique heap in transformation of y.f=move x.f, l.f=move r.f
         // the exactly constraint is that r.f'=0 && l.f'=r.f
@@ -1939,7 +1939,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
         let mut rust_bv_for_op_and = vec![true; rlen];
         rust_bv_for_op_and[r_index_needed] = false;
         let int_for_op_and = rustbv_to_int(&rust_bv_for_op_and);
-        let z3_bv_for_op_and = ast::BV::from_u64(ctx, int_for_op_and, rlen as u32);
+        let z3_bv_for_op_and = ast::BV::from_u64(z3_ctx, int_for_op_and, rlen as u32);
         let after_op_and = r_ori_bv.bvand(&z3_bv_for_op_and);
         let rpj_non_owning = r_new_bv._safe_eq(&after_op_and).unwrap();
 
@@ -2050,9 +2050,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_call(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         term: Terminator<'tcx>,
         func: &Operand<'tcx>,
         //args: &Vec<Operand<'tcx>>,
@@ -2072,7 +2072,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         let a_ty = a_place_ty.ty;
                         if a_ty.is_adt() {
                             self.handle_drop(
-                                ctx, goal, solver, &aplace, bidx, false,
+                                z3_ctx, goal, solver, &aplace, bidx, false,
                             );
                             return;
                         }
@@ -2130,19 +2130,19 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                             // this indicates that the operand is move without projection
                             if is_a_ptr {
                                 if recovery_flag.0 && recovery_flag.1.contains(&au) {
-                                    self.handle_drop(ctx, goal, solver, &aplace, bidx, true);
+                                    self.handle_drop(z3_ctx, goal, solver, &aplace, bidx, true);
                                     continue;
                                 }
 
                                 // if the aplace is a pointer (move ptr => still hold)
                                 // the exact constraint is a=0, a'=a
                                 // this is for a=0
-                                let a_zero_const = ast::BV::from_u64(ctx, 0, alen as u32);
+                                let a_zero_const = ast::BV::from_u64(z3_ctx, 0, alen as u32);
                                 let a_ori_non_owing = a_ori_bv._safe_eq(&a_zero_const).unwrap();
 
                                 // this is for a'=a
                                 let a_name = new_local_name(au, bidx, 0).add("_param_pass");
-                                let a_new_bv = ast::BV::new_const(ctx, a_name, alen as u32);
+                                let a_new_bv = ast::BV::new_const(z3_ctx, a_name, alen as u32);
                                 let update_a = a_new_bv._safe_eq(&a_ori_bv).unwrap();
 
                                 goal.assert(&a_ori_non_owing);
@@ -2153,28 +2153,28 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                                 self.icx_slice_mut().var_mut()[au] = IntraVar::Init(a_new_bv);
                             } else {
                                 // if the aplace is a instance (move i => drop)
-                                self.handle_drop(ctx, goal, solver, &aplace, bidx, false);
+                                self.handle_drop(z3_ctx, goal, solver, &aplace, bidx, false);
                             }
                         }
                         1 => {
                             // this indicates that the operand is move without projection
                             if is_a_ptr {
                                 if recovery_flag.0 && recovery_flag.1.contains(&au) {
-                                    self.handle_drop(ctx, goal, solver, &aplace, bidx, true);
+                                    self.handle_drop(z3_ctx, goal, solver, &aplace, bidx, true);
                                     continue;
                                 }
                                 // if the aplace in field is a pointer (move a.f (ptr) => still hold)
                                 // the exact constraint is a'=a
                                 // this is for a'=a
                                 let a_name = new_local_name(au, bidx, 0).add("_param_pass");
-                                let a_new_bv = ast::BV::new_const(ctx, a_name, alen as u32);
+                                let a_new_bv = ast::BV::new_const(z3_ctx, a_name, alen as u32);
                                 let update_a = a_new_bv._safe_eq(&a_ori_bv).unwrap();
 
                                 goal.assert(&update_a);
                                 solver.assert(&update_a);
                             } else {
                                 // if the aplace is a instance (move i.f => i.f=0)
-                                self.handle_drop(ctx, goal, solver, &aplace, bidx, false);
+                                self.handle_drop(z3_ctx, goal, solver, &aplace, bidx, false);
                             }
                         }
                         _ => {
@@ -2209,19 +2209,19 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                             // this indicates that the operand is move without projection
                             if is_a_ptr {
                                 if recovery_flag.0 && recovery_flag.1.contains(&au) {
-                                    self.handle_drop(ctx, goal, solver, &aplace, bidx, true);
+                                    self.handle_drop(z3_ctx, goal, solver, &aplace, bidx, true);
                                     continue;
                                 }
 
                                 // if the aplace is a pointer (ptr => still hold)
                                 // the exact constraint is a=0, a'=a
                                 // this is for a=0
-                                let a_zero_const = ast::BV::from_u64(ctx, 0, alen as u32);
+                                let a_zero_const = ast::BV::from_u64(z3_ctx, 0, alen as u32);
                                 let a_ori_non_owing = a_ori_bv._safe_eq(&a_zero_const).unwrap();
 
                                 // this is for a'=a
                                 let a_name = new_local_name(au, bidx, 0).add("_param_pass");
-                                let a_new_bv = ast::BV::new_const(ctx, a_name, alen as u32);
+                                let a_new_bv = ast::BV::new_const(z3_ctx, a_name, alen as u32);
                                 let update_a = a_new_bv._safe_eq(&a_ori_bv).unwrap();
 
                                 goal.assert(&a_ori_non_owing);
@@ -2236,13 +2236,13 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
                                 if is_a_ptr {
                                     if recovery_flag.0 && recovery_flag.1.contains(&au) {
-                                        self.handle_drop(ctx, goal, solver, &aplace, bidx, true);
+                                        self.handle_drop(z3_ctx, goal, solver, &aplace, bidx, true);
                                         continue;
                                     }
                                 }
 
                                 let a_name = new_local_name(au, bidx, 0).add("_param_pass");
-                                let a_new_bv = ast::BV::new_const(ctx, a_name, alen as u32);
+                                let a_new_bv = ast::BV::new_const(z3_ctx, a_name, alen as u32);
                                 let update_a = a_new_bv._safe_eq(&a_ori_bv).unwrap();
 
                                 goal.assert(&update_a);
@@ -2252,7 +2252,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         1 => {
                             // this indicates that the operand is move without projection
                             let a_name = new_local_name(au, bidx, 0).add("_param_pass");
-                            let a_new_bv = ast::BV::new_const(ctx, a_name, alen as u32);
+                            let a_new_bv = ast::BV::new_const(z3_ctx, a_name, alen as u32);
                             let update_a = a_new_bv._safe_eq(&a_ori_bv).unwrap();
 
                             goal.assert(&update_a);
@@ -2315,7 +2315,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                         return;
                     }
                     l_ori_bv = self.icx_slice_mut().var_mut()[lu].extract();
-                    let l_zero_const = ast::BV::from_u64(ctx, 0, llen as u32);
+                    let l_zero_const = ast::BV::from_u64(z3_ctx, 0, llen as u32);
                     let constraint_l_ori_zero = l_ori_bv._safe_eq(&l_zero_const).unwrap();
                     goal.assert(&constraint_l_ori_zero);
                     solver.assert(&constraint_l_ori_zero);
@@ -2350,8 +2350,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                     new_local_name(lu, bidx, 0).add("_cover_fn")
                 };
 
-                let l_layout_bv = ast::BV::from_u64(ctx, int_for_gen, llen as u32);
-                let l_new_bv = ast::BV::new_const(ctx, l_name, llen as u32);
+                let l_layout_bv = ast::BV::from_u64(z3_ctx, int_for_gen, llen as u32);
+                let l_new_bv = ast::BV::new_const(z3_ctx, l_name, llen as u32);
 
                 let constraint_new_owning = l_new_bv._safe_eq(&l_layout_bv).unwrap();
 
@@ -2380,7 +2380,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                     l_ori_bv = self.icx_slice_mut().var_mut()[lu].extract();
                     let extract_from_field =
                         l_ori_bv.extract(index_needed as u32, index_needed as u32);
-                    let l_f_zero_const = ast::BV::from_u64(ctx, 0, 1);
+                    let l_f_zero_const = ast::BV::from_u64(z3_ctx, 0, 1);
                     let constraint_l_f_ori_zero =
                         extract_from_field._safe_eq(&l_f_zero_const).unwrap();
 
@@ -2388,8 +2388,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                     solver.assert(&constraint_l_f_ori_zero);
                 } else {
                     let l_ori_name_ctor = new_local_name(lu, bidx, 0).add("_ctor_fn");
-                    let l_ori_bv_ctor = ast::BV::new_const(ctx, l_ori_name_ctor, llen as u32);
-                    let l_ori_zero = ast::BV::from_u64(ctx, 0, llen as u32);
+                    let l_ori_bv_ctor = ast::BV::new_const(z3_ctx, l_ori_name_ctor, llen as u32);
+                    let l_ori_zero = ast::BV::from_u64(z3_ctx, 0, llen as u32);
                     let constraint_l_ctor_zero = l_ori_bv_ctor._safe_eq(&l_ori_zero).unwrap();
 
                     goal.assert(&constraint_l_ctor_zero);
@@ -2401,15 +2401,15 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 }
 
                 let l_name = new_local_name(lu, bidx, 0);
-                let l_new_bv = ast::BV::new_const(ctx, l_name, llen as u32);
+                let l_new_bv = ast::BV::new_const(z3_ctx, l_name, llen as u32);
 
                 let update_field = if source_flag {
-                    ast::BV::from_u64(ctx, 1, 1)
+                    ast::BV::from_u64(z3_ctx, 1, 1)
                 } else {
                     if return_value_layout.layout()[index_needed] == HeapOwnership::True {
-                        ast::BV::from_u64(ctx, 1, 1)
+                        ast::BV::from_u64(z3_ctx, 1, 1)
                     } else {
-                        ast::BV::from_u64(ctx, 0, 1)
+                        ast::BV::from_u64(z3_ctx, 0, 1)
                     }
                 };
 
@@ -2440,13 +2440,13 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_return(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         bidx: usize,
     ) {
         let place_0 = Place::from(Local::from_usize(0));
-        self.handle_drop(ctx, goal, solver, &place_0, bidx, false);
+        self.handle_drop(z3_ctx, goal, solver, &place_0, bidx, false);
 
         // when whole function return => we need to check every variable is freed
         for (iidx, var) in self.icx_slice().var.iter().enumerate() {
@@ -2462,15 +2462,15 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 let var_ori_bv = var.extract();
 
                 let return_name = new_local_name(iidx, bidx, 0).add("_return");
-                let var_return_bv = ast::BV::new_const(ctx, return_name, len as u32);
+                let var_return_bv = ast::BV::new_const(z3_ctx, return_name, len as u32);
 
-                let zero_const = ast::BV::from_u64(ctx, 0, len as u32);
+                let zero_const = ast::BV::from_u64(z3_ctx, 0, len as u32);
 
                 let var_update = var_return_bv._safe_eq(&var_ori_bv).unwrap();
                 let var_freed = var_return_bv._safe_eq(&zero_const).unwrap();
 
                 let args = &[&var_update, &var_freed];
-                let constraint_return = ast::Bool::and(ctx, args);
+                let constraint_return = ast::Bool::and(z3_ctx, args);
 
                 goal.assert(&constraint_return);
                 solver.assert(&constraint_return);
@@ -2532,9 +2532,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
     pub(crate) fn handle_drop(
         &mut self,
-        ctx: &'ctx z3::Context,
-        goal: &'ctx z3::Goal<'ctx>,
-        solver: &'ctx z3::Solver<'ctx>,
+        z3_ctx: &'z3 z3::Context,
+        goal: &'z3 z3::Goal<'z3>,
+        solver: &'z3 z3::Solver<'z3>,
         dest: &Place<'tcx>,
         bidx: usize,
         recovery: bool,
@@ -2567,8 +2567,8 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 if recovery {
                     // recovery for pointer, clear all
                     let name = new_local_name(u, bidx, 0).add("_drop_recovery");
-                    let new_bv = ast::BV::new_const(ctx, name, len as u32);
-                    let zero_bv = ast::BV::from_u64(ctx, 0, len as u32);
+                    let new_bv = ast::BV::new_const(z3_ctx, name, len as u32);
+                    let zero_bv = ast::BV::from_u64(z3_ctx, 0, len as u32);
 
                     let and_bv = ori_bv.bvand(&zero_bv);
 
@@ -2581,9 +2581,9 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 } else {
                     // is not recovery for pointer, just normal drop
                     let name = new_local_name(u, bidx, 0).add("_drop_all");
-                    let new_bv = ast::BV::new_const(ctx, name, len as u32);
+                    let new_bv = ast::BV::new_const(z3_ctx, name, len as u32);
                     let int_for_rust_bv = rustbv_to_int(&rust_bv);
-                    let int_bv_const = ast::BV::from_u64(ctx, int_for_rust_bv, len as u32);
+                    let int_bv_const = ast::BV::from_u64(z3_ctx, int_for_rust_bv, len as u32);
 
                     let and_bv = ori_bv.bvand(&int_bv_const);
 
@@ -2608,7 +2608,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
                 } else {
                     new_local_name(u, bidx, 0).add("_drop_f")
                 };
-                let new_bv = ast::BV::new_const(ctx, name, len as u32);
+                let new_bv = ast::BV::new_const(z3_ctx, name, len as u32);
 
                 if (rust_bv[index_needed] && !recovery) || (!rust_bv[index_needed] && recovery) {
                     // not actually drop, just update the idx
@@ -2620,7 +2620,7 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
 
                     self.icx_slice_mut().var_mut()[u] = IntraVar::Init(new_bv);
                 } else {
-                    let f_free = ast::BV::from_u64(ctx, 0, 1);
+                    let f_free = ast::BV::from_u64(z3_ctx, 0, 1);
                     let mut final_bv: ast::BV;
                     if index_needed < len - 1 {
                         let end_part = ori_bv.extract((len - 1) as u32, (index_needed + 1) as u32);
@@ -2994,23 +2994,23 @@ fn rustbv_to_int(bv: &Vec<bool>) -> u64 {
     ans
 }
 
-fn help_debug_goal_stmt<'tcx, 'ctx>(
-    ctx: &'ctx z3::Context,
-    goal: &'ctx z3::Goal<'ctx>,
+fn help_debug_goal_stmt<'tcx, 'z3>(
+    z3_ctx: &'z3 z3::Context,
+    goal: &'z3 z3::Goal<'z3>,
     bidx: usize,
     sidx: usize,
 ) {
     let debug_name = format!("CONSTRAINTS: S {} {}", bidx, sidx);
-    let dbg_bool = ast::Bool::new_const(ctx, debug_name);
+    let dbg_bool = ast::Bool::new_const(z3_ctx, debug_name);
     goal.assert(&dbg_bool);
 }
 
-fn help_debug_goal_term<'tcx, 'ctx>(
-    ctx: &'ctx z3::Context,
-    goal: &'ctx z3::Goal<'ctx>,
+fn help_debug_goal_term<'tcx, 'z3>(
+    z3_ctx: &'z3 z3::Context,
+    goal: &'z3 z3::Goal<'z3>,
     bidx: usize,
 ) {
     let debug_name = format!("CONSTRAINTS: T {}", bidx);
-    let dbg_bool = ast::Bool::new_const(ctx, debug_name);
+    let dbg_bool = ast::Bool::new_const(z3_ctx, debug_name);
     goal.assert(&dbg_bool);
 }
