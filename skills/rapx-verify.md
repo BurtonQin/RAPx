@@ -16,7 +16,7 @@ description: Use when running RAPx verification (`cargo rapx verify`) on a Rust 
 
 ```toml
 [dependencies]
-rapx-macros = "0.7.51"   # only needed for pred!
+rapx-macros = "0.7.53"   # only needed for pred!
 ```
 
 ## Annotations
