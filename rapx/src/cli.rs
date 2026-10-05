@@ -4,9 +4,19 @@ mod verify;
 
 pub use analyze::*;
 pub use check::*;
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 pub use verify::PostfixRepeat;
 pub use verify::*;
+
+/// The output format for check findings.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReportFormat {
+    /// Human-rendered records on the rapx log channel (the historical output).
+    #[default]
+    Text,
+    /// One SARIF 2.1.0 log per analyzed crate.
+    Sarif,
+}
 
 #[derive(Args, Debug, Clone)]
 pub struct RapxArgs {
@@ -16,6 +26,9 @@ pub struct RapxArgs {
     pub timeout: Option<u64>,
     #[arg(long, help = "specify the tested package in the workspace")]
     pub test_crate: Option<String>,
+    #[arg(long, value_enum, default_value_t, global = true,
+          help = "report output format for check findings")]
+    pub format: ReportFormat,
 }
 
 // NOTE: docstring is automatically used to generate help messages,

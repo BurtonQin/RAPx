@@ -2531,6 +2531,23 @@ impl<'tcx, 'ctx, 'a> IntraFlowAnalysis<'tcx, 'ctx, 'a> {
             let fn_name = get_name(self.tcx(), self.def_id)
                 .unwrap_or_else(|| Symbol::intern("no symbol available"));
 
+            crate::sarif::record_finding(
+                "MemoryLeak",
+                fn_name.to_string(),
+                self.body.span,
+                self.taint_source
+                    .iter()
+                    .map(|source| source.source_info.span)
+                    .collect(),
+                None,
+                false,
+            );
+
+            if crate::sarif::sarif_mode() {
+                // SARIF mode: the finding is recorded; skip rendering.
+                return;
+            }
+
             rap_warn!("Memory Leak detected in function {:}", fn_name);
             let source = span_to_source_code(self.body.span);
             let file = span_to_filename(self.body.span);

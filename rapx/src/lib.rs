@@ -11,6 +11,7 @@ pub(crate) mod graphs;
 pub mod help;
 pub(crate) mod helpers;
 pub(crate) mod preprocess;
+pub mod sarif;
 pub mod verify;
 
 extern crate rustc_abi;
@@ -162,6 +163,8 @@ impl Callbacks for RapCallback {
 pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
     match &callback.args.command {
         Commands::Check(CheckArgs { uaf, mleak }) => {
+            crate::sarif::clear_findings();
+            crate::sarif::set_sarif_mode(callback.args.format == cli::ReportFormat::Sarif);
             if uaf.is_some() {
                 SafeDrop::new(tcx).start();
             }
@@ -171,6 +174,8 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
                 let adt_owner = heap.get_all_items();
                 rCanary::new(tcx, adt_owner).start();
             }
+            let crate_name = tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE).to_string();
+            crate::sarif::emit_if_sarif(tcx, &crate_name, callback.args.format);
         }
 
         Commands::Opt => {

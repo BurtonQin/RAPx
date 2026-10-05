@@ -27,6 +27,16 @@ pub struct TyBug {
     pub bug_type: BugType,
 }
 
+/// The `BugType` as a stable name for the SARIF rule registry.
+fn bug_kind_str(bug_type: BugType) -> &'static str {
+    match bug_type {
+        BugType::UseAfterFree => "UseAfterFree",
+        BugType::DoubleFree => "DoubleFree",
+        BugType::DanglingPointer => "DanglingPointer",
+        BugType::UseAfterFreeAndDoubleFree => "UseAfterFreeAndDoubleFree",
+    }
+}
+
 /*
  * For each bug in the HashMap, the key is local of the value.
  */
@@ -112,6 +122,7 @@ impl BugRecords {
             "Double free detected",
             "Double free detected.",
             df_uaf_detail,
+            false,
         );
 
         self.emit_bug_reports(
@@ -122,6 +133,7 @@ impl BugRecords {
             "Double free detected",
             "Double free detected during unwinding.",
             df_uaf_detail,
+            true,
         );
     }
 
@@ -134,6 +146,7 @@ impl BugRecords {
             "Use-after-free detected",
             "Use-after-free detected.",
             df_uaf_detail,
+            false,
         );
     }
 
@@ -146,6 +159,7 @@ impl BugRecords {
             "Dangling pointer detected",
             "Dangling pointer detected.",
             dp_detail,
+            false,
         );
 
         self.emit_bug_reports(
@@ -156,6 +170,7 @@ impl BugRecords {
             "Dangling pointer detected during unwinding",
             "Dangling pointer detected during unwinding.",
             dp_detail,
+            true,
         );
     }
 
@@ -168,6 +183,7 @@ impl BugRecords {
         log_msg: &str,
         title: &str,
         detail_formatter: F,
+        during_unwind: bool,
     ) where
         F: Fn(&TyBug, &str, &str, &str, &str) -> String,
     {
@@ -175,7 +191,9 @@ impl BugRecords {
             return;
         }
 
-        rap_warn!("{} in function {:?}", log_msg, fn_name);
+        if !crate::sarif::sarif_mode() {
+            rap_warn!("{} in function {:?}", log_msg, fn_name);
+        }
 
         let code_source = span_to_source_code(span);
         let filename = span_to_filename(span);
@@ -183,6 +201,18 @@ impl BugRecords {
 
         for bug in bugs.values() {
             if are_spans_in_same_file(span, bug.span) {
+                crate::sarif::record_finding(
+                    bug_kind_str(bug.bug_type),
+                    fn_name.to_string(),
+                    bug.span,
+                    Vec::new(),
+                    Some(bug.confidence),
+                    during_unwind,
+                );
+                if crate::sarif::sarif_mode() {
+                    // SARIF mode: the finding is recorded; skip rendering.
+                    continue;
+                }
                 let format_local_info = |id: usize| -> String {
                     if id >= body.local_decls().len() {
                         return format!("UNKNWON(_{}) in {}", id, fn_name.as_str());
