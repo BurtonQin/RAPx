@@ -139,13 +139,11 @@ impl<T, A: Allocator> RawVec<T, A> {
     #[rapx::requires(Align(ptr, T))]
     pub unsafe fn from_nonnull_in_ext(ptr: NonNull<T>, capacity: usize, alloc: A) -> Self {
         // SAFETY: precondition passed to the caller.
-        unsafe {
-            let ptr = ptr.cast();
-            let capacity = new_cap_ext::<T>(capacity);
-            Self {
-                inner: RawVecInner::from_nonnull_in_ext(ptr, capacity, alloc),
-                _marker: PhantomData,
-            }
+        let ptr = ptr.cast();
+        let capacity = new_cap_ext::<T>(capacity);
+        Self {
+            inner: RawVecInner::from_nonnull_in_ext(ptr, capacity, alloc),
+            _marker: PhantomData,
         }
     }
 
@@ -231,7 +229,7 @@ impl<A: Allocator> RawVecInner<A> {
         Self { ptr: unsafe { NonNull::new_unchecked(ptr) }, cap, alloc }
     }
 
-    unsafe fn from_nonnull_in_ext(ptr: NonNull<u8>, cap: Cap, alloc: A) -> Self {
+    fn from_nonnull_in_ext(ptr: NonNull<u8>, cap: Cap, alloc: A) -> Self {
         Self { ptr, cap, alloc }
     }
 

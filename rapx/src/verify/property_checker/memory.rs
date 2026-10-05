@@ -402,6 +402,17 @@ impl PropertyChecker {
             if crate::verify::api_classify::is_manually_drop_drop(checkpoint.callee) {
                 return CheckResult::ProvedByRule;
             }
+            // A null pointer (address term 0) is definitely not backed by any
+            // allocation — a confirmed violation, not an incomplete proof.
+            if value.term.simplify().as_u64() == Some(0) {
+                return CheckResult::Failed;
+            }
+            // A pointer whose address is a compile-time constant (e.g.
+            // `NonNull::dangling`'s `align_of::<T>()`, an unevaluated `const_…`
+            // term) is likewise not backed by any allocation.
+            if value.term.to_string().contains("const_") {
+                return CheckResult::Failed;
+            }
             return CheckResult::Unknown;
         };
 
@@ -773,6 +784,11 @@ impl PropertyChecker {
                     return CheckResult::ProvedByRule;
                 }
             }
+            // The allocation's `initialized` flag stayed `false` (nothing wrote
+            // it: `MaybeUninit::uninit` / `Box::new_uninit`), and this is not a
+            // write operation — the access reads uninitialized memory, a
+            // confirmed violation rather than an incomplete proof.
+            return CheckResult::Failed;
         }
         // Check field-level init for aggregate types
         if let Some(origin_op) = checkpoint.args.first() {
@@ -811,6 +827,16 @@ impl PropertyChecker {
                             }
                         }
                     }
+                }
+            }
+            // No path proved init.  If the value traces to a known allocation
+            // that was never written (its `initialized` flag stayed `false`),
+            // reading it is a confirmed violation rather than an incomplete
+            // proof.
+            if let Operand::Copy(place) | Operand::Move(place) = origin_op {
+                let allocs = self.trace_alloc_ids(vm_state, place.local);
+                if !allocs.is_empty() && allocs.iter().all(|id| !vm_state.alloc(*id).initialized) {
+                    return CheckResult::Failed;
                 }
             }
         }

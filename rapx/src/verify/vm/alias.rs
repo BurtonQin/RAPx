@@ -497,11 +497,19 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
     // NonNull::as_ref / as_mut fast-path (formerly part of Ptr2Ref checking):
     // NonNull guarantees non-null + aligned + initialized by construction, so
     // the only remaining question is whether the produced reference escapes.
-    // When the enclosing function returns a reference, the result may escape
-    // (hazard for struct-field Owning invariants) → Unknown; otherwise safe.
+    // An escaping `&mut` (as_mut) is a confirmed shared-XOR-mut violation — the
+    // exclusive view is derived from a raw pointer with no borrow information,
+    // so it cannot be exclusive while the enclosing `&mut self` is still live.
+    // An escaping `&` (as_ref) is only a *possible* hazard → Unknown.
     if api_classify::is_nonnull_as_ref_as_mut(Some(callee)) {
         let ret_ty = vm_state.body().local_decls[rustc_middle::mir::RETURN_PLACE].ty;
         if crate::helpers::mir_utils::type_contains_reference(ret_ty) {
+            if api_classify::is_nonnull_as_mut(Some(callee)) {
+                return VmAliasResult::Failed(
+                    "escaping `&mut` derived from a raw pointer without borrow information"
+                        .into(),
+                );
+            }
             return VmAliasResult::Unknown;
         }
         return VmAliasResult::Proved;

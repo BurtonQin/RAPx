@@ -557,7 +557,24 @@ impl<'tcx> BackwardSlicer<'tcx> {
             _ => false,
         };
 
-        if defs.intersects(relevant) || is_provenance_carrier || is_iter_ptr_write {
+        // A write into a `[u8; N]`/`[u8]` buffer (e.g. `box [a, b, 0]`'s element
+        // store `((*_8).1).0 = [a, b, 0]`) must be kept even when it is not
+        // *value*-relevant to the property: the forward VM records these stores
+        // as per-byte values, and `ValidCStr`/`ValidString` reason over them.
+        // The backward def-use graph is place-level (it cannot follow the
+        // `Box`/`Vec` → buffer indirection), so this structural keep is what
+        // preserves the byte-level dataflow.
+        let is_byte_write = match &statement.kind {
+            StatementKind::Assign(assign) => {
+                let (place, _) = &**assign;
+                let ty = place.ty(self.tcx.optimized_mir(def_id), self.tcx).ty;
+                crate::helpers::mir_utils::is_u8_array_or_slice(ty)
+            }
+            _ => false,
+        };
+
+        if defs.intersects(relevant) || is_provenance_carrier || is_iter_ptr_write || is_byte_write
+        {
             let mut uses = collect_statement_uses(statement, block, statement_index, flow, &defs);
             items.push(RelevantItem::Statement {
                 def_id,

@@ -98,6 +98,10 @@ impl PropertyChecker {
 
         // If we have provenace, check liveness and byte-level tracking
         if let Some(alloc_id) = value.provenance_alloc_id() {
+            // A `Vec`/boxed buffer exposes its byte data through `slice_data`;
+            // track the heap buffer rather than the container struct's stack
+            // allocation.
+            let alloc_id = vm_state.alloc(alloc_id).slice_data.unwrap_or(alloc_id);
             if vm_state.alloc(alloc_id).dead {
                 return CheckResult::Failed;
             }
@@ -128,7 +132,9 @@ impl PropertyChecker {
                 PropertyArg::Expr(ContractExpr::Const(_)) => None,
                 a => self.resolve_arg_term(vm_state, checkpoint, a),
             });
-            let buffer_size = n_term.or(Some(alloc_size));
+            let buffer_size = n_term
+                .filter(|t| t.as_u64().is_some())
+                .or(Some(alloc_size));
 
             // Starting offset within the allocation (for pointer arithmetic like .add(2))
             let start_offset = value
@@ -258,10 +264,30 @@ impl PropertyChecker {
         let size_u64 = alloc_size.as_u64();
 
         if size_u64.is_none() {
+            // Symbolic size: a C string has exactly one NUL (at the end), so two
+            // distinct tracked bytes that can *both* be NUL is a confirmed
+            // interior-NUL violation (a counterexample where two NULs coexist).
+            if byte_pairs.len() >= 2 {
+                solver.push();
+                solver.assert(&byte_pairs[0].1._eq(&zero));
+                solver.assert(&byte_pairs[1].1._eq(&zero));
+                let r = solver.check();
+                solver.pop(1);
+                if r == z3::SatResult::Sat {
+                    return Some(CheckResult::Failed);
+                }
+            }
             return None; // symbolic-size allocations need different handling
         }
 
         for &(nul_off, nul_term) in &byte_pairs {
+            // A valid C string's NUL is the *last* byte; an interior NUL at an
+            // earlier offset is a violation, not a candidate terminator.
+            if let Some(size) = size_u64 {
+                if nul_off + 1 != size as usize {
+                    continue;
+                }
+            }
             solver.push();
             solver.assert(&nul_term._eq(&zero));
 
@@ -309,6 +335,33 @@ impl PropertyChecker {
             if let Some(size) = size_u64 {
                 if last_off + 1 >= size as usize {
                     return Some(CheckResult::Failed);
+                }
+            }
+        }
+
+        // The final byte is definitely NUL, but some *interior* byte may also be
+        // NUL — a confirmed interior-NUL violation (a counterexample where that
+        // byte is 0), not an incomplete proof.
+        if let Some(size) = size_u64 {
+            if let Some(&(last_off, last_term)) = byte_pairs.last() {
+                if last_off + 1 == size as usize {
+                    solver.push();
+                    solver.assert(&last_term._eq(&zero).not());
+                    let last_not_nul = solver.check();
+                    solver.pop(1);
+                    if last_not_nul == z3::SatResult::Unsat {
+                        for &(off, term) in &byte_pairs {
+                            if off < last_off {
+                                solver.push();
+                                solver.assert(&term._eq(&zero));
+                                let r = solver.check();
+                                solver.pop(1);
+                                if r == z3::SatResult::Sat {
+                                    return Some(CheckResult::Failed);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

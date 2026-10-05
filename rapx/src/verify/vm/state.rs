@@ -828,6 +828,27 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .map(|ep| ep.alloc_id)
     }
 
+    /// The byte buffer walked by an iterator at `local`, possibly wrapped in
+    /// adapter types (`Cloned`/`Rev`/…).  `Rvalue::Aggregate` flattens nested
+    /// adapters, so the innermost `Iter`/`IterMut` `end` pointer is any tracked
+    /// field whose path ends in `[1]`.  Return its allocation and end offset
+    /// (the end offset doubles as the byte length when the element is `u8`).
+    pub(crate) fn iter_utf8_buffer(&self, local: Local) -> Option<(AllocId, Int<'ctx>)> {
+        let mut best: Option<(usize, AllocId, Int<'ctx>)> = None;
+        for ((l, path), v) in &self.current_frame.field_values {
+            if *l != local || path.last() != Some(&1) {
+                continue;
+            }
+            let Some(prov) = v.provenance.as_ref() else {
+                continue;
+            };
+            if best.as_ref().map_or(true, |(depth, _, _)| path.len() < *depth) {
+                best = Some((path.len(), prov.alloc_id, prov.offset.clone()));
+            }
+        }
+        best.map(|(_, id, off)| (id, off))
+    }
+
     /// The field carrying an owned value's heap pointer (`Box.0.0`/`Vec.0.0`,
     /// and for nested owners like `String` the deeper data field). Prefer the
     /// canonical `[0, 0]`; fall back to the first field with heap provenance.
@@ -1139,17 +1160,35 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         }
 
-        // Fall back to type-level resolution with single-element projections
-        if place.projection.len() == 1 {
-            if let Some(proj) = place.projection.first() {
-                if let ProjectionElem::Index(local) = proj {
+        // Fall back to type-level resolution for an Index access whose prefix is
+        // empty or only Deref projections (`arr[i]` / `(*slice)[i]`).
+        if let Some(proj) = place.projection.last() {
+            let prefix_is_deref = place.projection[..place.projection.len() - 1]
+                .iter()
+                .all(|p| matches!(p.kind(), ProjectionElem::Deref));
+            if let ProjectionElem::Index(local) = proj {
+                if prefix_is_deref {
                     if let Some(ref prov) = base.provenance {
                         let alloc_id = prov.alloc_id;
                         let byte_vals: Vec<_> = self.alloc_byte_values(alloc_id);
                         if !byte_vals.is_empty() {
-                            let inner_ty = match base.ty.kind() {
-                                rustc_middle::ty::TyKind::Array(inner, _) => *inner,
-                                _ => return Some(base.clone()),
+                            let inner_ty = {
+                                // The base's type may have been overwritten to the
+                                // element type by the Deref strip above; recover the
+                                // pointee element type from the base local's declared
+                                // type (`&[u8]` → `u8`, `&[T; N]` → `T`).
+                                let decl_ty = self.body().local_decls[place.local].ty;
+                                match decl_ty.kind() {
+                                    rustc_middle::ty::TyKind::Array(inner, _) => *inner,
+                                    rustc_middle::ty::TyKind::Ref(_, inner, _) => {
+                                        match inner.kind() {
+                                            rustc_middle::ty::TyKind::Slice(e) => *e,
+                                            _ => return Some(base.clone()),
+                                        }
+                                    }
+                                    rustc_middle::ty::TyKind::Slice(e) => *e,
+                                    _ => return Some(base.clone()),
+                                }
                             };
                             let elem_sz = self.size_of_ty(inner_ty) as usize;
                             let step = elem_sz.max(1);
@@ -1186,7 +1225,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             }
                         }
                     }
-                    return Some(base.clone());
+                }
+                return Some(base.clone());
                 }
                 match proj.kind() {
                     ProjectionElem::Deref => {
@@ -1214,7 +1254,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }
                 }
             }
-        }
 
         // For multi-element projections with Deref+Field or Downcast, return
         // the base value since we already traced through Deref above.

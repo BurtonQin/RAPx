@@ -2602,12 +2602,41 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                 // Use the receiver's slice length as the allocation size when
                 // known (`to_vec`/`into_vec`), else a symbolic upper bound.
-                let size = args
+                let known_len = args
                     .first()
                     .and_then(|v| v.provenance.as_ref())
-                    .and_then(|p| self.alloc(p.alloc_id).slice_len().cloned())
+                    .and_then(|p| {
+                        let alloc = self.alloc(p.alloc_id);
+                        if let Some(slice_len) = alloc.slice_len().cloned() {
+                            return Some(slice_len);
+                        }
+                        // A boxed array (`box [T; N]`) has a concrete size but no
+                        // slice length; its element count is `size / elem_size`.
+                        let elem_size = elem_ty.map(|t| self.size_of_ty(t)).unwrap_or(1);
+                        let n = alloc.size.as_u64()?;
+                        if elem_size > 0 {
+                            Some(Int::from_u64(self.ctx, n / elem_size))
+                        } else {
+                            None
+                        }
+                    });
+                let size = known_len
+                    .clone()
                     .unwrap_or_else(|| Int::from_u64(self.ctx, i64::MAX as u64));
                 let (alloc_id, base) = self.allocate_external(size, heap_align, elem_ty);
+                // Copy the boxed slice's tracked byte values into the fresh Vec
+                // buffer so byte-level checkers (`ValidCStr`/`ValidString`) can
+                // reason over the copied contents.
+                if let Some(box_alloc) = args.first().and_then(|v| v.provenance_alloc_id()) {
+                    let pairs: Vec<(usize, Int<'ctx>)> = self
+                        .alloc_byte_values(box_alloc)
+                        .into_iter()
+                        .map(|(off, t)| (off, t.clone()))
+                        .collect();
+                    for (off, term) in pairs {
+                        self.record_byte_value(alloc_id, off, term);
+                    }
+                }
                 let dest_alloc_id = self.current_frame.local_alloc.get(&dest).copied();
                 if let Some(ref dest_alloc_id) = dest_alloc_id {
                     self.alloc_mut(*dest_alloc_id).slice_data = Some(alloc_id);
@@ -2654,7 +2683,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             },
                             source: ValueSource::None,
                         };
-                        let len_term = self.fresh_int(&format!("vec_len_{}", dest.as_usize()));
+                        let len_term = known_len
+                            .clone()
+                            .unwrap_or_else(|| self.fresh_int(&format!("vec_len_{}", dest.as_usize())));
                         self.materialize_vec_fields(dest, ptr_field, len_term.clone(), len_term);
                     }
                 }

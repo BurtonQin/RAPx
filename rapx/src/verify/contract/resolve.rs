@@ -23,17 +23,12 @@ pub(crate) fn parse_contract_expr<'tcx>(
     expr: &Expr,
     sp: &str,
 ) -> ContractExpr<'tcx> {
-    // `x.len` / `x.len()` sugar -> len(x).
-    if let Expr::Field(expr_field) = expr
-        && matches!(&expr_field.member, syn::Member::Named(ident) if ident == "len")
-    {
-        return ContractExpr::Len(Box::new(parse_contract_expr(
-            tcx,
-            def_id,
-            &expr_field.base,
-            sp,
-        )));
-    }
+    // `x.len()` sugar -> len(x).  A plain `.len` *field* access is deliberately
+    // NOT turned into `len(x)`: a struct such as `LinkedList` carries `len` as an
+    // ordinary `usize` field, and routing it through `len()` would wrongly
+    // reconstruct the length from the backing allocation's size (which, for an
+    // external allocation, is not the field's value).  `.len` therefore stays a
+    // field projection (`self.len` → field 2) resolved by `parse_contract_place`.
     if let Expr::MethodCall(expr_method) = expr
         && expr_method.method == "len"
         && expr_method.args.is_empty()
@@ -189,13 +184,36 @@ pub(crate) fn parse_type<'tcx>(
     expr: &Expr,
     sp: &str,
 ) -> Option<Ty<'tcx>> {
-    // A generic type argument (`Option<NonZero<T>>`, `NonZero<T>`) is wrapped as
-    // `Expr::Verbatim` by the attribute parser. Extract the outermost type name
-    // and resolve it like a plain identifier.
     if let Expr::Verbatim(ts) = expr {
-        let name = syn::parse2::<syn::Type>(ts.clone())
-            .ok()
-            .and_then(|ty| outermost_type_ident(&ty));
+        let syn_ty = syn::parse2::<syn::Type>(ts.clone()).ok();
+        // A slice type `[T]` (e.g. `ValidTransmute([u8], str)`): resolve the
+        // element type and rebuild it as `TyKind::Slice`.
+        if let Some(syn::Type::Slice(slice)) = &syn_ty {
+            let Some(elem_name) = outermost_type_ident(&slice.elem) else {
+                rap_debug!("Incorrect expression for the type of {:?} Tag!", sp);
+                return None;
+            };
+            let Some(elem) = resolve_ty_ident(tcx, def_id, &elem_name) else {
+                rap_debug!("Cannot get type in {:?} Tag!", sp);
+                return None;
+            };
+            return Some(Ty::new_slice(tcx, elem));
+        }
+        // An array type `[T; N]` (e.g. `ValidTransmute([MaybeUninit<T>; N], [T; N])`):
+        // resolve the element type; the const length is kept symbolic (0), which
+        // `check_valid_transmute` handles by treating size 0 as "trust".
+        if let Some(syn::Type::Array(array)) = &syn_ty {
+            let Some(elem_name) = outermost_type_ident(&array.elem) else {
+                rap_debug!("Incorrect expression for the type of {:?} Tag!", sp);
+                return None;
+            };
+            let Some(elem) = resolve_ty_ident(tcx, def_id, &elem_name) else {
+                rap_debug!("Cannot get type in {:?} Tag!", sp);
+                return None;
+            };
+            return Some(Ty::new_array(tcx, elem, 0));
+        }
+        let name = syn_ty.and_then(|ty| outermost_type_ident(&ty));
         let Some(name) = name else {
             rap_debug!("Incorrect expression for the type of {:?} Tag!", sp);
             return None;
@@ -205,6 +223,14 @@ pub(crate) fn parse_type<'tcx>(
             rap_debug!("Cannot get type in {:?} Tag!", sp);
         }
         return ty;
+    }
+
+    // A multi-segment path type (`std::ascii::Char`) — resolve its last segment.
+    if let Expr::Path(expr_path) = expr
+        && expr_path.path.segments.len() > 1
+        && let Some(last) = expr_path.path.segments.last()
+    {
+        return resolve_ty_ident(tcx, def_id, &last.ident.to_string());
     }
 
     let ty_ident_full = access_ident_recursive(expr);
@@ -442,8 +468,12 @@ fn build_interval_predicates<'tcx>(
     ]
 }
 
-/// Extract the inner type from an `Expr::Array` (the `[T]` notation in
-/// `SplitTransmute([T], [U])`), then resolve it via `parse_type`.
+/// Extract the inner type from `[T]` (the `SplitTransmute([T], [U])` notation),
+/// then resolve it via `parse_type`.  The `[T]` argument arrives as either
+/// `Expr::Array` (JSON path, parsed via `syn::parse_str::<Expr>`) or
+/// `Expr::Verbatim` (source annotation path, where `parse_property_arg`'s
+/// type-first parse turns `Type::Slice` into `Verbatim`); both are unwrapped to
+/// the element type `T`.
 pub(crate) fn unwrap_array_expr<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
@@ -453,6 +483,12 @@ pub(crate) fn unwrap_array_expr<'tcx>(
         && arr.elems.len() == 1
     {
         return parse_type(tcx, def_id, &arr.elems[0], "SplitTransmute");
+    }
+    if let Expr::Verbatim(ts) = expr
+        && let Ok(syn::Type::Slice(slice)) = syn::parse2::<syn::Type>(ts.clone())
+        && let Some(name) = outermost_type_ident(slice.elem.as_ref())
+    {
+        return resolve_ty_ident(tcx, def_id, &name);
     }
     parse_type(tcx, def_id, expr, "SplitTransmute")
 }

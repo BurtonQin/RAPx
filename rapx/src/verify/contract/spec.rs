@@ -161,7 +161,7 @@ static SPECS: &[PropertySpec] = &[
     ps(
         "ValidString",
         PropertyKind::ValidString,
-        &[&[Target, Ty, Expr]],
+        &[&[Target, Ty, Expr], &[Target]],
         ContractKind::Precond,
         BuildKind::Uniform,
         "{0} is valid UTF-8",

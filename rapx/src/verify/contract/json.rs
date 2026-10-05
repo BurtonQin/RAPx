@@ -89,14 +89,14 @@ pub(crate) enum AnyItem {
 pub(crate) fn get_std_contracts_from_json(
     tcx: TyCtxt<'_>,
     def_id: DefId,
-) -> &'static [JsonProperty] {
+) -> Option<&'static [JsonProperty]> {
     let lookup_def_id = resolve_trait_method(tcx, def_id);
     let cleaned_path_name = get_cleaned_def_path_name(tcx, lookup_def_id);
     let db = load_std_contracts_json();
 
     // Exact match first.
     if let Some(entries) = db.get(&cleaned_path_name) {
-        return entries.as_slice();
+        return Some(entries.as_slice());
     }
 
     // Strip intra-path type segments that appear in impl blocks.
@@ -109,7 +109,7 @@ pub(crate) fn get_std_contracts_from_json(
         if stripped.len() != cleaned_path_name.matches("::").count() + 1 {
             let stripped_path = stripped.join("::");
             if let Some(entries) = db.get(&stripped_path) {
-                return entries.as_slice();
+                return Some(entries.as_slice());
             }
         }
     }
@@ -121,16 +121,23 @@ pub(crate) fn get_std_contracts_from_json(
         segments[i] = "*";
         let pattern = segments.join("::");
         if let Some(entries) = db.get(&pattern) {
-            return entries.as_slice();
+            return Some(entries.as_slice());
         }
     }
 
     // Try bare `*` for any function.
     if let Some(entries) = db.get("*") {
-        return entries.as_slice();
+        return Some(entries.as_slice());
     }
 
-    &[]
+    None
+}
+
+/// Whether the JSON contract database has an entry for `def_id` — including an
+/// *empty* one, which means "no safety contract is needed" (e.g. `fmt::new`,
+/// whose arguments are all references).
+pub(crate) fn std_contracts_has_entry(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
+    get_std_contracts_from_json(tcx, def_id).is_some()
 }
 
 /// If `def_id` is a trait-method implementation, returns the corresponding
@@ -495,10 +502,9 @@ fn is_contract_token_char(ch: char) -> bool {
 /// Uses [`get_std_contracts_from_json`] for lookup with wildcard fallback,
 /// then parses each entry into a [`Property`] via [`entry_to_property`].
 pub(crate) fn query_json_contracts<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Vec<Property<'tcx>> {
-    let entries = get_std_contracts_from_json(tcx, def_id);
-    if entries.is_empty() {
+    let Some(entries) = get_std_contracts_from_json(tcx, def_id) else {
         return Vec::new();
-    }
+    };
     let (param_names, _) = crate::helpers::name::parse_signature(tcx, def_id);
     let has_names = !param_names.is_empty() && !param_names[0].chars().all(|c| c.is_ascii_digit());
 

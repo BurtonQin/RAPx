@@ -555,6 +555,18 @@ unsound_tests! {
     validstring_std_unsound_01: "verify_units/validstring_std_unsound_01" => "unsound_invalid_utf8_literal" => "ValidString",
 }
 
+// ================ Unannotated Callee (Unknown) Cases =============
+// A non-std unsafe callee with no `#[rapx::requires]`, no std JSON entry, and no
+// `#[rapx::verify]` attribute cannot be discharged: the call site is reported as
+// `Unknown`.  With no *confirmed* violation (`Failed`), the function's verdict is
+// `UNKNOWN` (rather than `UNSOUND`), which is the "unannotated ⇒ unknown" rule.
+#[test]
+fn unknown_unsound_01() {
+    let output = run_with_args("verify_units/unknown_unsound_1", CMD_VERIFY_TARGETED);
+    assert_contain(&output, "function: unsound_callsite_without_contract");
+    assert_contain(&output, "result: UNKNOWN");
+}
+
 // ================ AsChunks Sound Cases =============
 sound_tests_multi! {
     as_chunks_sound: "verify_units/as_chunks_sound_01" => [

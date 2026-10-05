@@ -451,6 +451,7 @@
       ]
     }
   ],
+  "core::fmt::new": [],
   "core::future::async_drop::async_drop_in_place": [
     {
       "tag": "ValidPtr",

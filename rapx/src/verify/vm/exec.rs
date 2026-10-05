@@ -504,6 +504,19 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         if !pointee_is_maybe_uninit {
                             self.alloc_mut(data_alloc_id).initialized = true;
                         }
+                        // Record placeholder per-byte symbols for the first few
+                        // elements so byte-level checkers (`ValidCStr` interior-NUL,
+                        // `ValidString` UTF-8) can reason over symbolic slice bytes
+                        // (the length is symbolic, so only a bounded prefix is
+                        // materialized — mirrors the array parameter handling).
+                        let step = (elem_size.max(1)) as usize;
+                        let m = 16usize;
+                        for i in 0..m {
+                            let off = i * step;
+                            let elem_term =
+                                self.fresh_int(&format!("slice_{}_idx_{}", local_idx, i));
+                            self.record_byte_value(data_alloc_id, off, elem_term);
+                        }
                         self.set_local(
                             local,
                             VmValue {
@@ -2082,7 +2095,15 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 let term = self.fresh_int("aggregate");
                 let dest_local = dest_place.local;
-                let dest_alloc_id = self.current_frame.local_alloc.get(&dest_local).copied();
+                // Prefer the pointee allocation (through a `*ptr` deref) over the
+                // base local's own stack slot, so byte values land on the real
+                // buffer (e.g. `((*_8).1).0 = [a, b, 0]` writes into the box).
+                let dest_alloc_id = self
+                    .current_frame
+                    .local_values
+                    .get(&dest_local)
+                    .and_then(|v| v.provenance_alloc_id())
+                    .or_else(|| self.current_frame.local_alloc.get(&dest_local).copied());
                 let is_byte_array = crate::helpers::mir_utils::is_u8_array_or_slice(dest_ty);
                 let field_types: Vec<_> = self.aggregate_field_tys(dest_ty);
                 let mut byte_offset = 0usize;
@@ -2500,22 +2521,53 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     pub(crate) fn try_adt_len_field(&self, val: &VmValue<'ctx, 'tcx>) -> Option<Int<'ctx>> {
         let alloc_id = val.provenance_alloc_id()?;
         let elem_ty = self.alloc(alloc_id).element_ty.as_ty()?;
+        self.try_adt_len_field_at(alloc_id, elem_ty, elem_ty, &[])
+    }
 
-        let rustc_middle::ty::TyKind::Adt(adt_def, _) = elem_ty.kind() else {
+    /// Resolve a `len` field on `ty`, recursing into ADT sub-fields when there is
+    /// no direct `len` (e.g. `String { vec: Vec { ptr, len, cap } }` resolves
+    /// `String.len()` to `vec.len`).  `root_ty` stays fixed as the allocation's
+    /// element type, which is how `decompose_pointee_fields` keys `memory.fields`.
+    fn try_adt_len_field_at(
+        &self,
+        alloc_id: AllocId,
+        ty: Ty<'tcx>,
+        root_ty: Ty<'tcx>,
+        prefix: &[usize],
+    ) -> Option<Int<'ctx>> {
+        let rustc_middle::ty::TyKind::Adt(adt_def, substs) = ty.kind() else {
             return None;
         };
         if !adt_def.is_struct() {
             return None;
         }
         let variant = adt_def.non_enum_variant();
-        let len_idx = variant
+        // Direct `len` field.
+        if let Some(len_idx) = variant
             .fields
             .iter()
-            .position(|f| f.ident(self.tcx).name.to_string() == "len")?;
-
-        self.memory.fields
-            .get(&(alloc_id, elem_ty, vec![len_idx]))
-            .map(|v| v.term.clone())
+            .position(|f| f.ident(self.tcx).name.to_string() == "len")
+        {
+            let mut path = prefix.to_vec();
+            path.push(len_idx);
+            return self
+                .memory
+                .fields
+                .get(&(alloc_id, root_ty, path))
+                .map(|v| v.term.clone());
+        }
+        // Recurse into ADT sub-fields (e.g. `String.vec.len`).
+        for (idx, field_def) in variant.fields.iter().enumerate() {
+            let field_ty = crate::helpers::mir_utils::field_ty(self.tcx, field_def, substs);
+            if matches!(field_ty.kind(), rustc_middle::ty::TyKind::Adt(_, _)) {
+                let mut path = prefix.to_vec();
+                path.push(idx);
+                if let Some(len) = self.try_adt_len_field_at(alloc_id, field_ty, root_ty, &path) {
+                    return Some(len);
+                }
+            }
+        }
+        None
     }
 
     /// Resolve `len()` for `core::ops::IndexRange` (a private `{ start, end }`
@@ -2898,10 +2950,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .push(discr_val.term._eq(&val_term).not());
                 }
                 if let Some(ref cond) = cmp_cond {
-                    // For a boolean discriminator, `otherwise` means
-                    // `discr != 0`, i.e. the comparison is true.
+                    // For a boolean discriminator, `otherwise` means the
+                    // comparison result is *not* any explicit value:
+                    //   - targets include 0 → `discr != 0` → comparison true;
+                    //   - targets include 1 → `discr != 1` → comparison false.
                     if targets.iter().any(|(v, _)| v == 0) {
                         self.constraints.assertions.push(cond.clone());
+                    } else if targets.iter().any(|(v, _)| v == 1) {
+                        self.constraints.assertions.push(cond.not());
                     }
                 }
             }

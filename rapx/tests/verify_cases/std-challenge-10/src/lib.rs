@@ -37,6 +37,7 @@ fn char_len_utf8(code: u32) -> usize {
 }
 
 /// Encode `code` into `dst` (at least 4 writable bytes) and return the number of bytes written.
+#[rapx::requires(Allocated(dst, u8, 4))]
 unsafe fn encode_char(code: u32, dst: *mut u8) -> usize {
     if code < 0x80 {
         unsafe { *dst = code as u8 };
@@ -294,6 +295,7 @@ pub struct String {
 ///
 /// # Safety
 /// The byte slice must contain valid UTF-8 (assumed).
+#[rapx::requires(ValidTransmute([u8], str))]
 unsafe fn from_boxed_utf8_unchecked(b: Box<[u8]>) -> Box<str> {
     unsafe { Box::from_raw(Box::into_raw(b) as *mut str) }
 }
@@ -302,6 +304,7 @@ unsafe fn from_boxed_utf8_unchecked(b: Box<[u8]>) -> Box<str> {
 ///
 /// # Safety
 /// The byte slice must contain valid UTF-8 (assumed).
+#[rapx::requires(ValidString(b, u8, len(b)))]
 unsafe fn from_utf8_unchecked_mut(b: &mut [u8]) -> &mut str {
     unsafe { &mut *(b as *mut [u8] as *mut str) }
 }
@@ -743,6 +746,10 @@ fn decode_utf16_unit(unit: u16, next: Option<u16>) -> Result<(u32, usize), ()> {
 }
 
 /// The draining iterator returned by `String::drain`.
+#[rapx::invariant(NonNull(string))]
+#[rapx::invariant(Allocated(string, String, 1))]
+#[rapx::invariant(ValidNum(start <= end))]
+#[rapx::invariant(ValidNum(end <= string.len()))]
 pub struct Drain<'a> {
     start: usize,
     end: usize,
@@ -757,6 +764,7 @@ impl<'a> Drop for Drain<'a> {
 }
 
 impl<'a> Drain<'a> {
+    #[rapx::requires(ValidNum(self.end <= self.string.len()))]
     unsafe fn remove_range(&mut self) {
         let s = unsafe { &mut *self.string };
         let len = s.len();

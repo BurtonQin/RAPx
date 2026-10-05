@@ -9,6 +9,35 @@ use z3::{SatResult, Solver, ast::Int};
 use super::PropertyChecker;
 
 impl PropertyChecker {
+    /// Shared UTF-8 byte check: prove the tracked buffer bytes of `alloc_id` are
+    /// *not* valid UTF-8 (i.e. disprove the DFA), reporting `Failed` when the
+    /// solver proves they cannot be valid.
+    fn check_utf8_alloc<'ctx, 'tcx>(
+        &self,
+        vm_state: &VmState<'ctx, 'tcx>,
+        solver: &Solver<'ctx>,
+        alloc_id: crate::verify::vm::state::AllocId,
+    ) -> CheckResult {
+        if vm_state.alloc(alloc_id).dead {
+            return CheckResult::Failed;
+        }
+        let byte_pairs = vm_state.alloc_byte_values(alloc_id);
+        if byte_pairs.is_empty() {
+            return CheckResult::ProvedByRule; // no byte-level info → trust
+        }
+        let bytes: Vec<Int<'ctx>> = byte_pairs.iter().map(|(_, t)| (*t).clone()).collect();
+        let valid = super::utf8_validity(vm_state.ctx, &bytes);
+
+        solver.push();
+        solver.assert(&valid);
+        let r = solver.check();
+        solver.pop(1);
+        match r {
+            SatResult::Unsat => CheckResult::Failed,
+            _ => CheckResult::ProvedByRule,
+        }
+    }
+
     pub(super) fn check_valid_string<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
@@ -30,30 +59,18 @@ impl PropertyChecker {
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::ProvedByRule;
         };
-        let Some(alloc_id) = value.provenance_alloc_id() else {
-            return CheckResult::ProvedByRule;
-        };
-
-        // A dead allocation cannot back a live string (use-after-free).
-        if vm_state.alloc(alloc_id).dead {
-            return CheckResult::Failed;
+        if let Some(alloc_id) = value.provenance_alloc_id() {
+            return self.check_utf8_alloc(vm_state, solver, alloc_id);
         }
 
-        // Byte-level check: prove the tracked buffer bytes are *not* valid UTF-8.
-        let byte_pairs = vm_state.alloc_byte_values(alloc_id);
-        if byte_pairs.is_empty() {
-            return CheckResult::ProvedByRule; // no byte-level info → trust
+        // A one-argument `ValidString(iter)` targets an `Iterator<Item = u8>`:
+        // trace the (possibly `Cloned`/`Rev`-wrapped) iterator to the backing
+        // byte buffer of its innermost `Iter`/`IterMut` and UTF-8-check that.
+        if let Some(local) = vm_state.find_local_by_address(&value.term) {
+            if let Some((alloc_id, _end_offset)) = vm_state.iter_utf8_buffer(local) {
+                return self.check_utf8_alloc(vm_state, solver, alloc_id);
+            }
         }
-        let bytes: Vec<Int<'ctx>> = byte_pairs.iter().map(|(_, t)| (*t).clone()).collect();
-        let valid = super::utf8_validity(vm_state.ctx, &bytes);
-
-        solver.push();
-        solver.assert(&valid);
-        let r = solver.check();
-        solver.pop(1);
-        match r {
-            SatResult::Unsat => CheckResult::Failed,
-            _ => CheckResult::ProvedByRule,
-        }
+        CheckResult::ProvedByRule
     }
 }

@@ -100,6 +100,13 @@ impl PropertyChecker {
             }
         }
 
+        // A `Copy` obligation that none of the fast-paths discharged is a
+        // confirmed violation: either `ty` is a concrete non-`Copy` type, or it
+        // is a generic parameter without a `Copy` bound (and some instantiation
+        // is non-`Copy`).  An unrecognized trait name stays Unknown.
+        if trait_name == "Copy" {
+            return CheckResult::Failed;
+        }
         CheckResult::Unknown
     }
 

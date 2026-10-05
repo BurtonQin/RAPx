@@ -14,16 +14,22 @@ pub fn get_cleaned_def_path_name(tcx: TyCtxt<'_>, def_id: DefId) -> String {
     let def_id_str = format!("{:?}", def_id);
     let mut parts: Vec<&str> = def_id_str.split("::").collect();
 
+    // The `DefId` debug form is `DefId(.. ~ crate_name[hash]::path…)`; extract
+    // the crate name *exactly* (not by substring — `free_list_allocator` must
+    // not be misread as `alloc`).
+    let crate_name = def_id_str
+        .split("~ ")
+        .nth(1)
+        .and_then(|p| p.split('[').next())
+        .unwrap_or("");
+
     let mut remove_first = false;
     if let Some(first_part) = parts.get_mut(0) {
-        if first_part.contains("core") {
-            *first_part = "core";
-        } else if first_part.contains("std") {
-            *first_part = "std";
-        } else if first_part.contains("alloc") {
-            *first_part = "alloc";
-        } else {
-            remove_first = true;
+        match crate_name {
+            "core" => *first_part = "core",
+            "std" => *first_part = "std",
+            "alloc" => *first_part = "alloc",
+            _ => remove_first = true,
         }
     }
     if remove_first && !parts.is_empty() {
@@ -300,10 +306,31 @@ pub fn match_ty_with_ident<'tcx>(
     if let Some(primitive_ty) = match_primitive_type(tcx, &type_ident) {
         return Some(primitive_ty);
     }
+    if let Some(std_ty) = match_std_type(tcx, &type_ident) {
+        return Some(std_ty);
+    }
     if let Some(param_ty) = find_declared_generic_param(tcx, def_id, &type_ident) {
         return Some(param_ty);
     }
     find_generic_param(tcx, def_id, &type_ident)
+}
+
+/// Match a short type name against std types resolved by name-scan (no
+/// lang/diagnostic item), e.g. `std::ascii::Char` (`AsciiChar`) whose `Char`
+/// short name otherwise collides with the primitive `char`.
+fn match_std_type<'tcx>(tcx: TyCtxt<'tcx>, type_ident: &str) -> Option<Ty<'tcx>> {
+    match type_ident {
+        "Char" | "AsciiChar" => {
+            let did = *crate::def_id::ascii_char_types().first()?;
+            let adt = tcx.adt_def(did);
+            Some(Ty::new_adt(
+                tcx,
+                adt,
+                rustc_middle::ty::GenericArgs::empty(),
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn find_declared_generic_param<'tcx>(

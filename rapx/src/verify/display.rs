@@ -341,18 +341,25 @@ pub(crate) fn emit_results_counts_and_checkpoints<'tcx>(
     all_results: &[PropertyCheckResult<'tcx>],
 ) -> (usize, usize) {
     use crate::verify::contract::ContractKind;
+    use super::report::CheckResult;
 
-    let unproved = all_results
+    // Distinguish a *confirmed* violation (`Failed`) from an *incomplete* proof
+    // (`Unknown`).  A `Failed` makes the function UNSOUND; a lone `Unknown`
+    // (e.g. an unannotated unsafe callee) only leaves it UNKNOWN.  Optional
+    // (`Option_`) properties do not take part in the verdict.
+    let failed = all_results
         .iter()
         .filter(|r| {
-            r.property.contract_kind() != ContractKind::Hazard
-                && r.property.contract_kind() != ContractKind::Option_
-                && !r.result.is_proved()
+            r.property.contract_kind() != ContractKind::Option_
+                && r.result == CheckResult::Failed
         })
         .count();
-    let hazard_failed = all_results
+    let unknown = all_results
         .iter()
-        .filter(|r| r.property.contract_kind() == ContractKind::Hazard && !r.result.is_proved())
+        .filter(|r| {
+            r.property.contract_kind() != ContractKind::Option_
+                && r.result == CheckResult::Unknown
+        })
         .count();
 
     let mut groups: IndexMap<(CheckpointLocation, String), Vec<&PropertyCheckResult<'_>>> =
@@ -392,7 +399,7 @@ pub(crate) fn emit_results_counts_and_checkpoints<'tcx>(
         }
     }
 
-    (unproved, hazard_failed)
+    (failed, unknown)
 }
 
 pub(crate) fn emit_verify_summary<'tcx>(
@@ -421,12 +428,14 @@ pub(crate) fn emit_results_and_verdict<'tcx>(
     tcx: TyCtxt<'tcx>,
     all_results: &[PropertyCheckResult<'tcx>],
 ) {
-    let (unproved, hazard_failed) = emit_results_counts_and_checkpoints(tcx, all_results);
+    let (failed, unknown) = emit_results_counts_and_checkpoints(tcx, all_results);
 
-    if unproved == 0 && hazard_failed == 0 {
+    if failed == 0 && unknown == 0 {
         rap_info!(green, "  result: SOUND");
+    } else if failed > 0 {
+        rap_warn!("  result: UNSOUND ({failed} failed, {unknown} unknown)");
     } else {
-        rap_warn!("  result: UNSOUND ({unproved} unproved, {hazard_failed} hazard)");
+        rap_warn!("  result: UNKNOWN ({unknown} unproved)");
     }
 }
 

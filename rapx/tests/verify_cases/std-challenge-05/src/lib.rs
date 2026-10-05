@@ -363,6 +363,11 @@ impl<T> LinkedList<T> {
     }
 
     #[inline]
+    #[rapx::requires(Align(split_node.unwrap_some(), Node))]
+    #[rapx::requires(Allocated(split_node.unwrap_some(), Node, 1))]
+    #[rapx::requires(Typed(split_node.unwrap_some(), Node))]
+    #[rapx::requires(Owning(split_node.unwrap_some()))]
+    #[rapx::requires(ValidNum(at <= self.len))]
     unsafe fn split_off_after_node(
         &mut self,
         split_node: Option<NonNull<Node<T>>>,

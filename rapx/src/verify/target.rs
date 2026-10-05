@@ -672,9 +672,19 @@ impl<'tcx> VerifyTargetCollector<'tcx> {
                         // and their safety is enforced by the type system, so
                         // they never carry a JSON contract either.
                         let is_intrinsic = self.tcx.intrinsic(callee_def_id).is_some();
+                        let has_json_entry = is_std
+                            && super::contract::json::std_contracts_has_entry(
+                                self.tcx,
+                                callee_def_id,
+                            );
+                        let is_verify_target = callee_def_id
+                            .as_local()
+                            .is_some_and(|id| has_rapx_verify_attr(self.tcx, id));
                         if self.tcx.fn_sig(callee_def_id).skip_binder().safety()
                             == rustc_hir::Safety::Unsafe
                             && !is_intrinsic
+                            && !has_json_entry
+                            && !is_verify_target
                         {
                             let path = crate::helpers::name::get_cleaned_def_path_name(
                                 self.tcx,
@@ -697,12 +707,27 @@ impl<'tcx> VerifyTargetCollector<'tcx> {
                 }
 
                 if requires.is_empty() {
-                    requires.push(Property::new(
-                        self.tcx,
-                        callee_def_id,
-                        "Unknown",
-                        &[],
-                    ));
+                    // An empty JSON entry (e.g. `fmt::new`) means "no safety
+                    // contract needed".  A `#[rapx::verify]` callee has its body
+                    // verified, so its "contract" is the body proof (or a struct
+                    // invariant) rather than a `requires`.  Anything else with no
+                    // contract is a genuine unknown.
+                    let has_json_entry = is_std
+                        && super::contract::json::std_contracts_has_entry(
+                            self.tcx,
+                            callee_def_id,
+                        );
+                    let is_verify_target = callee_def_id
+                        .as_local()
+                        .is_some_and(|id| has_rapx_verify_attr(self.tcx, id));
+                    if !has_json_entry && !is_verify_target {
+                        requires.push(Property::new(
+                            self.tcx,
+                            callee_def_id,
+                            "Unknown",
+                            &[],
+                        ));
+                    }
                 }
 
                 requires
@@ -720,13 +745,7 @@ impl<'tcx> VerifyTargetCollector<'tcx> {
         let callee_requires = unsafe_callees
             .iter()
             .map(|callee_def_id| {
-                let mut contracts = self.get_fn_contracts(*callee_def_id, true);
-                contracts.retain(|p| {
-                    !matches!(
-                        p.kind(),
-                        Some(crate::verify::contract::PropertyKind::Unknown)
-                    )
-                });
+                let contracts = self.get_fn_contracts(*callee_def_id, true);
                 (*callee_def_id, contracts)
             })
             .collect();

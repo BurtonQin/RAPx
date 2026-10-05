@@ -63,6 +63,7 @@ pub struct InternalNode<K, V> {
 }
 
 impl<K, V> InternalNode<K, V> {
+    #[rapx::verify]
     pub unsafe fn new<A: Allocator + Clone>(alloc: A) -> Box<Self, A> {
         let mut node = Box::<Self, _>::new_uninit_in(alloc);
         unsafe {
@@ -257,7 +258,7 @@ impl<K, V> NodeRef<marker::Dying, K, V, marker::LeafOrInternal> {
 }
 
 impl<'a, K, V, Type> NodeRef<marker::Mut<'a>, K, V, Type> {
-    pub unsafe fn reborrow_mut(&mut self) -> NodeRef<marker::Mut<'_>, K, V, Type> {
+    pub fn reborrow_mut(&mut self) -> NodeRef<marker::Mut<'_>, K, V, Type> {
         NodeRef { height: self.height, node: self.node, _marker: PhantomData }
     }
 
@@ -279,7 +280,7 @@ impl<'a, K, V, Type> NodeRef<marker::Mut<'a>, K, V, Type> {
 }
 
 impl<K, V, Type> NodeRef<marker::DormantMut, K, V, Type> {
-    pub unsafe fn awaken<'a>(self) -> NodeRef<marker::Mut<'a>, K, V, Type> {
+    pub fn awaken<'a>(self) -> NodeRef<marker::Mut<'a>, K, V, Type> {
         NodeRef { height: self.height, node: self.node, _marker: PhantomData }
     }
 }
@@ -571,10 +572,10 @@ impl<BorrowType, K, V, NodeType, HandleType>
 impl<'a, K, V, NodeType, HandleType>
     Handle<NodeRef<marker::Mut<'a>, K, V, NodeType>, HandleType>
 {
-    pub unsafe fn reborrow_mut(
+    pub fn reborrow_mut(
         &mut self,
     ) -> Handle<NodeRef<marker::Mut<'_>, K, V, NodeType>, HandleType> {
-        Handle { node: unsafe { self.node.reborrow_mut() }, idx: self.idx, _marker: PhantomData }
+        Handle { node: self.node.reborrow_mut(), idx: self.idx, _marker: PhantomData }
     }
 
     pub fn dormant(
@@ -587,10 +588,10 @@ impl<'a, K, V, NodeType, HandleType>
 impl<K, V, NodeType, HandleType>
     Handle<NodeRef<marker::DormantMut, K, V, NodeType>, HandleType>
 {
-    pub unsafe fn awaken<'a>(
+    pub fn awaken<'a>(
         self,
     ) -> Handle<NodeRef<marker::Mut<'a>, K, V, NodeType>, HandleType> {
-        Handle { node: unsafe { self.node.awaken() }, idx: self.idx, _marker: PhantomData }
+        Handle { node: self.node.awaken(), idx: self.idx, _marker: PhantomData }
     }
 }
 
@@ -755,7 +756,7 @@ impl<'a, K: 'a, V: 'a> Handle<NodeRef<marker::Mut<'a>, K, V, marker::Leaf>, mark
         split_root: impl FnOnce(SplitResult<'a, K, V, marker::LeafOrInternal>),
     ) -> Handle<NodeRef<marker::Mut<'a>, K, V, marker::Leaf>, marker::KV> {
         let (mut split, handle) = match self.insert(key, value, alloc.clone()) {
-            (None, handle) => return unsafe { handle.awaken() },
+            (None, handle) => return handle.awaken(),
             (Some(split), handle) => (split.forget_node_type(), handle),
         };
 
@@ -763,13 +764,13 @@ impl<'a, K: 'a, V: 'a> Handle<NodeRef<marker::Mut<'a>, K, V, marker::Leaf>, mark
             split = match split.left.ascend() {
                 Ok(parent) => {
                     match parent.insert(split.kv.0, split.kv.1, split.right, alloc.clone()) {
-                        None => return unsafe { handle.awaken() },
+                        None => return handle.awaken(),
                         Some(split) => split.forget_node_type(),
                     }
                 }
                 Err(root) => {
                     split_root(SplitResult { left: root, ..split });
-                    return unsafe { handle.awaken() };
+                    return handle.awaken();
                 }
             };
         }

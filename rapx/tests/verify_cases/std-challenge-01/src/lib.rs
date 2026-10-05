@@ -647,6 +647,13 @@ where
 }
 
 /// `<FilterMap<I, F> as Iterator>::next_chunk`.
+///
+/// NOTE: this faithfully reproduces std's `FilterMap::next_chunk`, including its
+/// `N == 0` buffer overrun (rust-lang/rust#153803): the write
+/// `copy_nonoverlapping(.., add(idx), 1)` happens *before* the
+/// `initialized < N` bound check, so `N == 0` with a non-empty `iter` writes one
+/// element out of bounds. RAPx reports this as three `InBound | Failed`
+/// (one per enumerated loop iteration), which is the expected UNSOUND result.
 #[rapx::verify]
 pub fn filter_map_next_chunk_ext<I, F, B, const N: usize>(
     iter: I,
@@ -766,6 +773,7 @@ const fn utf8_is_cont_byte_ext(byte: u8) -> bool {
     (byte as i8) < -64
 }
 
+#[rapx::requires(ValidString(bytes))]
 unsafe fn next_code_point_ext<I: Iterator<Item = u8>>(bytes: &mut I) -> Option<u32> {
     let x = bytes.next()?;
     if x < 128 {
@@ -789,6 +797,7 @@ unsafe fn next_code_point_ext<I: Iterator<Item = u8>>(bytes: &mut I) -> Option<u
     Some(ch)
 }
 
+#[rapx::requires(ValidString(bytes))]
 unsafe fn next_code_point_reverse_ext<I>(bytes: &mut I) -> Option<u32>
 where
     I: DoubleEndedIterator<Item = u8>,

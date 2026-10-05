@@ -536,6 +536,11 @@ pub fn is_nonnull_as_ref_as_mut(callee: Option<DefId>) -> bool {
     )
 }
 
+/// Whether `callee` is `NonNull::as_mut` (produces an exclusive `&mut`).
+pub fn is_nonnull_as_mut(callee: Option<DefId>) -> bool {
+    any_of(callee, &[crate::def_id::nonnull_as_mut()])
+}
+
 /// Whether `callee` is `select_unpredictable` (the intrinsic or its
 /// `hint::`/`intrinsics::` wrappers): returns one of two candidate values.
 pub(crate) fn is_select_unpredictable(callee: Option<DefId>) -> bool {

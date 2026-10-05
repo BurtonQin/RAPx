@@ -63,6 +63,7 @@ struct Types {
     vec_types: Vec<DefId>,
     nonnull_types: Vec<DefId>,
     maybe_uninit_types: Vec<DefId>,
+    ascii_char_types: Vec<DefId>,
     ordering_types: Vec<DefId>,
     iter_types: Vec<DefId>,
     rc_types: Vec<DefId>,
@@ -98,6 +99,7 @@ fn init_types(tcx: TyCtxt) -> Types {
         vec_types: Vec::new(),
         nonnull_types: Vec::new(),
         maybe_uninit_types: Vec::new(),
+        ascii_char_types: Vec::new(),
         ordering_types: Vec::new(),
         iter_types: Vec::new(),
         rc_types: Vec::new(),
@@ -237,6 +239,15 @@ fn init_types(tcx: TyCtxt) -> Types {
                         .maybe_uninit_types
                         .push(rustc_internal::internal(tcx, adt.def_id()));
                 }
+                if name.ends_with("::AsciiChar")
+                    || name.ends_with("::Char")
+                    || name == "AsciiChar"
+                    || name == "Char"
+                {
+                    types
+                        .ascii_char_types
+                        .push(rustc_internal::internal(tcx, adt.def_id()));
+                }
                 if name.ends_with("::Iter") || name.ends_with("::IterMut") {
                     types
                         .iter_types
@@ -329,6 +340,15 @@ pub fn maybe_uninit_types() -> &'static [DefId] {
         .get()
         .expect("Type DefIds haven't been initialized.")
         .maybe_uninit_types
+}
+
+/// `core::ascii::Char` (`AsciiChar`, the `u8` newtype; and any local
+/// re-implementation).
+pub fn ascii_char_types() -> &'static [DefId] {
+    &TYPES
+        .get()
+        .expect("Type DefIds haven't been initialized.")
+        .ascii_char_types
 }
 
 /// `core::cmp::Ordering`.
