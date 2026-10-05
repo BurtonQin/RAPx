@@ -157,6 +157,16 @@ fn init_types(tcx: TyCtxt) -> Types {
                         types.iter_types.push(adt_did);
                     }
                 }
+                // `std::ascii::Char` has no diagnostic item on toolchains
+                // without `adts()`; resolve it from the self type of its
+                // methods (`core::ascii::Char::from_u8` etc.).
+                if name.contains("::Char::") {
+                    if let Some(adt_did) = assoc_self_adt_did(tcx, did) {
+                        if !types.ascii_char_types.contains(&adt_did) {
+                            types.ascii_char_types.push(adt_did);
+                        }
+                    }
+                }
                 // Synchronization primitives have no diagnostic/lang item, so
                 // resolve them from the self type of their methods (the
                 // `adts()`-less fallback path).
